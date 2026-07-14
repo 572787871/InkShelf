@@ -9,59 +9,102 @@ final class LibraryStore: ObservableObject {
 
     private let fileURL: URL
     private let booksFolder: URL
+    private let importStagingFolder: URL
+    private var importTask: Task<Void, Never>?
 
-    init() {
+    init(storageDirectory: URL? = nil, seedSampleBook: Bool = true) {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let folder = documents.appendingPathComponent("InkShelf", isDirectory: true)
+        let folder = storageDirectory ?? documents.appendingPathComponent("InkShelf", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         fileURL = folder.appendingPathComponent("library.json")
         booksFolder = folder.appendingPathComponent("Books", isDirectory: true)
+        importStagingFolder = folder.appendingPathComponent("ImportStaging", isDirectory: true)
         try? FileManager.default.createDirectory(at: booksFolder, withIntermediateDirectories: true)
-        load()
+        try? FileManager.default.createDirectory(at: importStagingFolder, withIntermediateDirectories: true)
+        load(seedSampleBook: seedSampleBook)
     }
 
-    func importNovel(from url: URL) {
+    @discardableResult
+    func importNovel(from url: URL) -> Task<Void, Never>? {
         guard !isImporting else {
             alertMessage = "已有一本小说正在导入，请稍候"
-            return
+            return nil
         }
         isImporting = true
         alertMessage = nil
-        let hasAccess = url.startAccessingSecurityScopedResource()
-        let fileName = url.deletingPathExtension().lastPathComponent
-        let pathExtension = url.pathExtension
+        ImportLog.logger.info("开始导入：\(url.lastPathComponent, privacy: .public)，扩展名：\(url.pathExtension, privacy: .public)")
 
-        Task { [weak self] in
-            guard let self else {
-                if hasAccess { url.stopAccessingSecurityScopedResource() }
-                return
-            }
-            defer {
-                if hasAccess { url.stopAccessingSecurityScopedResource() }
-                isImporting = false
-            }
-            do {
-                let book = try await Task.detached(priority: .userInitiated) {
-                    let data = try NovelImporter.readFile(at: url)
-                    let imported = try NovelImporter.parse(
-                        data: data,
-                        fileName: fileName,
-                        pathExtension: pathExtension
-                    )
-                    return NovelBook(
-                        title: imported.title,
-                        author: imported.author,
-                        content: imported.content,
-                        format: imported.format,
-                        coverData: imported.coverData
-                    )
-                }.value
-                try addImportedBook(book)
-                alertMessage = "《\(book.title)》已成功导入"
-            } catch {
-                alertMessage = "导入失败：\(error.localizedDescription)"
+        let task = Task { [weak self] in
+            await self?.performImport(from: url)
+        }
+        importTask = task
+        return task
+    }
+
+    func reportFilePickerFailure(_ error: Error) {
+        ImportLog.logger.error("文件选择器返回错误：\(error.localizedDescription, privacy: .public)")
+        alertMessage = "文件选择失败：\(error.localizedDescription)"
+    }
+
+    func reportEmptyFileSelection() {
+        ImportLog.logger.error("文件选择器成功回调但没有返回 URL")
+        alertMessage = ImportError.noFileSelected.localizedDescription
+    }
+
+    private func performImport(from sourceURL: URL) async {
+        defer {
+            isImporting = false
+            importTask = nil
+        }
+
+        do {
+            let stagedFile = try await stageSelectedFile(from: sourceURL)
+            defer { NovelImporter.removeStagedFile(stagedFile) }
+
+            let result = try await Task.detached(priority: .userInitiated) {
+                let data = try NovelImporter.readFile(at: stagedFile.localURL)
+                let imported = try NovelImporter.parse(
+                    data: data,
+                    fileName: stagedFile.originalFileName,
+                    pathExtension: stagedFile.pathExtension
+                )
+                let book = NovelBook(
+                    title: imported.title,
+                    author: imported.author,
+                    content: imported.content,
+                    format: imported.format,
+                    coverData: imported.coverData
+                )
+                return (book, imported.detectedEncoding ?? imported.format.rawValue)
+            }.value
+
+            ImportLog.logger.info("识别文本编码：\(result.1, privacy: .public)")
+            ImportLog.logger.info("解析完成：\(result.0.chapters.count, privacy: .public) 个章节")
+            try addImportedBook(result.0)
+            ImportLog.logger.info("数据库保存成功：\(result.0.id.uuidString, privacy: .public)")
+            ImportLog.logger.info("书架刷新完成：当前 \(self.books.count, privacy: .public) 本书")
+            alertMessage = "《\(result.0.title)》已成功导入"
+        } catch {
+            let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            ImportLog.logger.error("导入失败：\(reason, privacy: .public)")
+            alertMessage = "导入失败：\(reason)"
+        }
+    }
+
+    private func stageSelectedFile(from sourceURL: URL) async throws -> StagedNovelFile {
+        let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+        ImportLog.logger.info("security-scoped 权限：\(hasSecurityScope, privacy: .public)")
+        defer {
+            if hasSecurityScope {
+                sourceURL.stopAccessingSecurityScopedResource()
+                ImportLog.logger.info("security-scoped 权限已结束")
             }
         }
+
+        let stagingFolder = importStagingFolder
+        return try await Task.detached(priority: .userInitiated) {
+            try NovelImporter.copyToSandbox(from: sourceURL, stagingDirectory: stagingFolder)
+        }.value
     }
 
     func book(id: UUID) -> NovelBook? { books.first(where: { $0.id == id }) }
@@ -113,11 +156,11 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    private func load() {
+    private func load(seedSampleBook: Bool) {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([BookMetadata].self, from: data) else {
-            books = [Self.sampleBook]
-            persistFiles(for: Self.sampleBook)
+            books = seedSampleBook ? [Self.sampleBook] : []
+            if seedSampleBook { persistFiles(for: Self.sampleBook) }
             save()
             return
         }
@@ -138,15 +181,16 @@ final class LibraryStore: ObservableObject {
     }
 
     private func addImportedBook(_ book: NovelBook) throws {
-        try book.content.write(to: contentURL(for: book.id), atomically: true, encoding: .utf8)
-        if let cover = book.coverData { try cover.write(to: coverURL(for: book.id), options: .atomic) }
-        books.insert(book, at: 0)
         do {
+            try book.content.write(to: contentURL(for: book.id), atomically: true, encoding: .utf8)
+            if let cover = book.coverData { try cover.write(to: coverURL(for: book.id), options: .atomic) }
+            books.insert(book, at: 0)
             try saveThrowing()
         } catch {
             books.removeAll(where: { $0.id == book.id })
             removeFiles(for: book.id)
-            throw error
+            ImportLog.logger.error("保存书籍失败：\(error.localizedDescription, privacy: .public)")
+            throw ImportError.saveFailed
         }
     }
 

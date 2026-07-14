@@ -57,9 +57,120 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(imported.content, "第一章\nUTF-16 小说正文")
     }
 
+    func testUTF8BOMTextImport() throws {
+        let source = "第一章 开始\nUTF-8 BOM 小说正文"
+        var data = Data([0xEF, 0xBB, 0xBF])
+        data.append(try XCTUnwrap(source.data(using: .utf8)))
+
+        let imported = try NovelImporter.parse(data: data, fileName: "UTF8", pathExtension: "TXT")
+
+        XCTAssertEqual(imported.content, source)
+        XCTAssertEqual(imported.detectedEncoding, "UTF-8 BOM")
+    }
+
+    func testUTF16BigEndianBOMTextImport() throws {
+        let source = "第一章 开始\nUTF-16 BE 小说正文"
+        var data = Data([0xFE, 0xFF])
+        data.append(try XCTUnwrap(source.data(using: .utf16BigEndian)))
+
+        let imported = try NovelImporter.parse(data: data, fileName: "UTF16BE", pathExtension: "txt")
+
+        XCTAssertEqual(imported.content, source)
+        XCTAssertEqual(imported.detectedEncoding, "UTF-16 BE")
+    }
+
+    func testUTF16WithoutBOMDetectsBothEndiannesses() throws {
+        let source = "Chapter 1\n没有 BOM 的 UTF-16 小说正文"
+        let littleEndian = try XCTUnwrap(source.data(using: .utf16LittleEndian))
+        let bigEndian = try XCTUnwrap(source.data(using: .utf16BigEndian))
+
+        let littleImport = try NovelImporter.parse(data: littleEndian, fileName: "LE", pathExtension: "txt")
+        let bigImport = try NovelImporter.parse(data: bigEndian, fileName: "BE", pathExtension: "txt")
+
+        XCTAssertEqual(littleImport.content, source)
+        XCTAssertEqual(littleImport.detectedEncoding, "UTF-16 LE")
+        XCTAssertEqual(bigImport.content, source)
+        XCTAssertEqual(bigImport.detectedEncoding, "UTF-16 BE")
+    }
+
+    func testGBKTextImportKeepsChineseContent() throws {
+        let source = "第一章 风起\n这是 GBK 编码的中文小说正文。"
+        let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GBK_95.rawValue)
+        ))
+        let data = try XCTUnwrap(source.data(using: encoding))
+
+        let imported = try NovelImporter.parse(data: data, fileName: "中文 文件（校对版）", pathExtension: "TxT")
+
+        XCTAssertEqual(imported.title, "中文 文件（校对版）")
+        XCTAssertEqual(imported.content, source)
+        XCTAssertEqual(imported.format, .txt)
+    }
+
+    func testEmptyAndUnsupportedFilesReturnSpecificErrors() throws {
+        XCTAssertThrowsError(try NovelImporter.parse(data: Data(), fileName: "空文件", pathExtension: "txt")) {
+            XCTAssertEqual($0 as? ImportError, .empty)
+        }
+        XCTAssertThrowsError(try NovelImporter.parse(data: Data("内容".utf8), fileName: "文档", pathExtension: "pdf")) {
+            XCTAssertEqual($0 as? ImportError, .unsupported)
+        }
+        XCTAssertThrowsError(try NovelImporter.parse(data: Data([0x81]), fileName: "损坏文本", pathExtension: "txt")) {
+            XCTAssertEqual($0 as? ImportError, .cannotDecode)
+        }
+    }
+
+    func testChineseNamedFileIsCopiedIntoSandboxBeforeReading() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let sourceDirectory = root.appendingPathComponent("来源 文件", isDirectory: true)
+        let stagingDirectory = root.appendingPathComponent("导入临时目录", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceURL = sourceDirectory.appendingPathComponent("《白夜》 （校对版）.TXT")
+        let sourceData = Data("第一章 开始\n这是正文。".utf8)
+        try sourceData.write(to: sourceURL)
+
+        let staged = try NovelImporter.copyToSandbox(from: sourceURL, stagingDirectory: stagingDirectory)
+        defer { NovelImporter.removeStagedFile(staged) }
+
+        XCTAssertNotEqual(staged.localURL, sourceURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.localURL.path))
+        XCTAssertEqual(staged.originalFileName, "《白夜》 （校对版）")
+        XCTAssertEqual(staged.pathExtension, "TXT")
+        XCTAssertEqual(staged.fileSize, sourceData.count)
+        XCTAssertEqual(try NovelImporter.readFile(at: staged.localURL), sourceData)
+    }
+
     func testFilePickerAcceptsGenericTextProviders() {
         XCTAssertTrue(NovelImporter.supportedTypes.contains(.data))
         XCTAssertTrue(NovelImporter.supportedTypes.contains(.text))
+        XCTAssertTrue(NovelImporter.supportedTypes.contains(.plainText))
+        XCTAssertTrue(NovelImporter.supportedTypes.contains(.utf8PlainText))
+        XCTAssertTrue(NovelImporter.supportedTypes.contains(UTType(filenameExtension: "txt")!))
+    }
+
+    @MainActor
+    func testSuccessfulImportRefreshesAndPersistsBookshelf() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storage = root.appendingPathComponent("书架 数据", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("中文小说 （完整版）.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("第一章 开始\n导入后应该立即出现在书架。".utf8).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = LibraryStore(storageDirectory: storage, seedSampleBook: false)
+        let task = try XCTUnwrap(store.importNovel(from: sourceURL))
+        await task.value
+
+        XCTAssertFalse(store.isImporting)
+        XCTAssertEqual(store.books.count, 1)
+        XCTAssertEqual(store.books.first?.title, "中文小说 （完整版）")
+        XCTAssertEqual(store.books.first?.chapters.count, 1)
+        XCTAssertTrue(store.alertMessage?.contains("成功导入") == true)
+
+        let reloadedStore = LibraryStore(storageDirectory: storage, seedSampleBook: false)
+        XCTAssertEqual(reloadedStore.books.count, 1)
+        XCTAssertEqual(reloadedStore.books.first?.content, "第一章 开始\n导入后应该立即出现在书架。")
     }
 }
 

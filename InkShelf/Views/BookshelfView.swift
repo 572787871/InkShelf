@@ -26,9 +26,23 @@ struct BookshelfView: View {
                 if library.isImporting { importingOverlay }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .fileImporter(isPresented: $showingImporter, allowedContentTypes: NovelImporter.supportedTypes) { result in
-                if case let .success(url) = result { library.importNovel(from: url) }
-                if case let .failure(error) = result { library.alertMessage = error.localizedDescription }
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: NovelImporter.supportedTypes,
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case let .success(urls):
+                    ImportLog.logger.info("文件选择器返回成功：\(urls.count, privacy: .public) 个 URL")
+                    guard let url = urls.first else {
+                        library.reportEmptyFileSelection()
+                        return
+                    }
+                    ImportLog.logger.info("文件 URL：\(url.path, privacy: .public)，扩展名：\(url.pathExtension, privacy: .public)")
+                    library.importNovel(from: url)
+                case let .failure(error):
+                    library.reportFilePickerFailure(error)
+                }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .alert("墨架", isPresented: Binding(get: { library.alertMessage != nil }, set: { if !$0 { library.alertMessage = nil } })) {
@@ -52,6 +66,7 @@ struct BookshelfView: View {
                 } label: { HeaderButton(systemName: "arrow.up.arrow.down") }
                 Button { showingImporter = true } label: { HeaderButton(systemName: "plus") }
                     .accessibilityLabel("导入小说")
+                    .disabled(library.isImporting)
                 Button { showingSettings = true } label: { HeaderButton(systemName: "person.crop.circle") }
                     .accessibilityLabel("用户与设置")
             }
@@ -89,14 +104,21 @@ struct BookshelfView: View {
         } description: {
             Text("支持 TXT、Markdown 与 EPUB 文件")
         } actions: {
-            Button("导入第一本书") { showingImporter = true }.buttonStyle(.borderedProminent).tint(Color(hex: "75533A"))
+            Button("导入第一本书") { showingImporter = true }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "75533A"))
+                .disabled(library.isImporting)
         }
         .frame(maxHeight: .infinity)
     }
 
     private var importingOverlay: some View {
-        VStack(spacing: 12) { ProgressView(); Text("正在整理书页…").font(.subheadline) }
-            .padding(24).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18)).shadow(radius: 15)
+        ZStack {
+            Color.clear.contentShape(Rectangle())
+            VStack(spacing: 12) { ProgressView(); Text("正在导入…").font(.subheadline) }
+                .padding(24).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18)).shadow(radius: 15)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
