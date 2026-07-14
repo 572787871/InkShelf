@@ -233,6 +233,7 @@ struct ReaderView: View {
             }
             .font(.system(size: 18, weight: .medium)).padding(.horizontal, 18).frame(height: 58)
             .background(.ultraThinMaterial)
+            .allowsHitTesting(!showingAppearance)
             Spacer()
             VStack(spacing: 14) {
                 if turnStyle != .vertical {
@@ -245,16 +246,28 @@ struct ReaderView: View {
                         Text("\(currentPage?.pageCountInChapter ?? 1)").font(.caption.monospacedDigit())
                     }
                 }
-                HStack {
-                    ChromeAction(icon: "list.bullet", label: "目录") { showingIndex = true }
-                    ChromeAction(icon: "textformat.size", label: "排版") { showingAppearance.toggle() }
-                    ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
-                    ChromeAction(icon: "ellipsis", label: "更多") { showingIndex = true }
+                if !showingAppearance {
+                    HStack {
+                        ChromeAction(icon: "list.bullet", label: "目录") { showingIndex = true }
+                        ChromeAction(icon: "hexagon", label: "设置", showsCenterDot: true) { showingAppearance = true }
+                        ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
+                        ChromeAction(icon: "ellipsis", label: "更多") { showingIndex = true }
+                    }
                 }
                 if showingAppearance { appearanceControls }
             }
             .padding(.horizontal, 18).padding(.top, 13).padding(.bottom, 18)
             .background(.ultraThinMaterial)
+            .contentShape(Rectangle())
+            .onTapGesture { }
+        }
+        .background {
+            if showingAppearance {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .onTapGesture { showingAppearance = false }
+            }
         }
         .foregroundStyle(Color.primary)
         .transition(.opacity)
@@ -331,9 +344,20 @@ private struct PaginationLayout: Hashable {
 private struct ChromeAction: View {
     let icon: String
     let label: String
+    var showsCenterDot = false
     let action: () -> Void
+
     var body: some View {
-        Button(action: action) { VStack(spacing: 5) { Image(systemName: icon).font(.system(size: 18)); Text(label).font(.caption2) }.frame(maxWidth: .infinity) }
+        Button(action: action) {
+            VStack(spacing: 5) {
+                ZStack {
+                    Image(systemName: icon).font(.system(size: 18))
+                    if showsCenterDot { Circle().fill(.primary).frame(width: 3, height: 3) }
+                }
+                Text(label).font(.caption2)
+            }
+            .frame(maxWidth: .infinity)
+        }
     }
 }
 
