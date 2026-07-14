@@ -72,7 +72,9 @@ struct ReaderView: View {
                             )
                             .ignoresSafeArea()
                         }
-                        if chromeVisible { readerChrome(book: book) }
+                        if chromeVisible {
+                            readerChrome(book: book, topSafeAreaInset: proxy.safeAreaInsets.top)
+                        }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
                     .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
@@ -257,7 +259,7 @@ struct ReaderView: View {
         .simultaneousGesture(TapGesture().onEnded { withAnimation { chromeVisible.toggle() } })
     }
 
-    private func readerChrome(book: NovelBook) -> some View {
+    private func readerChrome(book: NovelBook, topSafeAreaInset: CGFloat) -> some View {
         let currentPage = catalog.page(at: location)
         return VStack {
             HStack(spacing: 18) {
@@ -270,7 +272,10 @@ struct ReaderView: View {
                 Button { toggleBookmark(book: book) } label: { Image(systemName: isBookmarked(book) ? "bookmark.fill" : "bookmark") }
                 Button { showingNote = true } label: { Image(systemName: "square.and.pencil") }
             }
-            .font(.system(size: 18, weight: .medium)).padding(.horizontal, 18).frame(height: 58)
+            .font(.system(size: 18, weight: .medium))
+            .padding(.horizontal, 18)
+            .frame(height: 58)
+            .padding(.top, max(0, topSafeAreaInset))
             .background(.ultraThinMaterial)
             .allowsHitTesting(!showingAppearance)
             Spacer()
