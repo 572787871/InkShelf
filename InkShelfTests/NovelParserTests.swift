@@ -95,10 +95,7 @@ final class NovelParserTests: XCTestCase {
 
     func testGBKTextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是 GBK 编码的中文小说正文。"
-        let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(CFStringEncodings.GBK_95.rawValue)
-        ))
-        let data = try XCTUnwrap(source.data(using: encoding))
+        let data = try XCTUnwrap(Data(base64Encoded: "tdrSu9XCILfnxvAK1eLKxyBHQksgseDC67XE1tDOxNChy7XV/c7EoaM="))
 
         let imported = try NovelImporter.parse(data: data, fileName: "中文 文件（校对版）", pathExtension: "TxT")
 
