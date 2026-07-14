@@ -124,6 +124,19 @@ struct PageTurnGestureDecision {
     }
 }
 
+struct ReaderDismissGestureDecision {
+    static func shouldFinish(
+        translation: CGFloat,
+        predictedTranslation: CGFloat,
+        width: CGFloat
+    ) -> Bool {
+        let safeWidth = max(width, 1)
+        let progress = max(0, translation) / safeWidth
+        let projectedProgress = max(0, predictedTranslation) / safeWidth
+        return progress >= 0.3 || projectedProgress >= 0.5
+    }
+}
+
 /// A small transaction gate shared by both rendering engines. The committed
 /// index never changes until the visual transition reports completion.
 struct PageTurnTransaction: Equatable {

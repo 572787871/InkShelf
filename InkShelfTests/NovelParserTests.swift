@@ -241,6 +241,54 @@ final class ReaderPaginationTests: XCTestCase {
             translation: 180, velocity: 900, width: 400, direction: .backward, gestureEnded: false
         ))
     }
+
+    func testReaderEdgeDismissUsesDistanceAndProjectedVelocity() {
+        XCTAssertFalse(ReaderDismissGestureDecision.shouldFinish(
+            translation: 80,
+            predictedTranslation: 110,
+            width: 400
+        ))
+        XCTAssertTrue(ReaderDismissGestureDecision.shouldFinish(
+            translation: 125,
+            predictedTranslation: 125,
+            width: 400
+        ))
+        XCTAssertTrue(ReaderDismissGestureDecision.shouldFinish(
+            translation: 65,
+            predictedTranslation: 230,
+            width: 400
+        ))
+    }
+}
+
+final class BookProgressTests: XCTestCase {
+    func testChapterProgressUsesRealChapterCounts() {
+        let content = """
+        第一章 开始
+        正文
+        第二章 继续
+        正文
+        第三章 结束
+        正文
+        """
+        let unread = NovelBook(title: "未读", content: content)
+        let reading = NovelBook(
+            title: "阅读中",
+            content: content,
+            lastReadAt: Date(),
+            currentChapter: 1
+        )
+        let finished = NovelBook(
+            title: "读完",
+            content: content,
+            lastReadAt: Date(),
+            currentChapter: 99
+        )
+
+        XCTAssertEqual(unread.chapterProgressDescription, "0章 / 3章")
+        XCTAssertEqual(reading.chapterProgressDescription, "2章 / 3章")
+        XCTAssertEqual(finished.chapterProgressDescription, "3章 / 3章")
+    }
 }
 
 final class ReaderThemeTests: XCTestCase {

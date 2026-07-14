@@ -46,6 +46,15 @@ struct NovelBook: Identifiable, Equatable, Sendable {
         self.notes = notes
         self.chapters = NovelParser.chapters(from: content)
     }
+
+    var readChapterCount: Int {
+        guard lastReadAt != nil else { return 0 }
+        return min(chapters.count, max(1, currentChapter + 1))
+    }
+
+    var chapterProgressDescription: String {
+        "\(readChapterCount)章 / \(chapters.count)章"
+    }
 }
 
 enum BookFormat: String, Codable, CaseIterable, Sendable {

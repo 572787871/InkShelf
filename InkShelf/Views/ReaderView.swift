@@ -5,6 +5,10 @@ struct ReaderView: View {
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
     let bookID: UUID
+    let interactionDisabled: Bool
+    let onRequestClose: (() -> Void)?
+    let onReady: () -> Void
+    let onBlockingStateChanged: (Bool) -> Void
 
     @State private var location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
     @State private var catalog = ReaderPageCatalog.empty
@@ -29,6 +33,20 @@ struct ReaderView: View {
     private var turnStyle: PageTurnStyle { PageTurnStyle(rawValue: turnRaw) ?? .curl }
     private var readerFont: ReaderFont { ReaderFont(rawValue: fontRaw) ?? .system }
 
+    init(
+        bookID: UUID,
+        interactionDisabled: Bool = false,
+        onRequestClose: (() -> Void)? = nil,
+        onReady: @escaping () -> Void = { },
+        onBlockingStateChanged: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.bookID = bookID
+        self.interactionDisabled = interactionDisabled
+        self.onRequestClose = onRequestClose
+        self.onReady = onReady
+        self.onBlockingStateChanged = onBlockingStateChanged
+    }
+
     var body: some View {
         Group {
             if let book {
@@ -48,7 +66,7 @@ struct ReaderView: View {
                                 location: location,
                                 appearance: pageAppearance,
                                 mode: pageTurnMode,
-                                isInteractionEnabled: !showingAppearance,
+                                isInteractionEnabled: !showingAppearance && !interactionDisabled,
                                 onCommit: commit,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
@@ -58,6 +76,7 @@ struct ReaderView: View {
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
                     .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
+                    .allowsHitTesting(!interactionDisabled)
                 }
                 .statusBarHidden(!chromeVisible)
             } else {
@@ -74,11 +93,16 @@ struct ReaderView: View {
             }
             originalBrightness = UIScreen.main.brightness
             UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+            reportBlockingState()
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             UIScreen.main.brightness = originalBrightness
         }
+        .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
+        .onChange(of: showingIndex) { _, _ in reportBlockingState() }
+        .onChange(of: showingNote) { _, _ in reportBlockingState() }
+        .onChange(of: showingVoiceInfo) { _, _ in reportBlockingState() }
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -159,6 +183,7 @@ struct ReaderView: View {
         guard !Task.isCancelled else { return }
         guard let settledLocation = rebuilt.nearest(to: location) else { return }
         catalog = rebuilt
+        onReady()
         if settledLocation != location {
             location = settledLocation
             persist(settledLocation)
@@ -185,6 +210,18 @@ struct ReaderView: View {
             chapter: settledLocation.chapterIndex,
             page: settledLocation.pageIndex
         )
+    }
+
+    private func requestClose() {
+        if let onRequestClose {
+            onRequestClose()
+        } else {
+            dismiss()
+        }
+    }
+
+    private func reportBlockingState() {
+        onBlockingStateChanged(showingAppearance || showingIndex || showingNote || showingVoiceInfo)
     }
 
     @ViewBuilder
@@ -223,7 +260,7 @@ struct ReaderView: View {
         let currentPage = catalog.page(at: location)
         return VStack {
             HStack(spacing: 18) {
-                Button { dismiss() } label: { Image(systemName: "chevron.left") }
+                Button { requestClose() } label: { Image(systemName: "chevron.left") }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(book.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(safeChapter(in: book).title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
