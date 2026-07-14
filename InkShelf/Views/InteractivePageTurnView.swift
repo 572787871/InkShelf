@@ -10,6 +10,7 @@ enum InteractivePageTurnMode: Equatable {
 struct ReaderPageAppearance: Equatable {
     let themeID: String
     let backgroundColor: UIColor
+    let backsideColor: UIColor
     let textColor: UIColor
     let fontName: String?
     let fontSize: CGFloat
@@ -20,6 +21,9 @@ struct ReaderPageAppearance: Equatable {
 
     static func == (lhs: ReaderPageAppearance, rhs: ReaderPageAppearance) -> Bool {
         lhs.themeID == rhs.themeID &&
+        lhs.backgroundColor.isEqual(rhs.backgroundColor) &&
+        lhs.backsideColor.isEqual(rhs.backsideColor) &&
+        lhs.textColor.isEqual(rhs.textColor) &&
         lhs.fontName == rhs.fontName &&
         lhs.fontSize == rhs.fontSize &&
         lhs.lineSpacing == rhs.lineSpacing &&
@@ -164,6 +168,14 @@ private final class ReaderPageContentController: UIViewController {
     }
 }
 
+private protocol CurlPageSide: AnyObject {
+    var physicalPageIndex: Int { get }
+}
+
+extension ReaderPageContentController: CurlPageSide {
+    var physicalPageIndex: Int { pageIndex * 2 }
+}
+
 private final class ReaderPageContentView: UIView {
     private let titleLabel = UILabel()
     private let brandLabel = UILabel()
@@ -259,6 +271,157 @@ private final class ReaderPageContentView: UIView {
     }
 }
 
+private final class ReaderPageBackContentController: UIViewController, CurlPageSide {
+    let pageIndex: Int
+    var physicalPageIndex: Int { pageIndex * 2 + 1 }
+
+    private let page: ReaderPage?
+    private var appearance: ReaderPageAppearance
+
+    init(page: ReaderPage?, pageIndex: Int, appearance: ReaderPageAppearance) {
+        self.page = page
+        self.pageIndex = pageIndex
+        self.appearance = appearance
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func loadView() {
+        view = ReaderPageBackContentView(page: page, appearance: appearance)
+    }
+}
+
+/// Opaque content for the physical back of a curled sheet. UIKit adds the moving
+/// fold, specular highlight and cast shadow over this view during `.pageCurl`.
+private final class ReaderPageBackContentView: UIView {
+    private let paperGradient = CAGradientLayer()
+    private let ghostInkView = UIView()
+    private let titleLabel = UILabel()
+    private let brandLabel = UILabel()
+    private let textView = UITextView()
+    private let pageLabel = UILabel()
+    private let progressLabel = UILabel()
+    private let page: ReaderPage?
+    private let appearance: ReaderPageAppearance
+
+    init(page: ReaderPage?, appearance: ReaderPageAppearance) {
+        self.page = page
+        self.appearance = appearance
+        super.init(frame: .zero)
+
+        isOpaque = true
+        backgroundColor = appearance.backsideColor
+        layer.backgroundColor = appearance.backsideColor.cgColor
+        layer.drawsAsynchronously = true
+
+        let highlight = appearance.backsideColor.mixed(with: appearance.backgroundColor, fraction: 0.38)
+        let shade = appearance.backsideColor.mixed(with: .black, fraction: 0.055)
+        paperGradient.colors = [highlight.cgColor, appearance.backsideColor.cgColor, shade.cgColor]
+        paperGradient.locations = [0, 0.54, 1]
+        paperGradient.startPoint = CGPoint(x: 0, y: 0.5)
+        paperGradient.endPoint = CGPoint(x: 1, y: 0.5)
+        layer.addSublayer(paperGradient)
+
+        guard let page else { return }
+        let ghostColor = appearance.textColor.withAlphaComponent(0.15)
+
+        titleLabel.text = page.chapterTitle
+        titleLabel.font = .systemFont(ofSize: 10)
+        titleLabel.textColor = ghostColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        brandLabel.text = "墨架"
+        brandLabel.font = .systemFont(ofSize: 10)
+        brandLabel.textColor = ghostColor
+        brandLabel.textAlignment = .right
+
+        textView.isEditable = false
+        textView.isSelectable = false
+        textView.isScrollEnabled = false
+        textView.isUserInteractionEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.textContainer.lineBreakMode = .byWordWrapping
+        textView.attributedText = attributedGhostText(page.text, color: ghostColor)
+
+        pageLabel.text = "\(page.pageInChapter) / \(page.pageCountInChapter)"
+        progressLabel.text = "\(Int(page.overallProgress * 100))%"
+        for label in [pageLabel, progressLabel] {
+            label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            label.textColor = ghostColor
+        }
+        progressLabel.textAlignment = .right
+
+        [titleLabel, brandLabel, textView, pageLabel, progressLabel].forEach(ghostInkView.addSubview)
+        addSubview(ghostInkView)
+        ghostInkView.isUserInteractionEnabled = false
+        ghostInkView.transform = CGAffineTransform(scaleX: -1, y: 1)
+        accessibilityElementsHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        paperGradient.frame = bounds
+        guard page != nil else { return }
+
+        ghostInkView.bounds = bounds
+        ghostInkView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let margin = appearance.horizontalMargin
+        let width = max(0, bounds.width - margin * 2)
+        titleLabel.frame = CGRect(x: margin, y: 13, width: width * 0.74, height: 16)
+        brandLabel.frame = CGRect(x: margin + width * 0.76, y: 13, width: width * 0.24, height: 16)
+        textView.frame = CGRect(x: margin, y: 51, width: width, height: max(0, bounds.height - 91))
+        pageLabel.frame = CGRect(x: margin, y: bounds.height - 28, width: width * 0.5, height: 16)
+        progressLabel.frame = CGRect(x: margin + width * 0.5, y: bounds.height - 28, width: width * 0.5, height: 16)
+    }
+
+    private func attributedGhostText(_ text: String, color: UIColor) -> NSAttributedString {
+        let font = appearance.fontName.flatMap { UIFont(name: $0, size: appearance.fontSize) }
+            ?? UIFont.systemFont(ofSize: appearance.fontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = appearance.lineSpacing
+        paragraph.alignment = .natural
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ]
+        )
+    }
+}
+
+private extension UIColor {
+    func mixed(with color: UIColor, fraction: CGFloat) -> UIColor {
+        let amount = min(max(fraction, 0), 1)
+        var red1: CGFloat = 0
+        var green1: CGFloat = 0
+        var blue1: CGFloat = 0
+        var alpha1: CGFloat = 0
+        var red2: CGFloat = 0
+        var green2: CGFloat = 0
+        var blue2: CGFloat = 0
+        var alpha2: CGFloat = 0
+        guard getRed(&red1, green: &green1, blue: &blue1, alpha: &alpha1),
+              color.getRed(&red2, green: &green2, blue: &blue2, alpha: &alpha2) else {
+            return self
+        }
+        return UIColor(
+            red: red1 + (red2 - red1) * amount,
+            green: green1 + (green2 - green1) * amount,
+            blue: blue1 + (blue2 - blue1) * amount,
+            alpha: alpha1 + (alpha2 - alpha1) * amount
+        )
+    }
+}
+
 private struct EngineConfiguration {
     let pages: [ReaderPage]
     let index: Int
@@ -273,6 +436,8 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     private var appearance: ReaderPageAppearance?
     private var transaction = PageTurnTransaction(currentIndex: 0)
     private var pendingConfiguration: EngineConfiguration?
+    private var frontCache: [Int: ReaderPageContentController] = [:]
+    private var backCache: [Int: ReaderPageBackContentController] = [:]
 
     init() {
         super.init(
@@ -282,9 +447,12 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         )
         dataSource = self
         delegate = self
-        isDoubleSided = false
+        // With an edge spine UIKit expects the visible front plus the physical
+        // back of the previous sheet. Supplying both prevents UIKit from making
+        // its default white, single-sided backface snapshot.
+        isDoubleSided = true
         view.clipsToBounds = true
-        view.backgroundColor = .clear
+        view.isOpaque = true
         for gesture in gestureRecognizers where gesture is UITapGestureRecognizer {
             gesture.isEnabled = false
         }
@@ -299,16 +467,22 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         let contentChanged = self.pages.map(\.id) != pages.map(\.id)
         let appearanceChanged = self.appearance != appearance
         let layoutChanged = self.appearance.map { !$0.hasSameLayout(as: appearance) } ?? true
+        if contentChanged || layoutChanged {
+            frontCache.removeAll(keepingCapacity: true)
+            backCache.removeAll(keepingCapacity: true)
+        }
         self.pages = pages
         self.appearance = appearance
         let safeIndex = min(max(index, 0), max(pages.count - 1, 0))
         transaction.rebase(to: safeIndex)
         if contentChanged || layoutChanged || visibleIndex != safeIndex {
-            setViewControllers([makeController(index: safeIndex)], direction: .forward, animated: false)
+            setViewControllers(visibleControllers(index: safeIndex), direction: .forward, animated: false)
         } else if appearanceChanged {
-            (viewControllers?.first as? ReaderPageContentController)?.updateHighlight(using: appearance)
+            frontCache.values.forEach { $0.updateHighlight(using: appearance) }
         }
         view.backgroundColor = appearance.backgroundColor
+        view.layer.backgroundColor = appearance.backgroundColor.cgColor
+        preloadPages(around: safeIndex)
     }
 
     func turn(_ direction: PageTurnDirection) {
@@ -317,27 +491,37 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
             return
         }
         let navigation: NavigationDirection = direction == .forward ? .forward : .reverse
-        setViewControllers([makeController(index: target)], direction: navigation, animated: true) { [weak self] finished in
+        setViewControllers(visibleControllers(index: target), direction: navigation, animated: true) { [weak self] finished in
             guard let self else { return }
             let committed = self.transaction.finish(committed: finished)
-            if let committed { self.onCommit?(self.pages[committed].location) }
+            if let committed {
+                self.preloadPages(around: committed)
+                self.onCommit?(self.pages[committed].location)
+            }
             self.applyPendingConfigurationIfNeeded()
         }
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        guard let content = viewController as? ReaderPageContentController else { return nil }
-        return controllerIfPresent(index: content.pageIndex - 1)
+        guard let side = viewController as? CurlPageSide, side.physicalPageIndex > 0 else { return nil }
+        return controller(physicalIndex: side.physicalPageIndex - 1)
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        guard let content = viewController as? ReaderPageContentController else { return nil }
-        return controllerIfPresent(index: content.pageIndex + 1)
+        guard let side = viewController as? CurlPageSide else { return nil }
+        let lastFront = max(0, (pages.count - 1) * 2)
+        guard side.physicalPageIndex < lastFront else { return nil }
+        return controller(physicalIndex: side.physicalPageIndex + 1)
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
-        guard let pending = pendingViewControllers.first as? ReaderPageContentController else { return }
-        _ = transaction.begin(targetIndex: pending.pageIndex, pageCount: pages.count)
+        let currentPhysicalIndex = transaction.currentIndex * 2
+        let pendingPhysicalIndices = pendingViewControllers.compactMap { ($0 as? CurlPageSide)?.physicalPageIndex }
+        guard let furthest = pendingPhysicalIndices.max(by: {
+            abs($0 - currentPhysicalIndex) < abs($1 - currentPhysicalIndex)
+        }), furthest != currentPhysicalIndex else { return }
+        let target = furthest > currentPhysicalIndex ? transaction.currentIndex + 1 : transaction.currentIndex - 1
+        _ = transaction.begin(targetIndex: target, pageCount: pages.count)
     }
 
     func pageViewController(
@@ -347,18 +531,55 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         transitionCompleted completed: Bool
     ) {
         let committed = transaction.finish(committed: completed)
-        if let committed { onCommit?(pages[committed].location) }
+        if let committed {
+            preloadPages(around: committed)
+            onCommit?(pages[committed].location)
+        }
         applyPendingConfigurationIfNeeded()
     }
 
-    private var visibleIndex: Int? { (viewControllers?.first as? ReaderPageContentController)?.pageIndex }
-
-    private func controllerIfPresent(index: Int) -> UIViewController? {
-        pages.indices.contains(index) ? makeController(index: index) : nil
+    private var visibleIndex: Int? {
+        viewControllers?.compactMap { ($0 as? ReaderPageContentController)?.pageIndex }.first
     }
 
-    private func makeController(index: Int) -> ReaderPageContentController {
-        ReaderPageContentController(page: pages[index], pageIndex: index, appearance: appearance!)
+    private func visibleControllers(index: Int) -> [UIViewController] {
+        [makeFrontController(index: index), makeBackController(index: index - 1)]
+    }
+
+    private func controller(physicalIndex: Int) -> UIViewController? {
+        guard physicalIndex >= -1 else { return nil }
+        if physicalIndex.isMultiple(of: 2) {
+            let pageIndex = physicalIndex / 2
+            return pages.indices.contains(pageIndex) ? makeFrontController(index: pageIndex) : nil
+        }
+        let pageIndex = (physicalIndex - 1) / 2
+        return (-1..<pages.count).contains(pageIndex) ? makeBackController(index: pageIndex) : nil
+    }
+
+    private func makeFrontController(index: Int) -> ReaderPageContentController {
+        if let cached = frontCache[index] { return cached }
+        let controller = ReaderPageContentController(page: pages[index], pageIndex: index, appearance: appearance!)
+        controller.loadViewIfNeeded()
+        frontCache[index] = controller
+        return controller
+    }
+
+    private func makeBackController(index: Int) -> ReaderPageBackContentController {
+        if let cached = backCache[index] { return cached }
+        let page = pages.indices.contains(index) ? pages[index] : nil
+        let controller = ReaderPageBackContentController(page: page, pageIndex: index, appearance: appearance!)
+        controller.loadViewIfNeeded()
+        backCache[index] = controller
+        return controller
+    }
+
+    private func preloadPages(around index: Int) {
+        let retainedFronts = Set([index - 1, index, index + 1].filter { pages.indices.contains($0) })
+        let retainedBacks = Set([index - 2, index - 1, index].filter { (-1..<pages.count).contains($0) })
+        retainedFronts.forEach { _ = makeFrontController(index: $0) }
+        retainedBacks.forEach { _ = makeBackController(index: $0) }
+        frontCache = frontCache.filter { retainedFronts.contains($0.key) }
+        backCache = backCache.filter { retainedBacks.contains($0.key) }
     }
 
     private func bounceAtBoundary(_ direction: PageTurnDirection) {

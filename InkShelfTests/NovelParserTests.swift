@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
@@ -73,5 +74,18 @@ final class ReaderPaginationTests: XCTestCase {
         XCTAssertNil(transaction.finish(committed: false))
         XCTAssertEqual(transaction.currentIndex, 0)
         XCTAssertFalse(transaction.isLocked)
+    }
+}
+
+final class ReaderThemeTests: XCTestCase {
+    func testEveryThemeHasAnOpaqueDistinctPaperBackColor() {
+        for theme in ReaderTheme.allCases {
+            let front = UIColor(theme.background)
+            let back = UIColor(theme.pageBack)
+
+            XCTAssertFalse(front.isEqual(back), "\(theme.rawValue) 的纸张背面必须能与正面区分")
+            XCTAssertEqual(back.cgColor.alpha, 1, accuracy: 0.001)
+            XCTAssertFalse(back.isEqual(UIColor.white), "\(theme.rawValue) 不应退回系统纯白背面")
+        }
     }
 }

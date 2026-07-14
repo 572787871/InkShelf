@@ -4,6 +4,7 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
     case paper = "羊皮纸"
     case white = "纯白"
     case green = "护眼"
+    case gray = "灰色"
     case night = "夜间"
 
     var id: String { rawValue }
@@ -12,7 +13,17 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
         case .paper: return Color(hex: "F3E9D2")
         case .white: return Color(hex: "FAFAF8")
         case .green: return Color(hex: "DCE8D5")
+        case .gray: return Color(hex: "E4E2DE")
         case .night: return Color(hex: "171A1F")
+        }
+    }
+    var pageBack: Color {
+        switch self {
+        case .paper: return Color(hex: "E9DDC3")
+        case .white: return Color(hex: "F0EEE9")
+        case .green: return Color(hex: "D1DDCB")
+        case .gray: return Color(hex: "D8D6D1")
+        case .night: return Color(hex: "202329")
         }
     }
     var foreground: Color { self == .night ? Color(hex: "CAC6BD") : Color(hex: "27231F") }

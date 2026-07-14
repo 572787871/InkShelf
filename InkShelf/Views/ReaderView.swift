@@ -129,6 +129,7 @@ struct ReaderView: View {
         ReaderPageAppearance(
             themeID: theme.rawValue,
             backgroundColor: UIColor(theme.background),
+            backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
             fontName: readerFont.name,
             fontSize: fontSize,
