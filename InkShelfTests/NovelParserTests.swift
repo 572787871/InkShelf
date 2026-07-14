@@ -32,3 +32,46 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(pages.joined(), source)
     }
 }
+
+final class ReaderPaginationTests: XCTestCase {
+    func testCatalogPreloadsAcrossChapterBoundary() {
+        let book = NovelBook(
+            title: "Test",
+            content: "第一章 开始\n" + String(repeating: "甲", count: 24) + "\n第二章 继续\n" + String(repeating: "乙", count: 24)
+        )
+        let catalog = ReaderPageCatalog(book: book, charactersPerPage: 12)
+        let lastOfFirst = catalog.pages.last { $0.location.chapterIndex == 0 }!
+        let next = catalog.adjacent(to: lastOfFirst.location, direction: .forward)
+
+        XCTAssertEqual(next?.location.chapterIndex, 1)
+        XCTAssertEqual(next?.location.pageIndex, 0)
+        XCTAssertEqual(catalog.adjacent(to: catalog.pages[0].location, direction: .backward), nil)
+        XCTAssertEqual(catalog.adjacent(to: catalog.pages.last!.location, direction: .forward), nil)
+    }
+
+    func testTransactionDoesNotCommitBeforeAnimationFinishes() {
+        var transaction = PageTurnTransaction(currentIndex: 1)
+        XCTAssertEqual(transaction.begin(direction: .forward, pageCount: 4), 2)
+        XCTAssertEqual(transaction.currentIndex, 1)
+        XCTAssertTrue(transaction.isLocked)
+        XCTAssertNil(transaction.begin(direction: .forward, pageCount: 4))
+
+        XCTAssertEqual(transaction.finish(committed: true), 2)
+        XCTAssertEqual(transaction.currentIndex, 2)
+        XCTAssertFalse(transaction.isLocked)
+    }
+
+    func testCancelledAndBoundaryTurnsKeepCurrentPage() {
+        var transaction = PageTurnTransaction(currentIndex: 1)
+        XCTAssertEqual(transaction.begin(direction: .backward, pageCount: 3), 0)
+        XCTAssertNil(transaction.finish(committed: false))
+        XCTAssertEqual(transaction.currentIndex, 1)
+
+        transaction = PageTurnTransaction(currentIndex: 0)
+        XCTAssertNil(transaction.begin(direction: .backward, pageCount: 3))
+        XCTAssertTrue(transaction.isLocked)
+        XCTAssertNil(transaction.finish(committed: false))
+        XCTAssertEqual(transaction.currentIndex, 0)
+        XCTAssertFalse(transaction.isLocked)
+    }
+}

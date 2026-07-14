@@ -6,8 +6,8 @@ struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
     let bookID: UUID
 
-    @State private var chapterIndex = 0
-    @State private var pageIndex = 0
+    @State private var location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
+    @State private var catalog = ReaderPageCatalog.empty
     @State private var chromeVisible = false
     @State private var showingIndex = false
     @State private var showingAppearance = false
@@ -34,35 +34,29 @@ struct ReaderView: View {
             if let book {
                 GeometryReader { proxy in
                     let chapter = safeChapter(in: book)
-                    let pages = NovelParser.pages(for: chapter, charactersPerPage: charactersPerPage(in: proxy.size))
+                    let capacity = charactersPerPage(in: proxy.size)
+                    let layout = paginationLayout(for: book, size: proxy.size)
                     ZStack {
                         theme.background.ignoresSafeArea()
                         if turnStyle == .vertical {
                             verticalReader(book: book, chapter: chapter)
+                        } else if catalog.isEmpty {
+                            ProgressView().tint(theme.foreground)
                         } else {
-                            PagedReader(
-                                chapterTitle: chapter.title,
-                                pages: pages,
-                                pageIndex: min(pageIndex, max(pages.count - 1, 0)),
-                                bookTitle: book.title,
-                                chapterProgress: chapterProgress(book: book, pageCount: pages.count),
-                                theme: theme,
-                                font: readerFont,
-                                fontSize: fontSize,
-                                lineSpacing: lineSpacing,
-                                margin: margin,
-                                style: turnStyle,
-                                onPrevious: { previous(book: book, capacity: charactersPerPage(in: proxy.size)) },
-                                onNext: { next(book: book, pages: pages) },
+                            InteractivePageTurnView(
+                                pages: catalog.pages,
+                                location: location,
+                                appearance: pageAppearance,
+                                mode: pageTurnMode,
+                                onCommit: commit,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
+                            .ignoresSafeArea()
                         }
-                        if chromeVisible { readerChrome(book: book, pages: pages) }
+                        if chromeVisible { readerChrome(book: book) }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-                    .onChange(of: pages.count) { _, count in pageIndex = min(pageIndex, max(count - 1, 0)) }
-                    .onChange(of: pageIndex) { _, newValue in persist(page: newValue) }
-                    .onChange(of: chapterIndex) { _, _ in persist(page: pageIndex) }
+                    .task(id: layout) { rebuildCatalog(for: book, charactersPerPage: capacity) }
                 }
                 .statusBarHidden(!chromeVisible)
             } else {
@@ -71,7 +65,12 @@ struct ReaderView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
-            if let book { chapterIndex = min(book.currentChapter, max(book.chapters.count - 1, 0)); pageIndex = book.currentPage }
+            if let book {
+                location = ReaderPageLocation(
+                    chapterIndex: min(book.currentChapter, max(book.chapters.count - 1, 0)),
+                    pageIndex: max(0, book.currentPage)
+                )
+            }
             originalBrightness = UIScreen.main.brightness
             UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
         }
@@ -82,12 +81,20 @@ struct ReaderView: View {
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
-                    chapterIndex = chapter; pageIndex = page; showingIndex = false
+                    jump(to: ReaderPageLocation(chapterIndex: chapter, pageIndex: page))
+                    showingIndex = false
                 }
             }
         }
         .sheet(isPresented: $showingNote) {
-            if let book { NoteEditor(bookID: book.id, chapter: chapterIndex, page: pageIndex, excerpt: currentExcerpt(book: book)) }
+            if let book {
+                NoteEditor(
+                    bookID: book.id,
+                    chapter: location.chapterIndex,
+                    page: location.pageIndex,
+                    excerpt: currentExcerpt(book: book)
+                )
+            }
         }
         .alert("AI 朗读已预留", isPresented: $showingVoiceInfo) {
             Button("知道了", role: .cancel) { }
@@ -98,7 +105,7 @@ struct ReaderView: View {
 
     private func safeChapter(in book: NovelBook) -> NovelChapter {
         let chapters = book.chapters
-        return chapters[min(max(chapterIndex, 0), max(chapters.count - 1, 0))]
+        return chapters[min(max(location.chapterIndex, 0), max(chapters.count - 1, 0))]
     }
 
     private func charactersPerPage(in size: CGSize) -> Int {
@@ -109,26 +116,70 @@ struct ReaderView: View {
         return max(180, Int(columns * rows * 0.92))
     }
 
-    private func chapterProgress(book: NovelBook, pageCount: Int) -> Double {
-        let chapterPart = Double(chapterIndex) / Double(max(book.chapters.count, 1))
-        let pagePart = Double(pageIndex) / Double(max(pageCount, 1)) / Double(max(book.chapters.count, 1))
-        return min(1, chapterPart + pagePart)
-    }
-
-    private func persist(page: Int) { library.updateProgress(bookID: bookID, chapter: chapterIndex, page: page) }
-
-    private func previous(book: NovelBook, capacity: Int) {
-        if pageIndex > 0 { pageIndex -= 1 }
-        else if chapterIndex > 0 {
-            chapterIndex -= 1
-            let chapter = book.chapters[chapterIndex]
-            pageIndex = max(0, NovelParser.pages(for: chapter, charactersPerPage: capacity).count - 1)
+    private var pageTurnMode: InteractivePageTurnMode {
+        switch turnStyle {
+        case .curl: return .curl
+        case .slide: return .cover
+        case .none: return .immediate
+        case .vertical: return .cover
         }
     }
 
-    private func next(book: NovelBook, pages: [String]) {
-        if pageIndex + 1 < pages.count { pageIndex += 1 }
-        else if chapterIndex + 1 < book.chapters.count { chapterIndex += 1; pageIndex = 0 }
+    private var pageAppearance: ReaderPageAppearance {
+        ReaderPageAppearance(
+            themeID: theme.rawValue,
+            backgroundColor: UIColor(theme.background),
+            textColor: UIColor(theme.foreground),
+            fontName: readerFont.name,
+            fontSize: fontSize,
+            lineSpacing: lineSpacing,
+            horizontalMargin: margin,
+            highlightedLocation: nil,
+            highlightedRange: nil
+        )
+    }
+
+    private func paginationLayout(for book: NovelBook, size: CGSize) -> PaginationLayout {
+        PaginationLayout(
+            bookID: book.id,
+            width: Int(size.width.rounded()),
+            height: Int(size.height.rounded()),
+            fontSize: Int((fontSize * 10).rounded()),
+            lineSpacing: Int((lineSpacing * 10).rounded()),
+            margin: Int((margin * 10).rounded())
+        )
+    }
+
+    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) {
+        let rebuilt = ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
+        guard let settledLocation = rebuilt.nearest(to: location) else { return }
+        catalog = rebuilt
+        if settledLocation != location {
+            location = settledLocation
+            persist(settledLocation)
+        }
+    }
+
+    private func commit(_ settledLocation: ReaderPageLocation) {
+        guard settledLocation != location else { return }
+        location = settledLocation
+        persist(settledLocation)
+        // Audio playback and sentence highlighting remain owned by the reading
+        // session. They are notified only after a visual page turn settles.
+    }
+
+    private func jump(to requestedLocation: ReaderPageLocation) {
+        let settled = catalog.nearest(to: requestedLocation) ?? requestedLocation
+        location = settled
+        persist(settled)
+    }
+
+    private func persist(_ settledLocation: ReaderPageLocation) {
+        library.updateProgress(
+            bookID: bookID,
+            chapter: settledLocation.chapterIndex,
+            page: settledLocation.pageIndex
+        )
     }
 
     @ViewBuilder
@@ -141,9 +192,19 @@ struct ReaderView: View {
                     .lineSpacing(lineSpacing)
                     .textSelection(.enabled)
                 HStack {
-                    Button("上一章") { if chapterIndex > 0 { chapterIndex -= 1 } }.disabled(chapterIndex == 0)
+                    Button("上一章") {
+                        if location.chapterIndex > 0 {
+                            jump(to: ReaderPageLocation(chapterIndex: location.chapterIndex - 1, pageIndex: 0))
+                        }
+                    }
+                    .disabled(location.chapterIndex == 0)
                     Spacer()
-                    Button("下一章") { if chapterIndex + 1 < book.chapters.count { chapterIndex += 1 } }.disabled(chapterIndex + 1 >= book.chapters.count)
+                    Button("下一章") {
+                        if location.chapterIndex + 1 < book.chapters.count {
+                            jump(to: ReaderPageLocation(chapterIndex: location.chapterIndex + 1, pageIndex: 0))
+                        }
+                    }
+                    .disabled(location.chapterIndex + 1 >= book.chapters.count)
                 }
                 .buttonStyle(.bordered).tint(theme.foreground)
             }
@@ -153,7 +214,8 @@ struct ReaderView: View {
         .simultaneousGesture(TapGesture().onEnded { withAnimation { chromeVisible.toggle() } })
     }
 
-    private func readerChrome(book: NovelBook, pages: [String]) -> some View {
+    private func readerChrome(book: NovelBook) -> some View {
+        let currentPage = catalog.page(at: location)
         VStack {
             HStack(spacing: 18) {
                 Button { dismiss() } label: { Image(systemName: "chevron.left") }
@@ -171,12 +233,12 @@ struct ReaderView: View {
             VStack(spacing: 14) {
                 if turnStyle != .vertical {
                     HStack(spacing: 12) {
-                        Text("\(pageIndex + 1)").font(.caption.monospacedDigit())
+                        Text("\((currentPage?.pageInChapter ?? 1))").font(.caption.monospacedDigit())
                         Slider(value: Binding(
-                            get: { Double(min(pageIndex, max(pages.count - 1, 0))) },
-                            set: { pageIndex = Int($0.rounded()) }
-                        ), in: 0...Double(max(pages.count - 1, 1)), step: 1)
-                        Text("\(pages.count)").font(.caption.monospacedDigit())
+                            get: { Double(currentPage?.location.pageIndex ?? 0) },
+                            set: { jump(to: ReaderPageLocation(chapterIndex: location.chapterIndex, pageIndex: Int($0.rounded()))) }
+                        ), in: 0...Double(max((currentPage?.pageCountInChapter ?? 1) - 1, 1)), step: 1)
+                        Text("\(currentPage?.pageCountInChapter ?? 1)").font(.caption.monospacedDigit())
                     }
                 }
                 HStack {
@@ -235,103 +297,31 @@ struct ReaderView: View {
     }
 
     private func currentExcerpt(book: NovelBook) -> String {
-        let pages = NovelParser.pages(for: safeChapter(in: book), charactersPerPage: charactersPerPage(in: UIScreen.main.bounds.size))
-        return String(pages[min(pageIndex, max(pages.count - 1, 0))].prefix(80))
+        if let text = catalog.page(at: location)?.text { return String(text.prefix(80)) }
+        return String(safeChapter(in: book).content.prefix(80))
     }
 
-    private func isBookmarked(_ book: NovelBook) -> Bool { book.bookmarks.contains { $0.chapterIndex == chapterIndex && $0.pageIndex == pageIndex } }
+    private func isBookmarked(_ book: NovelBook) -> Bool {
+        book.bookmarks.contains { $0.chapterIndex == location.chapterIndex && $0.pageIndex == location.pageIndex }
+    }
 
     private func toggleBookmark(book: NovelBook) {
-        library.toggleBookmark(bookID: book.id, chapter: chapterIndex, page: pageIndex, excerpt: currentExcerpt(book: book))
+        library.toggleBookmark(
+            bookID: book.id,
+            chapter: location.chapterIndex,
+            page: location.pageIndex,
+            excerpt: currentExcerpt(book: book)
+        )
     }
 }
 
-private struct PagedReader: View {
-    let chapterTitle: String
-    let pages: [String]
-    let pageIndex: Int
-    let bookTitle: String
-    let chapterProgress: Double
-    let theme: ReaderTheme
-    let font: ReaderFont
-    let fontSize: Double
-    let lineSpacing: Double
-    let margin: Double
-    let style: PageTurnStyle
-    let onPrevious: () -> Void
-    let onNext: () -> Void
-    let onCenterTap: () -> Void
-    @State private var dragX = 0.0
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                if dragX < 0, pageIndex + 1 < pages.count {
-                    PageSurface(title: chapterTitle, text: pages[pageIndex + 1], page: pageIndex + 2, progress: chapterProgress, theme: theme, font: font, fontSize: fontSize, lineSpacing: lineSpacing, margin: margin)
-                }
-                PageSurface(title: chapterTitle, text: pages[min(pageIndex, max(pages.count - 1, 0))], page: pageIndex + 1, progress: chapterProgress, theme: theme, font: font, fontSize: fontSize, lineSpacing: lineSpacing, margin: margin)
-                    .offset(x: style == .slide ? dragX : 0)
-                    .rotation3DEffect(
-                        style == .curl ? .degrees(max(-105, min(20, dragX / max(proxy.size.width, 1) * 105))) : .zero,
-                        axis: (x: 0, y: 1, z: 0), anchor: dragX < 0 ? .leading : .trailing, perspective: 0.42
-                    )
-                    .shadow(color: .black.opacity(abs(dragX) / max(proxy.size.width, 1) * 0.28), radius: 16, x: -8)
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { dragX = $0.translation.width }
-                    .onEnded { value in
-                        let threshold = proxy.size.width * 0.16
-                        if abs(value.translation.width) < 8 {
-                            let third = proxy.size.width / 3
-                            if value.location.x < third { onPrevious() }
-                            else if value.location.x > third * 2 { onNext() }
-                            else { onCenterTap() }
-                        } else if value.translation.width < -threshold || value.predictedEndTranslation.width < -proxy.size.width * 0.45 {
-                            onNext()
-                        } else if value.translation.width > threshold || value.predictedEndTranslation.width > proxy.size.width * 0.45 {
-                            onPrevious()
-                        }
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { dragX = 0 }
-                    }
-            )
-        }
-    }
-}
-
-private struct PageSurface: View {
-    let title: String
-    let text: String
-    let page: Int
-    let progress: Double
-    let theme: ReaderTheme
-    let font: ReaderFont
-    let fontSize: Double
-    let lineSpacing: Double
-    let margin: Double
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack { Text(title).lineLimit(1); Spacer(); Text("墨架") }
-                .font(.system(size: 10)).foregroundStyle(theme.foreground.opacity(0.52)).padding(.top, 13)
-            Text(text)
-                .font(contentFont)
-                .lineSpacing(lineSpacing)
-                .foregroundStyle(theme.foreground)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, 24)
-            HStack { Text("\(page)"); Spacer(); Text("\(Int(progress * 100))%") }
-                .font(.system(size: 10).monospacedDigit()).foregroundStyle(theme.foreground.opacity(0.5)).padding(.bottom, 10)
-        }
-        .padding(.horizontal, margin)
-        .background(theme.background)
-    }
-
-    private var contentFont: Font {
-        if let name = font.name { return .custom(name, size: fontSize) }
-        return .system(size: fontSize, design: .serif)
-    }
+private struct PaginationLayout: Hashable {
+    let bookID: UUID
+    let width: Int
+    let height: Int
+    let fontSize: Int
+    let lineSpacing: Int
+    let margin: Int
 }
 
 private struct ChromeAction: View {
