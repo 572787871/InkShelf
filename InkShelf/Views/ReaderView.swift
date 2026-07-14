@@ -70,6 +70,7 @@ struct ReaderView: View {
                                 onCommit: commit,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
+                            .ignoresSafeArea()
                         }
                         if chromeVisible { readerChrome(book: book) }
                     }
@@ -77,6 +78,7 @@ struct ReaderView: View {
                     .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
                     .allowsHitTesting(!interactionDisabled)
                 }
+                .statusBarHidden(!chromeVisible)
             } else {
                 ContentUnavailableView("书籍不存在", systemImage: "book.closed")
             }

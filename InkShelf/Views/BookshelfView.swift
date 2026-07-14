@@ -45,11 +45,6 @@ struct BookshelfView: View {
 
                     if let selectedBookID,
                        let selectedBook = library.book(id: selectedBookID) {
-                        readerTheme.background
-                            .ignoresSafeArea()
-                            .opacity(readerBackdropOpacity)
-                            .allowsHitTesting(false)
-                            .zIndex(9)
                         readerTransitionLayer(
                             book: selectedBook,
                             targetFrame: selectedBookFrame ?? bookFrames[selectedBookID] ?? fallbackBookFrame(in: proxy.size),
@@ -163,12 +158,6 @@ struct BookshelfView: View {
         return rows
     }
 
-    private var readerBackdropOpacity: CGFloat {
-        let opening = 1 - min(1, max(0, readerTransitionProgress))
-        let x = min(1, max(0, (opening - 0.42) / 0.38))
-        return x * x * (3 - 2 * x)
-    }
-
     private var emptyState: some View {
         ContentUnavailableView {
             Label("书架还是空的", systemImage: "books.vertical")
@@ -216,6 +205,7 @@ struct BookshelfView: View {
                 )
             }
         )
+        .ignoresSafeArea()
     }
 
     private func openReader(_ book: NovelBook) {
