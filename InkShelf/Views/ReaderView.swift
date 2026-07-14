@@ -216,7 +216,7 @@ struct ReaderView: View {
 
     private func readerChrome(book: NovelBook) -> some View {
         let currentPage = catalog.page(at: location)
-        VStack {
+        return VStack {
             HStack(spacing: 18) {
                 Button { dismiss() } label: { Image(systemName: "chevron.left") }
                 VStack(alignment: .leading, spacing: 2) {

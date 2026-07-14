@@ -367,7 +367,7 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
             UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.45) { self.view.transform = CGAffineTransform(translationX: distance, y: 0) }
             UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.55) { self.view.transform = .identity }
         } completion: { [weak self] _ in
-            self?.transaction.finish(committed: false)
+            _ = self?.transaction.finish(committed: false)
             self?.applyPendingConfigurationIfNeeded()
         }
     }
@@ -570,7 +570,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
             UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0) {
                 self.currentController?.view.transform = .identity
             } completion: { [weak self] _ in
-                self?.transaction.finish(committed: false)
+                _ = self?.transaction.finish(committed: false)
                 self?.applyPendingConfigurationIfNeeded()
             }
         }
