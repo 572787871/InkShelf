@@ -56,7 +56,7 @@ struct ReaderView: View {
                         if chromeVisible { readerChrome(book: book) }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-                    .task(id: layout) { rebuildCatalog(for: book, charactersPerPage: capacity) }
+                    .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
                 }
                 .statusBarHidden(!chromeVisible)
             } else {
@@ -151,8 +151,11 @@ struct ReaderView: View {
         )
     }
 
-    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) {
-        let rebuilt = ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
+    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) async {
+        let rebuilt = await Task.detached(priority: .userInitiated) {
+            ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
+        }.value
+        guard !Task.isCancelled else { return }
         guard let settledLocation = rebuilt.nearest(to: location) else { return }
         catalog = rebuilt
         if settledLocation != location {

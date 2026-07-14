@@ -1,6 +1,6 @@
 import Foundation
 
-struct NovelBook: Identifiable, Equatable {
+struct NovelBook: Identifiable, Equatable, Sendable {
     var id: UUID
     var title: String
     var author: String
@@ -54,7 +54,7 @@ enum BookFormat: String, Codable, CaseIterable, Sendable {
     case epub = "EPUB"
 }
 
-struct NovelChapter: Identifiable, Equatable {
+struct NovelChapter: Identifiable, Equatable, Sendable {
     let index: Int
     let title: String
     let content: String
@@ -62,7 +62,7 @@ struct NovelChapter: Identifiable, Equatable {
     var id: Int { index }
 }
 
-struct ReaderBookmark: Identifiable, Codable, Equatable {
+struct ReaderBookmark: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     let chapterIndex: Int
     let pageIndex: Int
@@ -70,7 +70,7 @@ struct ReaderBookmark: Identifiable, Codable, Equatable {
     let createdAt: Date
 }
 
-struct ReaderNote: Identifiable, Codable, Equatable {
+struct ReaderNote: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     let chapterIndex: Int
     let pageIndex: Int

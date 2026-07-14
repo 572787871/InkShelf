@@ -16,54 +16,139 @@ enum ImportError: LocalizedError {
     case unsupported
     case invalidEPUB
     case empty
+    case fileTooLarge(megabytes: Int)
+    case cannotRead
+    case cannotDecode
 
     var errorDescription: String? {
         switch self {
         case .unsupported: return "暂不支持这种文件格式"
         case .invalidEPUB: return "EPUB 文件结构损坏或缺少正文"
         case .empty: return "文件中没有可阅读的正文"
+        case let .fileTooLarge(megabytes): return "文件超过 \(megabytes) MB，请拆分后再导入"
+        case .cannotRead: return "无法读取这个文件，请确认文件已下载到本机后重试"
+        case .cannotDecode: return "无法识别文本编码，建议转换为 UTF-8、GBK 或 GB18030"
         }
     }
 }
 
 enum NovelImporter {
+    static let maximumFileSize = 200 * 1_024 * 1_024
+
     static let supportedTypes: [UTType] = [
+        .text,
         .plainText,
         .utf8PlainText,
         .utf16PlainText,
-        .sourceCode,
+        .data,
+        UTType(filenameExtension: "txt") ?? .plainText,
         UTType(filenameExtension: "md") ?? .plainText,
         .epub
     ]
 
+    static func readFile(at url: URL) throws -> Data {
+        var coordinationError: NSError?
+        var result: Result<Data, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            result = Result {
+                let values = try coordinatedURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile != false else { throw ImportError.cannotRead }
+                if let size = values.fileSize, size > maximumFileSize {
+                    throw ImportError.fileTooLarge(megabytes: maximumFileSize / 1_024 / 1_024)
+                }
+                return try Data(contentsOf: coordinatedURL, options: .mappedIfSafe)
+            }
+        }
+        if coordinationError != nil, result == nil { throw ImportError.cannotRead }
+        guard let result else { throw ImportError.cannotRead }
+        do { return try result.get() } catch let error as ImportError { throw error } catch { throw ImportError.cannotRead }
+    }
+
     static func parse(data: Data, fileName: String, pathExtension: String) throws -> ImportedNovel {
-        if pathExtension.lowercased() == "epub" {
+        let fileExtension = pathExtension.lowercased()
+        if fileExtension == "epub" {
             return try EPUBParser.parse(data: data, fallbackTitle: fileName)
         }
-        guard let text = decode(data), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ImportError.empty
+        guard fileExtension.isEmpty || ["txt", "text", "md", "markdown"].contains(fileExtension) else {
+            throw ImportError.unsupported
         }
+        guard let text = decode(data) else { throw ImportError.cannotDecode }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ImportError.empty }
         return ImportedNovel(
-            title: fileName,
+            title: fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名小说" : fileName,
             author: "佚名",
             content: text,
-            format: pathExtension.lowercased() == "md" ? .markdown : .txt,
+            format: ["md", "markdown"].contains(fileExtension) ? .markdown : .txt,
             coverData: nil
         )
     }
 
     static func decode(_ data: Data) -> String? {
-        let encodings: [String.Encoding] = [
-            .utf8, .utf16, .utf16LittleEndian, .utf16BigEndian,
+        guard !data.isEmpty else { return nil }
+        let bytes = [UInt8](data.prefix(4))
+
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]),
+           let value = String(data: data.dropFirst(3), encoding: .utf8) {
+            return normalized(value)
+        }
+        if bytes.starts(with: [0xFF, 0xFE]),
+           let value = String(data: data.dropFirst(2), encoding: .utf16LittleEndian) {
+            return normalized(value)
+        }
+        if bytes.starts(with: [0xFE, 0xFF]),
+           let value = String(data: data.dropFirst(2), encoding: .utf16BigEndian) {
+            return normalized(value)
+        }
+        if let value = String(data: data, encoding: .utf8) { return normalized(value) }
+
+        if likelyUTF16(data) {
+            for encoding in [String.Encoding.utf16LittleEndian, .utf16BigEndian] {
+                if let value = String(data: data, encoding: encoding), isPlausible(value) {
+                    return normalized(value)
+                }
+            }
+        }
+
+        let legacyEncodings = [
             String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
                 CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
             )),
-            .unicode
+            String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+                CFStringEncoding(CFStringEncodings.big5.rawValue)
+            )),
+            String.Encoding.windowsCP1252
         ]
-        for encoding in encodings {
-            if let value = String(data: data, encoding: encoding), !value.isEmpty { return value }
+        for encoding in legacyEncodings {
+            if let value = String(data: data, encoding: encoding), isPlausible(value) {
+                return normalized(value)
+            }
         }
         return nil
+    }
+
+    private static func likelyUTF16(_ data: Data) -> Bool {
+        let sample = [UInt8](data.prefix(4_096))
+        guard sample.count >= 4 else { return false }
+        let evenZeros = stride(from: 0, to: sample.count, by: 2).reduce(0) { $0 + (sample[$1] == 0 ? 1 : 0) }
+        let oddZeros = stride(from: 1, to: sample.count, by: 2).reduce(0) { $0 + (sample[$1] == 0 ? 1 : 0) }
+        return max(evenZeros, oddZeros) > sample.count / 8
+    }
+
+    private static func isPlausible(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let sample = text.prefix(4_096)
+        let invalidControls = sample.reduce(0) { count, character in
+            guard let scalar = character.unicodeScalars.first else { return count }
+            return count + ((scalar.value < 0x20 && !"\n\r\t".unicodeScalars.contains(scalar)) ? 1 : 0)
+        }
+        return invalidControls * 50 < sample.count
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{FEFF}", with: "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\0", with: "")
     }
 }
 

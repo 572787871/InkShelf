@@ -168,14 +168,6 @@ private final class ReaderPageContentController: UIViewController {
     }
 }
 
-private protocol CurlPageSide: AnyObject {
-    var physicalPageIndex: Int { get }
-}
-
-extension ReaderPageContentController: CurlPageSide {
-    var physicalPageIndex: Int { pageIndex * 2 }
-}
-
 private final class ReaderPageContentView: UIView {
     private let titleLabel = UILabel()
     private let brandLabel = UILabel()
@@ -271,9 +263,8 @@ private final class ReaderPageContentView: UIView {
     }
 }
 
-private final class ReaderPageBackContentController: UIViewController, CurlPageSide {
+private final class ReaderPageBackContentController: UIViewController {
     let pageIndex: Int
-    var physicalPageIndex: Int { pageIndex * 2 + 1 }
 
     private let page: ReaderPage?
     private var appearance: ReaderPageAppearance
@@ -503,25 +494,34 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        guard let side = viewController as? CurlPageSide, side.physicalPageIndex > 0 else { return nil }
-        return controller(physicalIndex: side.physicalPageIndex - 1)
+        if let front = viewController as? ReaderPageContentController {
+            let target = front.pageIndex - 1
+            return pages.indices.contains(target) ? makeFrontController(index: target) : nil
+        }
+        if let back = viewController as? ReaderPageBackContentController {
+            let target = back.pageIndex - 1
+            return target >= -1 ? makeBackController(index: target) : nil
+        }
+        return nil
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        guard let side = viewController as? CurlPageSide else { return nil }
-        let lastFront = max(0, (pages.count - 1) * 2)
-        guard side.physicalPageIndex < lastFront else { return nil }
-        return controller(physicalIndex: side.physicalPageIndex + 1)
+        if let front = viewController as? ReaderPageContentController {
+            let target = front.pageIndex + 1
+            return pages.indices.contains(target) ? makeFrontController(index: target) : nil
+        }
+        if let back = viewController as? ReaderPageBackContentController {
+            // The next visible pair is front(i + 2) + back(i + 1).
+            // Requiring both sides prevents a half-pair at the final page.
+            guard pages.indices.contains(back.pageIndex + 2) else { return nil }
+            return makeBackController(index: back.pageIndex + 1)
+        }
+        return nil
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
-        let currentPhysicalIndex = transaction.currentIndex * 2
-        let pendingPhysicalIndices = pendingViewControllers.compactMap { ($0 as? CurlPageSide)?.physicalPageIndex }
-        guard let furthest = pendingPhysicalIndices.max(by: {
-            abs($0 - currentPhysicalIndex) < abs($1 - currentPhysicalIndex)
-        }), furthest != currentPhysicalIndex else { return }
-        let target = furthest > currentPhysicalIndex ? transaction.currentIndex + 1 : transaction.currentIndex - 1
-        _ = transaction.begin(targetIndex: target, pageCount: pages.count)
+        guard let pendingFront = pendingViewControllers.compactMap({ $0 as? ReaderPageContentController }).first else { return }
+        _ = transaction.begin(targetIndex: pendingFront.pageIndex, pageCount: pages.count)
     }
 
     func pageViewController(
@@ -544,16 +544,6 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
 
     private func visibleControllers(index: Int) -> [UIViewController] {
         [makeFrontController(index: index), makeBackController(index: index - 1)]
-    }
-
-    private func controller(physicalIndex: Int) -> UIViewController? {
-        guard physicalIndex >= -1 else { return nil }
-        if physicalIndex.isMultiple(of: 2) {
-            let pageIndex = physicalIndex / 2
-            return pages.indices.contains(pageIndex) ? makeFrontController(index: pageIndex) : nil
-        }
-        let pageIndex = (physicalIndex - 1) / 2
-        return (-1..<pages.count).contains(pageIndex) ? makeBackController(index: pageIndex) : nil
     }
 
     private func makeFrontController(index: Int) -> ReaderPageContentController {

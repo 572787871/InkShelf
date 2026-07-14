@@ -1,11 +1,11 @@
 import Foundation
 
-struct ReaderPageLocation: Hashable, Codable {
+struct ReaderPageLocation: Hashable, Codable, Sendable {
     let chapterIndex: Int
     let pageIndex: Int
 }
 
-struct ReaderPage: Identifiable, Equatable {
+struct ReaderPage: Identifiable, Equatable, Sendable {
     let location: ReaderPageLocation
     let chapterTitle: String
     let text: String
@@ -21,7 +21,7 @@ struct ReaderPage: Identifiable, Equatable {
     }
 }
 
-struct ReaderPageCatalog: Equatable {
+struct ReaderPageCatalog: Equatable, Sendable {
     private(set) var pages: [ReaderPage]
     private let indices: [ReaderPageLocation: Int]
 

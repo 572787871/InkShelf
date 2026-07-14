@@ -21,32 +21,47 @@ final class LibraryStore: ObservableObject {
     }
 
     func importNovel(from url: URL) {
+        guard !isImporting else {
+            alertMessage = "已有一本小说正在导入，请稍候"
+            return
+        }
+        isImporting = true
+        alertMessage = nil
         let hasAccess = url.startAccessingSecurityScopedResource()
-        defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            let fileName = url.deletingPathExtension().lastPathComponent
-            let pathExtension = url.pathExtension
-            isImporting = true
-            Task {
-                do {
-                    let imported = try await Task.detached(priority: .userInitiated) {
-                        try NovelImporter.parse(data: data, fileName: fileName, pathExtension: pathExtension)
-                    }.value
-                    let book = NovelBook(
+        let fileName = url.deletingPathExtension().lastPathComponent
+        let pathExtension = url.pathExtension
+
+        Task { [weak self] in
+            guard let self else {
+                if hasAccess { url.stopAccessingSecurityScopedResource() }
+                return
+            }
+            defer {
+                if hasAccess { url.stopAccessingSecurityScopedResource() }
+                isImporting = false
+            }
+            do {
+                let book = try await Task.detached(priority: .userInitiated) {
+                    let data = try NovelImporter.readFile(at: url)
+                    let imported = try NovelImporter.parse(
+                        data: data,
+                        fileName: fileName,
+                        pathExtension: pathExtension
+                    )
+                    return NovelBook(
                         title: imported.title,
                         author: imported.author,
                         content: imported.content,
                         format: imported.format,
                         coverData: imported.coverData
                     )
-                    books.insert(book, at: 0)
-                    persistFiles(for: book)
-                    save()
-                } catch { alertMessage = "导入失败：\(error.localizedDescription)" }
-                isImporting = false
+                }.value
+                try addImportedBook(book)
+                alertMessage = "《\(book.title)》已成功导入"
+            } catch {
+                alertMessage = "导入失败：\(error.localizedDescription)"
             }
-        } catch { alertMessage = "导入失败：\(error.localizedDescription)" }
+        }
     }
 
     func book(id: UUID) -> NovelBook? { books.first(where: { $0.id == id }) }
@@ -114,8 +129,25 @@ final class LibraryStore: ObservableObject {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(books.map(BookMetadata.init)) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        try? saveThrowing()
+    }
+
+    private func saveThrowing() throws {
+        let data = try JSONEncoder().encode(books.map(BookMetadata.init))
+        try data.write(to: fileURL, options: .atomic)
+    }
+
+    private func addImportedBook(_ book: NovelBook) throws {
+        try book.content.write(to: contentURL(for: book.id), atomically: true, encoding: .utf8)
+        if let cover = book.coverData { try cover.write(to: coverURL(for: book.id), options: .atomic) }
+        books.insert(book, at: 0)
+        do {
+            try saveThrowing()
+        } catch {
+            books.removeAll(where: { $0.id == book.id })
+            removeFiles(for: book.id)
+            throw error
+        }
     }
 
     private func persistFiles(for book: NovelBook) {

@@ -1,5 +1,7 @@
 import XCTest
 import UIKit
+import UniformTypeIdentifiers
+import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
@@ -31,6 +33,33 @@ final class NovelParserTests: XCTestCase {
         let pages = NovelParser.pages(for: chapter, charactersPerPage: 120)
         XCTAssertGreaterThan(pages.count, 1)
         XCTAssertEqual(pages.joined(), source)
+    }
+
+    func testGB18030TextImportKeepsChineseContent() throws {
+        let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
+        let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
+        let data = try XCTUnwrap(source.data(using: encoding))
+        let imported = try NovelImporter.parse(data: data, fileName: "测试小说", pathExtension: "txt")
+
+        XCTAssertEqual(imported.title, "测试小说")
+        XCTAssertEqual(imported.content, source)
+        XCTAssertEqual(imported.format, .txt)
+    }
+
+    func testUTF16BOMTextImport() throws {
+        let source = "第一章\r\nUTF-16 小说正文"
+        var data = Data([0xFF, 0xFE])
+        data.append(try XCTUnwrap(source.data(using: .utf16LittleEndian)))
+        let imported = try NovelImporter.parse(data: data, fileName: "UTF16", pathExtension: "txt")
+
+        XCTAssertEqual(imported.content, "第一章\nUTF-16 小说正文")
+    }
+
+    func testFilePickerAcceptsGenericTextProviders() {
+        XCTAssertTrue(NovelImporter.supportedTypes.contains(.data))
+        XCTAssertTrue(NovelImporter.supportedTypes.contains(.text))
     }
 }
 
@@ -128,6 +157,21 @@ final class ReaderRuntimeTests: XCTestCase {
 
             XCTAssertEqual(host.children.count, 1)
             XCTAssertFalse(host.view.subviews.isEmpty)
+            guard let curl = host.children.first as? UIPageViewController,
+                  let displayed = curl.viewControllers else {
+                return XCTFail("仿真翻页引擎没有正确安装")
+            }
+            XCTAssertEqual(displayed.count, 2)
+            for controller in displayed {
+                let before = curl.dataSource?.pageViewController(curl, viewControllerBefore: controller)
+                let after = curl.dataSource?.pageViewController(curl, viewControllerAfter: controller)
+                if let before {
+                    XCTAssertFalse(displayed.contains(where: { $0 === before }), "数据源不能把当前控制器作为上一页返回")
+                }
+                if let after {
+                    XCTAssertFalse(displayed.contains(where: { $0 === after }), "数据源不能把当前控制器作为下一页返回")
+                }
+            }
         }
     }
 }
