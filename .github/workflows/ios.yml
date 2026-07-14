@@ -1,0 +1,21 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -project InkShelf.xcodeproj -scheme InkShelf
+      - name: Build and test
+        run: >-
+          xcodebuild test
+          -project InkShelf.xcodeproj
+          -scheme InkShelf
+          -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest'
+          CODE_SIGNING_ALLOWED=NO
