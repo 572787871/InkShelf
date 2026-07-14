@@ -9,6 +9,7 @@ enum InteractivePageTurnMode: Equatable {
 
 struct ReaderPageAppearance: Equatable {
     let themeID: String
+    let bookTitle: String
     let backgroundColor: UIColor
     let backsideColor: UIColor
     let textColor: UIColor
@@ -21,6 +22,7 @@ struct ReaderPageAppearance: Equatable {
 
     static func == (lhs: ReaderPageAppearance, rhs: ReaderPageAppearance) -> Bool {
         lhs.themeID == rhs.themeID &&
+        lhs.bookTitle == rhs.bookTitle &&
         lhs.backgroundColor.isEqual(rhs.backgroundColor) &&
         lhs.backsideColor.isEqual(rhs.backsideColor) &&
         lhs.textColor.isEqual(rhs.textColor) &&
@@ -34,6 +36,7 @@ struct ReaderPageAppearance: Equatable {
 
     func hasSameLayout(as other: ReaderPageAppearance) -> Bool {
         themeID == other.themeID &&
+        bookTitle == other.bookTitle &&
         fontName == other.fontName &&
         fontSize == other.fontSize &&
         lineSpacing == other.lineSpacing &&
@@ -200,7 +203,8 @@ private final class ReaderPageContentView: UIView {
     private let brandLabel = UILabel()
     private let textView = UITextView()
     private let pageLabel = UILabel()
-    private let progressLabel = UILabel()
+    private let clockLabel = UILabel()
+    private let batteryImageView = UIImageView()
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
 
@@ -217,7 +221,7 @@ private final class ReaderPageContentView: UIView {
         titleLabel.textColor = appearance.textColor.withAlphaComponent(0.52)
         titleLabel.lineBreakMode = .byTruncatingTail
 
-        brandLabel.text = "墨架"
+        brandLabel.text = appearance.bookTitle
         brandLabel.font = .systemFont(ofSize: 10)
         brandLabel.textColor = appearance.textColor.withAlphaComponent(0.52)
         brandLabel.textAlignment = .right
@@ -232,15 +236,18 @@ private final class ReaderPageContentView: UIView {
         textView.textContainer.lineBreakMode = .byWordWrapping
         textView.attributedText = attributedBody(page.text)
 
-        pageLabel.text = "\(page.pageInChapter) / \(page.pageCountInChapter)"
-        progressLabel.text = "\(Int(page.overallProgress * 100))%"
-        for label in [pageLabel, progressLabel] {
+        pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
+        clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
+        for label in [pageLabel, clockLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
             label.textColor = appearance.textColor.withAlphaComponent(0.5)
         }
-        progressLabel.textAlignment = .right
+        clockLabel.textAlignment = .right
+        batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
+        batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.5)
+        batteryImageView.contentMode = .scaleAspectFit
 
-        [titleLabel, brandLabel, textView, pageLabel, progressLabel].forEach(addSubview)
+        [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
     }
 
@@ -251,11 +258,16 @@ private final class ReaderPageContentView: UIView {
         super.layoutSubviews()
         let margin = appearance.horizontalMargin
         let width = max(0, bounds.width - margin * 2)
-        titleLabel.frame = CGRect(x: margin, y: 13, width: width * 0.74, height: 16)
-        brandLabel.frame = CGRect(x: margin + width * 0.76, y: 13, width: width * 0.24, height: 16)
-        textView.frame = CGRect(x: margin, y: 51, width: width, height: max(0, bounds.height - 91))
-        pageLabel.frame = CGRect(x: margin, y: bounds.height - 28, width: width * 0.5, height: 16)
-        progressLabel.frame = CGRect(x: margin + width * 0.5, y: bounds.height - 28, width: width * 0.5, height: 16)
+        let headerY = max(16, safeAreaInsets.top + 12)
+        let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
+        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 16)
+        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 16)
+        textView.frame = CGRect(x: margin, y: headerY + 38, width: width, height: max(0, footerY - headerY - 58))
+        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 16)
+        batteryImageView.frame = CGRect(x: margin + width - 18, y: footerY + 1, width: 18, height: 13)
+        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 24, height: 16)
+        clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
+        batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
@@ -288,6 +300,7 @@ private final class ReaderPageContentView: UIView {
         }
         return attributed
     }
+
 }
 
 private final class ReaderPageBackContentController: UIViewController, CurlPageSide {
@@ -321,7 +334,8 @@ private final class ReaderPageBackContentView: UIView {
     private let brandLabel = UILabel()
     private let textView = UITextView()
     private let pageLabel = UILabel()
-    private let progressLabel = UILabel()
+    private let clockLabel = UILabel()
+    private let batteryImageView = UIImageView()
     private let page: ReaderPage?
     private let appearance: ReaderPageAppearance
 
@@ -351,7 +365,7 @@ private final class ReaderPageBackContentView: UIView {
         titleLabel.textColor = ghostColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
-        brandLabel.text = "墨架"
+        brandLabel.text = appearance.bookTitle
         brandLabel.font = .systemFont(ofSize: 10)
         brandLabel.textColor = ghostColor
         brandLabel.textAlignment = .right
@@ -366,15 +380,18 @@ private final class ReaderPageBackContentView: UIView {
         textView.textContainer.lineBreakMode = .byWordWrapping
         textView.attributedText = attributedGhostText(page.text, color: ghostColor)
 
-        pageLabel.text = "\(page.pageInChapter) / \(page.pageCountInChapter)"
-        progressLabel.text = "\(Int(page.overallProgress * 100))%"
-        for label in [pageLabel, progressLabel] {
+        pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
+        clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
+        for label in [pageLabel, clockLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
             label.textColor = ghostColor
         }
-        progressLabel.textAlignment = .right
+        clockLabel.textAlignment = .right
+        batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
+        batteryImageView.tintColor = ghostColor
+        batteryImageView.contentMode = .scaleAspectFit
 
-        [titleLabel, brandLabel, textView, pageLabel, progressLabel].forEach(ghostInkView.addSubview)
+        [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(ghostInkView.addSubview)
         addSubview(ghostInkView)
         ghostInkView.isUserInteractionEnabled = false
         ghostInkView.transform = CGAffineTransform(scaleX: -1, y: 1)
@@ -393,11 +410,14 @@ private final class ReaderPageBackContentView: UIView {
         ghostInkView.center = CGPoint(x: bounds.midX, y: bounds.midY)
         let margin = appearance.horizontalMargin
         let width = max(0, bounds.width - margin * 2)
-        titleLabel.frame = CGRect(x: margin, y: 13, width: width * 0.74, height: 16)
-        brandLabel.frame = CGRect(x: margin + width * 0.76, y: 13, width: width * 0.24, height: 16)
-        textView.frame = CGRect(x: margin, y: 51, width: width, height: max(0, bounds.height - 91))
-        pageLabel.frame = CGRect(x: margin, y: bounds.height - 28, width: width * 0.5, height: 16)
-        progressLabel.frame = CGRect(x: margin + width * 0.5, y: bounds.height - 28, width: width * 0.5, height: 16)
+        let headerY = max(16, safeAreaInsets.top + 12)
+        let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
+        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 16)
+        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 16)
+        textView.frame = CGRect(x: margin, y: headerY + 38, width: width, height: max(0, footerY - headerY - 58))
+        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 16)
+        batteryImageView.frame = CGRect(x: margin + width - 18, y: footerY + 1, width: 18, height: 13)
+        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 24, height: 16)
     }
 
     private func attributedGhostText(_ text: String, color: UIColor) -> NSAttributedString {
@@ -414,6 +434,26 @@ private final class ReaderPageBackContentView: UIView {
                 .paragraphStyle: paragraph
             ]
         )
+    }
+}
+
+private enum ReaderPageStatus {
+    static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("HH:mm")
+        return formatter
+    }()
+
+    static func batterySymbolName() -> String {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        switch UIDevice.current.batteryLevel {
+        case 0.88...: return "battery.100percent"
+        case 0.63...: return "battery.75percent"
+        case 0.38...: return "battery.50percent"
+        case 0.13...: return "battery.25percent"
+        default: return "battery.0percent"
+        }
     }
 }
 

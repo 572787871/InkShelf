@@ -64,7 +64,7 @@ struct ReaderView: View {
                             InteractivePageTurnView(
                                 pages: catalog.pages,
                                 location: location,
-                                appearance: pageAppearance,
+                                appearance: pageAppearance(bookTitle: book.title),
                                 mode: pageTurnMode,
                                 isInteractionEnabled: !showingAppearance && !interactionDisabled,
                                 onCommit: commit,
@@ -150,9 +150,10 @@ struct ReaderView: View {
         }
     }
 
-    private var pageAppearance: ReaderPageAppearance {
+    private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
         ReaderPageAppearance(
             themeID: theme.rawValue,
+            bookTitle: bookTitle,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),

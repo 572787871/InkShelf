@@ -48,7 +48,8 @@ struct BookshelfView: View {
                         readerTransitionLayer(
                             book: selectedBook,
                             targetFrame: selectedBookFrame ?? bookFrames[selectedBookID] ?? fallbackBookFrame(in: proxy.size),
-                            containerSize: proxy.size
+                            containerSize: proxy.size,
+                            safeAreaInsets: proxy.safeAreaInsets
                         )
                         .zIndex(10)
                     }
@@ -182,12 +183,25 @@ struct BookshelfView: View {
     }
 
     @ViewBuilder
-    private func readerTransitionLayer(book: NovelBook, targetFrame: CGRect, containerSize: CGSize) -> some View {
+    private func readerTransitionLayer(
+        book: NovelBook,
+        targetFrame: CGRect,
+        containerSize: CGSize,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         let phase = readerTransitionPhase
+        let fullSize = CGSize(
+            width: containerSize.width + safeAreaInsets.leading + safeAreaInsets.trailing,
+            height: containerSize.height + safeAreaInsets.top + safeAreaInsets.bottom
+        )
+        let fullTargetFrame = targetFrame.offsetBy(
+            dx: safeAreaInsets.leading,
+            dy: safeAreaInsets.top
+        )
         ReaderTransitionLayer(
             book: book,
-            targetFrame: targetFrame,
-            containerSize: containerSize,
+            targetFrame: fullTargetFrame,
+            containerSize: fullSize,
             paperColor: UIColor(readerTheme.background),
             progress: readerTransitionProgress,
             interactionDisabled: phase != .open,
@@ -195,17 +209,17 @@ struct BookshelfView: View {
             onReady: { readerDidBecomeReady(bookID: book.id) },
             onRequestClose: { closeReader(bookID: book.id) },
             onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 },
-            onEdgeChanged: { edgeDragChanged($0, bookID: book.id, containerWidth: containerSize.width) },
+            onEdgeChanged: { edgeDragChanged($0, bookID: book.id, containerWidth: fullSize.width) },
             onEdgeEnded: { translation, predicted in
                 edgeDragEnded(
                     translation: translation,
                     predictedTranslation: predicted,
                     bookID: book.id,
-                    containerWidth: containerSize.width
+                    containerWidth: fullSize.width
                 )
             }
         )
-        .ignoresSafeArea()
+        .offset(x: -safeAreaInsets.leading, y: -safeAreaInsets.top)
     }
 
     private func openReader(_ book: NovelBook) {

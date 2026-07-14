@@ -342,6 +342,7 @@ final class ReaderRuntimeTests: XCTestCase {
             )
             let appearance = ReaderPageAppearance(
                 themeID: ReaderTheme.paper.rawValue,
+                bookTitle: "测试书名",
                 backgroundColor: UIColor(ReaderTheme.paper.background),
                 backsideColor: UIColor(ReaderTheme.paper.pageBack),
                 textColor: UIColor(ReaderTheme.paper.foreground),
