@@ -48,6 +48,7 @@ struct ReaderView: View {
                                 location: location,
                                 appearance: pageAppearance,
                                 mode: pageTurnMode,
+                                isInteractionEnabled: !showingAppearance,
                                 onCommit: commit,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )

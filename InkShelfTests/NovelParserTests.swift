@@ -71,10 +71,13 @@ final class ReaderPaginationTests: XCTestCase {
         )
         let catalog = ReaderPageCatalog(book: book, charactersPerPage: 12)
         let lastOfFirst = catalog.pages.last { $0.location.chapterIndex == 0 }!
+        let firstOfSecond = catalog.pages.first { $0.location.chapterIndex == 1 }!
         let next = catalog.adjacent(to: lastOfFirst.location, direction: .forward)
+        let previous = catalog.adjacent(to: firstOfSecond.location, direction: .backward)
 
         XCTAssertEqual(next?.location.chapterIndex, 1)
         XCTAssertEqual(next?.location.pageIndex, 0)
+        XCTAssertEqual(previous?.location, lastOfFirst.location)
         XCTAssertEqual(catalog.adjacent(to: catalog.pages[0].location, direction: .backward), nil)
         XCTAssertEqual(catalog.adjacent(to: catalog.pages.last!.location, direction: .forward), nil)
     }
@@ -103,6 +106,32 @@ final class ReaderPaginationTests: XCTestCase {
         XCTAssertNil(transaction.finish(committed: false))
         XCTAssertEqual(transaction.currentIndex, 0)
         XCTAssertFalse(transaction.isLocked)
+    }
+
+    func testRepeatedBackwardTurnsCommitExactlyOnePageEach() {
+        var transaction = PageTurnTransaction(currentIndex: 3)
+        XCTAssertEqual(transaction.begin(direction: .backward, pageCount: 5), 2)
+        XCTAssertNil(transaction.begin(direction: .backward, pageCount: 5))
+        XCTAssertEqual(transaction.finish(committed: true), 2)
+        XCTAssertEqual(transaction.begin(direction: .backward, pageCount: 5), 1)
+        XCTAssertEqual(transaction.finish(committed: true), 1)
+    }
+
+    func testGestureCompletionMathIsDirectionallySymmetric() {
+        XCTAssertEqual(
+            PageTurnGestureDecision.progress(translation: -120, width: 400, direction: .forward),
+            PageTurnGestureDecision.progress(translation: 120, width: 400, direction: .backward),
+            accuracy: 0.001
+        )
+        XCTAssertFalse(PageTurnGestureDecision.shouldCommit(
+            translation: 60, velocity: 0, width: 400, direction: .backward, gestureEnded: true
+        ))
+        XCTAssertTrue(PageTurnGestureDecision.shouldCommit(
+            translation: 60, velocity: 900, width: 400, direction: .backward, gestureEnded: true
+        ))
+        XCTAssertFalse(PageTurnGestureDecision.shouldCommit(
+            translation: 180, velocity: 900, width: 400, direction: .backward, gestureEnded: false
+        ))
     }
 }
 
@@ -162,10 +191,10 @@ final class ReaderRuntimeTests: XCTestCase {
                   let displayed = curl.viewControllers else {
                 return XCTFail("仿真翻页引擎没有正确安装")
             }
-            XCTAssertEqual(curl.spineLocation, .mid)
+            XCTAssertEqual(curl.spineLocation, .min)
             XCTAssertTrue(curl.isDoubleSided)
-            XCTAssertEqual(displayed.count, 2)
-            XCTAssertEqual(host.children[0].view.bounds.width, host.view.bounds.width * 2, accuracy: 0.5)
+            XCTAssertEqual(displayed.count, 1)
+            XCTAssertEqual(host.children[0].view.bounds.width, host.view.bounds.width, accuracy: 0.5)
         }
     }
 }

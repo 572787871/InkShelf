@@ -46,6 +46,7 @@ struct InteractivePageTurnView: UIViewControllerRepresentable {
     let location: ReaderPageLocation
     let appearance: ReaderPageAppearance
     let mode: InteractivePageTurnMode
+    let isInteractionEnabled: Bool
     let onCommit: (ReaderPageLocation) -> Void
     let onCenterTap: () -> Void
 
@@ -53,14 +54,26 @@ struct InteractivePageTurnView: UIViewControllerRepresentable {
         let controller = ReaderPageTurnHostController()
         controller.onCommit = onCommit
         controller.onCenterTap = onCenterTap
-        controller.configure(pages: pages, location: location, appearance: appearance, mode: mode)
+        controller.configure(
+            pages: pages,
+            location: location,
+            appearance: appearance,
+            mode: mode,
+            isInteractionEnabled: isInteractionEnabled
+        )
         return controller
     }
 
     func updateUIViewController(_ controller: ReaderPageTurnHostController, context: Context) {
         controller.onCommit = onCommit
         controller.onCenterTap = onCenterTap
-        controller.configure(pages: pages, location: location, appearance: appearance, mode: mode)
+        controller.configure(
+            pages: pages,
+            location: location,
+            appearance: appearance,
+            mode: mode,
+            isInteractionEnabled: isInteractionEnabled
+        )
     }
 }
 
@@ -69,6 +82,7 @@ private protocol PageTurnEngine: AnyObject {
     var isTransitioning: Bool { get }
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance)
     func turn(_ direction: PageTurnDirection)
+    func setInteractionEnabled(_ enabled: Bool)
 }
 
 final class ReaderPageTurnHostController: UIViewController {
@@ -77,6 +91,7 @@ final class ReaderPageTurnHostController: UIViewController {
 
     private var engine: (UIViewController & PageTurnEngine)?
     private var mode: InteractivePageTurnMode?
+    private weak var tapGesture: UITapGestureRecognizer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -84,19 +99,23 @@ final class ReaderPageTurnHostController: UIViewController {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
         view.addGestureRecognizer(tap)
+        tapGesture = tap
     }
 
     func configure(
         pages: [ReaderPage],
         location: ReaderPageLocation,
         appearance: ReaderPageAppearance,
-        mode: InteractivePageTurnMode
+        mode: InteractivePageTurnMode,
+        isInteractionEnabled: Bool = true
     ) {
         guard !pages.isEmpty else { return }
         let index = pages.firstIndex(where: { $0.location == location }) ?? 0
         if self.mode != mode || engine == nil { installEngine(for: mode) }
         view.backgroundColor = appearance.backgroundColor
         engine?.configure(pages: pages, index: index, appearance: appearance)
+        engine?.setInteractionEnabled(isInteractionEnabled)
+        tapGesture?.isEnabled = isInteractionEnabled
     }
 
     private func installEngine(for mode: InteractivePageTurnMode) {
@@ -119,25 +138,12 @@ final class ReaderPageTurnHostController: UIViewController {
         addChild(newEngine)
         view.addSubview(newEngine.view)
         newEngine.view.translatesAutoresizingMaskIntoConstraints = false
-        if mode == .curl {
-            // A mid-spine page controller is the only configuration that UIKit
-            // consistently accepts with two physical page sides on iOS 17/18.
-            // Its two-page canvas is shifted left so the spine sits exactly on
-            // the reader's leading edge and the right-hand page fills the screen.
-            NSLayoutConstraint.activate([
-                newEngine.view.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 2),
-                newEngine.view.centerXAnchor.constraint(equalTo: view.leadingAnchor),
-                newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
-                newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-            ])
-        } else {
-            NSLayoutConstraint.activate([
-                newEngine.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                newEngine.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
-                newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-            ])
-        }
+        NSLayoutConstraint.activate([
+            newEngine.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            newEngine.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
+            newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
         newEngine.didMove(toParent: self)
         engine = newEngine
         self.mode = mode
@@ -456,8 +462,11 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         super.init(
             transitionStyle: .pageCurl,
             navigationOrientation: .horizontal,
-            options: [.spineLocation: NSNumber(value: SpineLocation.mid.rawValue)]
+            options: [.spineLocation: NSNumber(value: SpineLocation.min.rawValue)]
         )
+        // Edge-spine mode keeps the entire interactive sheet inside the reader.
+        // `isDoubleSided` then asks the data source for the physical reverse of
+        // that sheet, so UIKit retains its native curl mesh in both directions.
         isDoubleSided = true
         dataSource = self
         delegate = self
@@ -512,8 +521,14 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         }
     }
 
+    func setInteractionEnabled(_ enabled: Bool) {
+        for gesture in gestureRecognizers where !(gesture is UITapGestureRecognizer) {
+            gesture.isEnabled = enabled
+        }
+    }
+
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        guard let side = viewController as? CurlPageSide, side.physicalPageIndex > -1 else { return nil }
+        guard let side = viewController as? CurlPageSide, side.physicalPageIndex > 0 else { return nil }
         return controller(physicalIndex: side.physicalPageIndex - 1)
     }
 
@@ -525,8 +540,18 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
-        guard let pendingFront = pendingViewControllers.compactMap({ $0 as? ReaderPageContentController }).first else { return }
-        _ = transaction.begin(targetIndex: pendingFront.pageIndex, pageCount: pages.count)
+        guard let pending = pendingViewControllers.compactMap({ $0 as? CurlPageSide }).first else { return }
+        let current = transaction.currentIndex
+        let target: Int
+        if let front = pending as? ReaderPageContentController {
+            target = front.pageIndex
+        } else {
+            let backIndex = (pending as? ReaderPageBackContentController)?.pageIndex ?? current
+            // Forward reveals the back of the current sheet; backward reveals
+            // the back of the previous sheet. Resolve both to the final front.
+            target = backIndex == current ? current + 1 : backIndex
+        }
+        _ = transaction.begin(targetIndex: target, pageCount: pages.count)
     }
 
     func pageViewController(
@@ -548,17 +573,17 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     }
 
     private func visibleControllers(index: Int) -> [UIViewController] {
-        [makeBackController(index: index - 1), makeFrontController(index: index)]
+        [makeFrontController(index: index)]
     }
 
     private func controller(physicalIndex: Int) -> UIViewController? {
-        guard physicalIndex >= -1 else { return nil }
+        guard physicalIndex >= 0 else { return nil }
         if physicalIndex.isMultiple(of: 2) {
             let pageIndex = physicalIndex / 2
             return pages.indices.contains(pageIndex) ? makeFrontController(index: pageIndex) : nil
         }
         let pageIndex = (physicalIndex - 1) / 2
-        return (-1..<pages.count).contains(pageIndex) ? makeBackController(index: pageIndex) : nil
+        return pages.indices.contains(pageIndex) ? makeBackController(index: pageIndex) : nil
     }
 
     private func makeFrontController(index: Int) -> ReaderPageContentController {
@@ -580,7 +605,7 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
 
     private func preloadPages(around index: Int) {
         let retainedFronts = Set([index - 1, index, index + 1].filter { pages.indices.contains($0) })
-        let retainedBacks = Set([index - 2, index - 1, index].filter { (-1..<pages.count).contains($0) })
+        let retainedBacks = Set([index - 1, index].filter { pages.indices.contains($0) })
         retainedFronts.forEach { _ = makeFrontController(index: $0) }
         retainedBacks.forEach { _ = makeBackController(index: $0) }
         frontCache = frontCache.filter { retainedFronts.contains($0.key) }
@@ -618,6 +643,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
     private var controllerCache: [Int: ReaderPageContentController] = [:]
     private var interactionDirection: PageTurnDirection?
     private var pendingConfiguration: EngineConfiguration?
+    private weak var panGesture: UIPanGestureRecognizer?
 
     init(animationDuration: TimeInterval) {
         self.animationDuration = animationDuration
@@ -634,6 +660,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         pan.maximumNumberOfTouches = 1
         pan.delegate = self
         view.addGestureRecognizer(pan)
+        panGesture = pan
     }
 
     override func viewDidLayoutSubviews() {
@@ -671,6 +698,10 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         settle(commit: true, direction: direction)
     }
 
+    func setInteractionEnabled(_ enabled: Bool) {
+        panGesture?.isEnabled = enabled
+    }
+
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard !transaction.isLocked, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
@@ -680,21 +711,27 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
     @objc private func handlePan(_ pan: UIPanGestureRecognizer) {
         let translation = pan.translation(in: view).x
         switch pan.state {
-        case .changed:
-            if interactionDirection == nil, abs(translation) > 3 {
-                let direction: PageTurnDirection = translation < 0 ? .forward : .backward
-                interactionDirection = direction
-                if let target = transaction.begin(direction: direction, pageCount: pages.count) {
-                    prepareAdjacent(index: target, direction: direction)
-                }
+        case .began:
+            let velocity = pan.velocity(in: view).x
+            let direction: PageTurnDirection = velocity < 0 ? .forward : .backward
+            interactionDirection = direction
+            if let target = transaction.begin(direction: direction, pageCount: pages.count) {
+                // The adjacent controller is attached before the first changed
+                // frame, including the last page of the previous chapter.
+                prepareAdjacent(index: target, direction: direction)
             }
+        case .changed:
             updateInteractivePosition(translation: translation)
         case .ended, .cancelled, .failed:
             guard let direction = interactionDirection else { return }
             let velocity = pan.velocity(in: view).x
-            let progress = interactiveProgress(translation: translation, direction: direction)
-            let velocityCompletes = direction == .forward ? velocity < -650 : velocity > 650
-            let commit = transaction.targetIndex != nil && pan.state == .ended && (progress > 0.28 || velocityCompletes)
+            let commit = transaction.targetIndex != nil && PageTurnGestureDecision.shouldCommit(
+                translation: translation,
+                velocity: velocity,
+                width: view.bounds.width,
+                direction: direction,
+                gestureEnded: pan.state == .ended
+            )
             settle(commit: commit, direction: direction)
         default:
             break
@@ -711,15 +748,13 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         }
         switch direction {
         case .forward:
-            currentController?.view.frame.origin.x = max(-width, min(0, translation))
+            let distance = min(width, max(0, -translation))
+            currentController?.view.frame.origin.x = -distance
         case .backward:
-            adjacentController?.view.frame.origin.x = min(0, max(-width, -width + max(0, translation)))
+            let distance = min(width, max(0, translation))
+            adjacentController?.view.frame.origin.x = -width + distance
+            currentController?.view.frame.origin.x = distance
         }
-    }
-
-    private func interactiveProgress(translation: CGFloat, direction: PageTurnDirection) -> CGFloat {
-        let distance = direction == .forward ? -translation : translation
-        return max(0, min(1, distance / max(view.bounds.width, 1)))
     }
 
     private func prepareAdjacent(index: Int, direction: PageTurnDirection) {
@@ -732,9 +767,9 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
             controller.view.frame = view.bounds
             applyPageShadow(to: currentController!.view, leading: false)
         } else {
-            view.addSubview(controller.view)
+            view.insertSubview(controller.view, belowSubview: currentController!.view)
             controller.view.frame = view.bounds.offsetBy(dx: -view.bounds.width, dy: 0)
-            applyPageShadow(to: controller.view, leading: true)
+            applyPageShadow(to: currentController!.view, leading: false)
         }
         controller.didMove(toParent: self)
     }
@@ -744,7 +779,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         let currentProgress: CGFloat
         switch direction {
         case .forward: currentProgress = abs(currentController?.view.frame.minX ?? 0) / width
-        case .backward: currentProgress = 1 - abs(adjacentController?.view.frame.minX ?? -width) / width
+        case .backward: currentProgress = max(0, min(1, (currentController?.view.frame.minX ?? 0) / width))
         }
         let duration = max(0.01, animationDuration * Double(commit ? 1 - currentProgress : currentProgress + 0.25))
 
@@ -760,6 +795,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
                 self.currentController?.view.frame.origin.x = commit ? -width : 0
             } else {
                 self.adjacentController?.view.frame.origin.x = commit ? 0 : -width
+                self.currentController?.view.frame.origin.x = commit ? width : 0
             }
         } completion: { [weak self] _ in
             self?.finishSettlement(committed: commit, direction: direction)

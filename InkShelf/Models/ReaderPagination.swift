@@ -97,6 +97,33 @@ enum PageTurnDirection: Equatable {
     var offset: Int { self == .forward ? 1 : -1 }
 }
 
+/// Direction-aware completion math shared by interactive renderers. Projecting
+/// the release velocity makes a short, intentional flick complete without making
+/// a slow, short drag accidentally turn the page.
+struct PageTurnGestureDecision {
+    static func progress(translation: CGFloat, width: CGFloat, direction: PageTurnDirection) -> CGFloat {
+        let directedDistance = direction == .forward ? -translation : translation
+        return max(0, min(1, directedDistance / max(width, 1)))
+    }
+
+    static func shouldCommit(
+        translation: CGFloat,
+        velocity: CGFloat,
+        width: CGFloat,
+        direction: PageTurnDirection,
+        gestureEnded: Bool
+    ) -> Bool {
+        guard gestureEnded else { return false }
+        let current = progress(translation: translation, width: width, direction: direction)
+        let projected = progress(
+            translation: translation + velocity * 0.18,
+            width: width,
+            direction: direction
+        )
+        return current >= 0.32 || projected >= 0.5
+    }
+}
+
 /// A small transaction gate shared by both rendering engines. The committed
 /// index never changes until the visual transition reports completion.
 struct PageTurnTransaction: Equatable {
