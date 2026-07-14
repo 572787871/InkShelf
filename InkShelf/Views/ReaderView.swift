@@ -72,9 +72,7 @@ struct ReaderView: View {
                             )
                             .ignoresSafeArea()
                         }
-                        if chromeVisible {
-                            readerChrome(book: book, topSafeAreaInset: proxy.safeAreaInsets.top)
-                        }
+                        if chromeVisible { readerChrome(book: book) }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
                     .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
@@ -259,7 +257,7 @@ struct ReaderView: View {
         .simultaneousGesture(TapGesture().onEnded { withAnimation { chromeVisible.toggle() } })
     }
 
-    private func readerChrome(book: NovelBook, topSafeAreaInset: CGFloat) -> some View {
+    private func readerChrome(book: NovelBook) -> some View {
         let currentPage = catalog.page(at: location)
         return VStack {
             HStack(spacing: 18) {
@@ -275,7 +273,7 @@ struct ReaderView: View {
             .font(.system(size: 18, weight: .medium))
             .padding(.horizontal, 18)
             .frame(height: 58)
-            .padding(.top, max(0, topSafeAreaInset))
+            .padding(.top, statusBarTopInset)
             .background(.ultraThinMaterial)
             .allowsHitTesting(!showingAppearance)
             Spacer()
@@ -318,6 +316,15 @@ struct ReaderView: View {
         }
         .foregroundStyle(Color.primary)
         .transition(.opacity)
+    }
+
+    private var statusBarTopInset: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
+        let window = scene?.windows.first(where: \.isKeyWindow) ?? scene?.windows.first
+        let windowInset = window?.safeAreaInsets.top ?? 0
+        let statusBarHeight = scene?.statusBarManager?.statusBarFrame.height ?? 0
+        return max(20, max(windowInset, statusBarHeight))
     }
 
     private var appearanceControls: some View {
