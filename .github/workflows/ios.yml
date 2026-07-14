@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -19,3 +20,38 @@ jobs:
           -scheme InkShelf
           -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest'
           CODE_SIGNING_ALLOWED=NO
+      - name: Build unsigned device app
+        run: >-
+          xcodebuild build
+          -project InkShelf.xcodeproj
+          -scheme InkShelf
+          -configuration Release
+          -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath "$RUNNER_TEMP/InkShelfDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          CODE_SIGN_IDENTITY=""
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/InkShelfDerivedData/Build/Products/Release-iphoneos/InkShelf.app"
+          test -d "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/InkShelfIPA/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/InkShelfIPA/Payload/InkShelf.app"
+          rm -rf "$RUNNER_TEMP/InkShelfIPA/Payload/InkShelf.app/_CodeSignature"
+          rm -f "$RUNNER_TEMP/InkShelfIPA/Payload/InkShelf.app/embedded.mobileprovision"
+          (
+            cd "$RUNNER_TEMP/InkShelfIPA"
+            /usr/bin/zip -qry "$GITHUB_WORKSPACE/InkShelf-unsigned.ipa" Payload
+          )
+          ls -lh "$GITHUB_WORKSPACE/InkShelf-unsigned.ipa"
+          shasum -a 256 "$GITHUB_WORKSPACE/InkShelf-unsigned.ipa"
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: InkShelf-unsigned-${{ github.sha }}
+          path: InkShelf-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
