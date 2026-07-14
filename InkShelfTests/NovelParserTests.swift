@@ -305,6 +305,29 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
+    func testPhysicalBookTransitionCanRenderBothEndpoints() {
+        let book = NovelBook(
+            title: "实体书转场",
+            author: "墨架",
+            content: "第一章\n用于测试转场。",
+            coverStyle: 2
+        )
+        let canvas = BookTransitionCanvasView()
+        canvas.configure(book: book, paperColor: UIColor(ReaderTheme.paper.background))
+        canvas.update(
+            closedProgress: 1,
+            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
+            containerSize: CGSize(width: 390, height: 760)
+        )
+        canvas.update(
+            closedProgress: 0,
+            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
+            containerSize: CGSize(width: 390, height: 760)
+        )
+
+        XCTAssertGreaterThanOrEqual(canvas.layer.sublayers?.count ?? 0, 3)
+    }
+
     func testCurlReaderCanOpenItsFirstPage() {
         XCTAssertTrue(Thread.isMainThread)
         autoreleasepool {

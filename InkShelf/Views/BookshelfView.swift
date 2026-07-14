@@ -14,6 +14,9 @@ struct BookshelfView: View {
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
+    @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
+
+    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: readerThemeRaw) ?? .paper }
 
     private var displayedBooks: [NovelBook] {
         let filtered = searchText.isEmpty ? library.books : library.books.filter {
@@ -118,18 +121,29 @@ struct BookshelfView: View {
 
     private var shelfContent: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(Array(displayedBooks.chunked(into: 3).enumerated()), id: \.offset) { _, row in
-                    ShelfRow(books: row, onOpen: openReader)
+            if displayedBooks.isEmpty {
+                ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
+                    .padding(.top, 80)
+            } else {
+                WoodenBookcase {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(shelfRows.enumerated()), id: \.offset) { _, row in
+                            ShelfRow(books: row, onOpen: openReader)
+                        }
+                    }
                 }
-                if displayedBooks.isEmpty {
-                    ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
-                        .padding(.top, 80)
-                }
+                .padding(.horizontal, 12)
+                .padding(.top, 5)
+                .padding(.bottom, 34)
             }
-            .padding(.top, 8).padding(.bottom, 50)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var shelfRows: [[NovelBook]] {
+        var rows = displayedBooks.chunked(into: 3)
+        while rows.count < 3 { rows.append([]) }
+        return rows
     }
 
     private var emptyState: some View {
@@ -162,6 +176,7 @@ struct BookshelfView: View {
             book: book,
             targetFrame: targetFrame,
             containerSize: containerSize,
+            paperColor: UIColor(readerTheme.background),
             progress: readerTransitionProgress,
             interactionDisabled: phase != .open,
             edgeGestureEnabled: (phase == .open || phase == .edgeDragging) && !readerBlocksEdgeDismiss,
@@ -178,7 +193,6 @@ struct BookshelfView: View {
                 )
             }
         )
-        .ignoresSafeArea()
     }
 
     private func openReader(_ book: NovelBook) {
@@ -284,8 +298,13 @@ private struct ShelfRow: View {
                                     }
                                 }
                             VStack(spacing: 2) {
-                                Text(book.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                Text(book.chapterProgressDescription).font(.system(size: 9)).foregroundStyle(.secondary)
+                                Text(book.title)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .lineLimit(1)
+                                Text(book.chapterProgressDescription)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.62))
                             }
                         }
                     }
@@ -309,6 +328,7 @@ private struct ReaderTransitionLayer: View {
     let book: NovelBook
     let targetFrame: CGRect
     let containerSize: CGSize
+    let paperColor: UIColor
     let progress: CGFloat
     let interactionDisabled: Bool
     let edgeGestureEnabled: Bool
@@ -324,14 +344,8 @@ private struct ReaderTransitionLayer: View {
         let height = max(containerSize.height, 1)
         let scaleX = 1 + (targetFrame.width / width - 1) * boundedProgress
         let scaleY = 1 + (targetFrame.height / height - 1) * boundedProgress
-        let coverWidth = targetFrame.width + (width - targetFrame.width) * (1 - boundedProgress)
-        let coverHeight = coverWidth / 0.68
-        let coverCenter = CGPoint(
-            x: targetFrame.midX + (width / 2 - targetFrame.midX) * (1 - boundedProgress),
-            y: targetFrame.midY + (height / 2 - targetFrame.midY) * (1 - boundedProgress)
-        )
-        let coverOpacity = min(1, max(0, (boundedProgress - 0.58) / 0.42))
-        let readerOpacity = min(1, max(0, (1 - boundedProgress) / 0.3))
+        let opening = 1 - boundedProgress
+        let readerOpacity = smoothstep(0.2, 0.72, opening)
 
         ZStack(alignment: .topLeading) {
             ReaderView(
@@ -348,10 +362,14 @@ private struct ReaderTransitionLayer: View {
             .offset(x: targetFrame.minX * boundedProgress, y: targetFrame.minY * boundedProgress)
             .shadow(color: .black.opacity(0.22 * boundedProgress), radius: 14, x: 3, y: 7)
 
-            BookCoverView(book: book, compact: true)
-                .frame(width: coverWidth, height: coverHeight)
-                .position(coverCenter)
-                .opacity(coverOpacity)
+            BookOpeningTransitionView(
+                book: book,
+                targetFrame: targetFrame,
+                containerSize: containerSize,
+                paperColor: paperColor,
+                closedProgress: boundedProgress
+            )
+            .frame(width: width, height: height)
                 .allowsHitTesting(false)
 
             ScreenEdgeDismissGesture(
@@ -363,6 +381,11 @@ private struct ReaderTransitionLayer: View {
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .background(Color.clear.contentShape(Rectangle()))
+    }
+
+    private func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
+        let x = min(1, max(0, (value - edge0) / max(edge1 - edge0, 0.001)))
+        return x * x * (3 - 2 * x)
     }
 }
 
@@ -458,11 +481,100 @@ private enum ReaderTransitionPhase: Equatable {
     case closing
 }
 
+private struct WoodenBookcase<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            WoodSurface(axis: .vertical, colors: [Color(hex: "3A2115"), Color(hex: "1E120D"), Color(hex: "4B2C1B")])
+            content
+                .padding(.horizontal, 13)
+                .padding(.top, 21)
+                .padding(.bottom, 17)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 25, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.46), lineWidth: 3)
+                .padding(1)
+        }
+        .overlay(alignment: .leading) {
+            WoodSurface(axis: .vertical, colors: [Color(hex: "815637"), Color(hex: "4B2B1A"), Color(hex: "2C190F")])
+                .frame(width: 17)
+                .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.32)).frame(width: 2) }
+        }
+        .overlay(alignment: .trailing) {
+            WoodSurface(axis: .vertical, colors: [Color(hex: "2C190F"), Color(hex: "5E3822"), Color(hex: "8B6040")])
+                .frame(width: 17)
+                .overlay(alignment: .leading) { Rectangle().fill(.black.opacity(0.38)).frame(width: 2) }
+        }
+        .overlay(alignment: .top) {
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "936946"), Color(hex: "57331F"), Color(hex: "2C190F")])
+                .frame(height: 23)
+                .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.34)).frame(height: 3) }
+        }
+        .overlay(alignment: .bottom) {
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "392015"), Color(hex: "6F452B"), Color(hex: "936746")])
+                .frame(height: 18)
+                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.4)).frame(height: 3) }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 8)
+    }
+}
+
+private enum WoodGrainAxis: Equatable {
+    case horizontal
+    case vertical
+}
+
+private struct WoodSurface: View {
+    let axis: WoodGrainAxis
+    let colors: [Color]
+
+    var body: some View {
+        LinearGradient(
+            colors: colors,
+            startPoint: axis == .horizontal ? .top : .leading,
+            endPoint: axis == .horizontal ? .bottom : .trailing
+        )
+        .overlay {
+            Canvas(rendersAsynchronously: true) { context, size in
+                let lineCount = axis == .horizontal ? 15 : 9
+                for index in 0..<lineCount {
+                    var path = Path()
+                    if axis == .horizontal {
+                        let baseY = size.height * CGFloat(index + 1) / CGFloat(lineCount + 1)
+                        path.move(to: CGPoint(x: 0, y: baseY))
+                        for step in 1...18 {
+                            let x = size.width * CGFloat(step) / 18
+                            let wave = sin(CGFloat(step + index * 3) * 0.72) * 1.25
+                            path.addLine(to: CGPoint(x: x, y: baseY + wave))
+                        }
+                    } else {
+                        let baseX = size.width * CGFloat(index + 1) / CGFloat(lineCount + 1)
+                        path.move(to: CGPoint(x: baseX, y: 0))
+                        for step in 1...22 {
+                            let y = size.height * CGFloat(step) / 22
+                            let wave = sin(CGFloat(step + index * 4) * 0.61) * 1.15
+                            path.addLine(to: CGPoint(x: baseX + wave, y: y))
+                        }
+                    }
+                    context.stroke(path, with: .color(.black.opacity(index.isMultiple(of: 3) ? 0.18 : 0.09)), lineWidth: 0.7)
+                }
+            }
+        }
+    }
+}
+
 private struct WoodenShelf: View {
     var body: some View {
         VStack(spacing: 0) {
-            LinearGradient(colors: [Color(hex: "A97B50"), Color(hex: "6E482B")], startPoint: .top, endPoint: .bottom).frame(height: 13)
-            LinearGradient(colors: [Color(hex: "5B3822"), Color(hex: "89603E")], startPoint: .top, endPoint: .bottom).frame(height: 8)
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "9B704C"), Color(hex: "603A24"), Color(hex: "3B2114")]).frame(height: 14)
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "321B11"), Color(hex: "74492D"), Color(hex: "936443")]).frame(height: 9)
         }
         .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.24)).frame(height: 1) }
         .shadow(color: .black.opacity(0.25), radius: 5, y: 4)
