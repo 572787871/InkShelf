@@ -35,7 +35,8 @@ final class LibraryStore: ObservableObject {
         ImportLog.logger.info("开始导入：\(url.lastPathComponent, privacy: .public)，扩展名：\(url.pathExtension, privacy: .public)")
 
         let task = Task { [weak self] in
-            await self?.performImport(from: url)
+            guard let self else { return }
+            await self.performImport(from: url)
         }
         importTask = task
         return task
