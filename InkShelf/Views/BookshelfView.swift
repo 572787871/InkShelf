@@ -9,6 +9,7 @@ struct BookshelfView: View {
     @State private var bookFrames: [UUID: CGRect] = [:]
     @State private var selectedBookID: UUID?
     @State private var selectedBookFrame: CGRect?
+    @State private var selectedBookSourceHidden = false
     @State private var readerTransitionProgress: CGFloat = 1
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
@@ -44,6 +45,11 @@ struct BookshelfView: View {
 
                     if let selectedBookID,
                        let selectedBook = library.book(id: selectedBookID) {
+                        readerTheme.background
+                            .ignoresSafeArea()
+                            .opacity(readerBackdropOpacity)
+                            .allowsHitTesting(false)
+                            .zIndex(9)
                         readerTransitionLayer(
                             book: selectedBook,
                             targetFrame: selectedBookFrame ?? bookFrames[selectedBookID] ?? fallbackBookFrame(in: proxy.size),
@@ -116,34 +122,51 @@ struct BookshelfView: View {
             .padding(.horizontal, 13).frame(height: 42)
             .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 13))
         }
-        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 15)
+        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
     }
 
     private var shelfContent: some View {
-        ScrollView {
-            if displayedBooks.isEmpty {
-                ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
-                    .padding(.top, 80)
-            } else {
-                WoodenBookcase {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(shelfRows.enumerated()), id: \.offset) { _, row in
-                            ShelfRow(books: row, onOpen: openReader)
+        GeometryReader { proxy in
+            ScrollView {
+                if displayedBooks.isEmpty {
+                    ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
+                        .padding(.top, 80)
+                } else {
+                    let rows = shelfRows
+                    let rowContentHeight = max(
+                        166,
+                        (proxy.size.height - 38) / CGFloat(max(rows.count, 1)) - 23
+                    )
+                    WoodenBookcase {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                                ShelfRow(
+                                    books: row,
+                                    rowContentHeight: rowContentHeight,
+                                    selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
+                                    onOpen: openReader
+                                )
+                            }
                         }
                     }
+                    .frame(minHeight: proxy.size.height)
+                    .padding(.horizontal, 12)
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 5)
-                .padding(.bottom, 34)
             }
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
     }
 
     private var shelfRows: [[NovelBook]] {
         var rows = displayedBooks.chunked(into: 3)
         while rows.count < 3 { rows.append([]) }
         return rows
+    }
+
+    private var readerBackdropOpacity: CGFloat {
+        let opening = 1 - min(1, max(0, readerTransitionProgress))
+        let x = min(1, max(0, (opening - 0.42) / 0.38))
+        return x * x * (3 - 2 * x)
     }
 
     private var emptyState: some View {
@@ -201,19 +224,26 @@ struct BookshelfView: View {
         readerBlocksEdgeDismiss = false
         readerTransitionProgress = 1
         readerTransitionPhase = .preparing
+        selectedBookSourceHidden = false
         selectedBookFrame = bookFrames[book.id]
         selectedBookID = book.id
     }
 
     private func readerDidBecomeReady(bookID: UUID) {
         guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-        readerTransitionPhase = .opening
-        withAnimation(.spring(response: 0.46, dampingFraction: 0.88, blendDuration: 0.08)) {
-            readerTransitionProgress = 0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
-            readerTransitionPhase = .open
+        // Keep the closed book on screen for several display frames so UIKit's
+        // layer tree commits the physical cover before interpolation begins.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
+            selectedBookSourceHidden = true
+            readerTransitionPhase = .opening
+            withAnimation(.easeInOut(duration: 0.56)) {
+                readerTransitionProgress = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
+                guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
+                readerTransitionPhase = .open
+            }
         }
     }
 
@@ -221,10 +251,10 @@ struct BookshelfView: View {
         guard selectedBookID == bookID,
               readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
         readerTransitionPhase = .closing
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.9, blendDuration: 0.06)) {
+        withAnimation(.easeInOut(duration: 0.56)) {
             readerTransitionProgress = 1
         }
-        completeReaderDismissal(bookID: bookID, after: 0.46)
+        completeReaderDismissal(bookID: bookID, after: 0.58)
     }
 
     private func edgeDragChanged(_ translation: CGFloat, bookID: UUID, containerWidth: CGFloat) {
@@ -265,6 +295,7 @@ struct BookshelfView: View {
             guard selectedBookID == bookID, readerTransitionPhase == .closing else { return }
             selectedBookID = nil
             selectedBookFrame = nil
+            selectedBookSourceHidden = false
             readerTransitionProgress = 1
             readerTransitionPhase = .idle
             readerBlocksEdgeDismiss = false
@@ -279,6 +310,8 @@ struct BookshelfView: View {
 private struct ShelfRow: View {
     @EnvironmentObject private var library: LibraryStore
     let books: [NovelBook]
+    let rowContentHeight: CGFloat
+    let selectedBookID: UUID?
     let onOpen: (NovelBook) -> Void
 
     var body: some View {
@@ -309,6 +342,7 @@ private struct ShelfRow: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .opacity(selectedBookID == book.id ? 0 : 1)
                     .contextMenu {
                         NavigationLink { BookInfoView(bookID: book.id) } label: { Label("书籍信息", systemImage: "info.circle") }
                         Button(role: .destructive) { library.delete(bookID: book.id) } label: { Label("移出书架", systemImage: "trash") }
@@ -317,7 +351,7 @@ private struct ShelfRow: View {
                 }
                 ForEach(0..<(3 - books.count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity).aspectRatio(0.62, contentMode: .fit) }
             }
-            .padding(.horizontal, 23).frame(height: 166, alignment: .bottom)
+            .padding(.horizontal, 23).frame(height: rowContentHeight, alignment: .bottom)
             WoodenShelf()
         }
     }
