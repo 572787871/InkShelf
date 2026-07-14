@@ -89,3 +89,45 @@ final class ReaderThemeTests: XCTestCase {
         }
     }
 }
+
+final class ReaderRuntimeTests: XCTestCase {
+    func testCurlReaderCanOpenItsFirstPage() async {
+        await MainActor.run {
+            let page = ReaderPage(
+                location: ReaderPageLocation(chapterIndex: 0, pageIndex: 0),
+                chapterTitle: "第一章",
+                text: "用于验证阅读器能够安全打开的正文。",
+                pageInChapter: 1,
+                pageCountInChapter: 1,
+                overallIndex: 0,
+                overallCount: 1
+            )
+            let appearance = ReaderPageAppearance(
+                themeID: ReaderTheme.paper.rawValue,
+                backgroundColor: UIColor(ReaderTheme.paper.background),
+                backsideColor: UIColor(ReaderTheme.paper.pageBack),
+                textColor: UIColor(ReaderTheme.paper.foreground),
+                fontName: nil,
+                fontSize: 19,
+                lineSpacing: 9,
+                horizontalMargin: 22,
+                highlightedLocation: nil,
+                highlightedRange: nil
+            )
+            let host = ReaderPageTurnHostController()
+            host.loadViewIfNeeded()
+            host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+
+            host.configure(
+                pages: [page],
+                location: page.location,
+                appearance: appearance,
+                mode: .curl
+            )
+            host.view.layoutIfNeeded()
+
+            XCTAssertEqual(host.children.count, 1)
+            XCTAssertFalse(host.view.subviews.isEmpty)
+        }
+    }
+}
