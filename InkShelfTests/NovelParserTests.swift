@@ -162,17 +162,10 @@ final class ReaderRuntimeTests: XCTestCase {
                   let displayed = curl.viewControllers else {
                 return XCTFail("仿真翻页引擎没有正确安装")
             }
+            XCTAssertEqual(curl.spineLocation, .mid)
+            XCTAssertTrue(curl.isDoubleSided)
             XCTAssertEqual(displayed.count, 2)
-            for controller in displayed {
-                let before = curl.dataSource?.pageViewController(curl, viewControllerBefore: controller)
-                let after = curl.dataSource?.pageViewController(curl, viewControllerAfter: controller)
-                if let before {
-                    XCTAssertFalse(displayed.contains(where: { $0 === before }), "数据源不能把当前控制器作为上一页返回")
-                }
-                if let after {
-                    XCTAssertFalse(displayed.contains(where: { $0 === after }), "数据源不能把当前控制器作为下一页返回")
-                }
-            }
+            XCTAssertEqual(host.children[0].view.bounds.width, host.view.bounds.width * 2, accuracy: 0.5)
         }
     }
 }

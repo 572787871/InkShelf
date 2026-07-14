@@ -119,12 +119,25 @@ final class ReaderPageTurnHostController: UIViewController {
         addChild(newEngine)
         view.addSubview(newEngine.view)
         newEngine.view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            newEngine.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            newEngine.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
-            newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+        if mode == .curl {
+            // A mid-spine page controller is the only configuration that UIKit
+            // consistently accepts with two physical page sides on iOS 17/18.
+            // Its two-page canvas is shifted left so the spine sits exactly on
+            // the reader's leading edge and the right-hand page fills the screen.
+            NSLayoutConstraint.activate([
+                newEngine.view.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 2),
+                newEngine.view.centerXAnchor.constraint(equalTo: view.leadingAnchor),
+                newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
+                newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                newEngine.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                newEngine.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                newEngine.view.topAnchor.constraint(equalTo: view.topAnchor),
+                newEngine.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+        }
         newEngine.didMove(toParent: self)
         engine = newEngine
         self.mode = mode
@@ -166,6 +179,14 @@ private final class ReaderPageContentController: UIViewController {
         self.appearance = appearance
         (viewIfLoaded as? ReaderPageContentView)?.updateHighlight(using: appearance)
     }
+}
+
+private protocol CurlPageSide: AnyObject {
+    var physicalPageIndex: Int { get }
+}
+
+extension ReaderPageContentController: CurlPageSide {
+    var physicalPageIndex: Int { pageIndex * 2 }
 }
 
 private final class ReaderPageContentView: UIView {
@@ -263,8 +284,9 @@ private final class ReaderPageContentView: UIView {
     }
 }
 
-private final class ReaderPageBackContentController: UIViewController {
+private final class ReaderPageBackContentController: UIViewController, CurlPageSide {
     let pageIndex: Int
+    var physicalPageIndex: Int { pageIndex * 2 + 1 }
 
     private let page: ReaderPage?
     private var appearance: ReaderPageAppearance
@@ -434,14 +456,11 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         super.init(
             transitionStyle: .pageCurl,
             navigationOrientation: .horizontal,
-            options: [.spineLocation: NSNumber(value: SpineLocation.min.rawValue)]
+            options: [.spineLocation: NSNumber(value: SpineLocation.mid.rawValue)]
         )
+        isDoubleSided = true
         dataSource = self
         delegate = self
-        // With an edge spine UIKit expects the visible front plus the physical
-        // back of the previous sheet. Supplying both prevents UIKit from making
-        // its default white, single-sided backface snapshot.
-        isDoubleSided = true
         view.clipsToBounds = true
         view.isOpaque = true
         for gesture in gestureRecognizers where gesture is UITapGestureRecognizer {
@@ -494,29 +513,15 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
-        if let front = viewController as? ReaderPageContentController {
-            let target = front.pageIndex - 1
-            return pages.indices.contains(target) ? makeFrontController(index: target) : nil
-        }
-        if let back = viewController as? ReaderPageBackContentController {
-            let target = back.pageIndex - 1
-            return target >= -1 ? makeBackController(index: target) : nil
-        }
-        return nil
+        guard let side = viewController as? CurlPageSide, side.physicalPageIndex > -1 else { return nil }
+        return controller(physicalIndex: side.physicalPageIndex - 1)
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
-        if let front = viewController as? ReaderPageContentController {
-            let target = front.pageIndex + 1
-            return pages.indices.contains(target) ? makeFrontController(index: target) : nil
-        }
-        if let back = viewController as? ReaderPageBackContentController {
-            // The next visible pair is front(i + 2) + back(i + 1).
-            // Requiring both sides prevents a half-pair at the final page.
-            guard pages.indices.contains(back.pageIndex + 2) else { return nil }
-            return makeBackController(index: back.pageIndex + 1)
-        }
-        return nil
+        guard let side = viewController as? CurlPageSide else { return nil }
+        let lastFront = max(0, (pages.count - 1) * 2)
+        guard side.physicalPageIndex < lastFront else { return nil }
+        return controller(physicalIndex: side.physicalPageIndex + 1)
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
@@ -543,7 +548,17 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     }
 
     private func visibleControllers(index: Int) -> [UIViewController] {
-        [makeFrontController(index: index), makeBackController(index: index - 1)]
+        [makeBackController(index: index - 1), makeFrontController(index: index)]
+    }
+
+    private func controller(physicalIndex: Int) -> UIViewController? {
+        guard physicalIndex >= -1 else { return nil }
+        if physicalIndex.isMultiple(of: 2) {
+            let pageIndex = physicalIndex / 2
+            return pages.indices.contains(pageIndex) ? makeFrontController(index: pageIndex) : nil
+        }
+        let pageIndex = (physicalIndex - 1) / 2
+        return (-1..<pages.count).contains(pageIndex) ? makeBackController(index: pageIndex) : nil
     }
 
     private func makeFrontController(index: Int) -> ReaderPageContentController {
