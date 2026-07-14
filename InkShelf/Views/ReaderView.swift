@@ -267,7 +267,10 @@ struct ReaderView: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .ignoresSafeArea()
-                    .onTapGesture { showingAppearance = false }
+                    .onTapGesture {
+                        showingAppearance = false
+                        chromeVisible = false
+                    }
             }
         }
         .foregroundStyle(Color.primary)
