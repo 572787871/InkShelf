@@ -120,8 +120,9 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
-    func testCurlReaderCanOpenItsFirstPage() async {
-        await MainActor.run {
+    func testCurlReaderCanOpenItsFirstPage() {
+        XCTAssertTrue(Thread.isMainThread)
+        autoreleasepool {
             let page = ReaderPage(
                 location: ReaderPageLocation(chapterIndex: 0, pageIndex: 0),
                 chapterTitle: "第一章",
