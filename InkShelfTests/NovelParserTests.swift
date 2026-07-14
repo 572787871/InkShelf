@@ -3,11 +3,19 @@ import XCTest
 
 final class NovelParserTests: XCTestCase {
     func testChineseHeadingsBecomeChapters() {
-        let text = "序言内容\n第一章 开始\n第一章正文\n第二章 继续\n第二章正文"
+        let text = "序言内容\n第一章 开始\n这是第一章的正文。\n第二章 继续\n这是第二章的正文。"
         let chapters = NovelParser.chapters(from: text)
         XCTAssertEqual(chapters.count, 3)
         XCTAssertEqual(chapters[0].title, "序章")
         XCTAssertEqual(chapters[1].title, "第一章 开始")
+        XCTAssertTrue(chapters[2].content.contains("第二章的正文"))
+    }
+
+    func testChineseHeadingWithoutWhitespaceIsSupported() {
+        let chapters = NovelParser.chapters(from: "第一章风雪夜\n故事从这里开始。\n第二章灯火\n故事继续。")
+        XCTAssertEqual(chapters.count, 2)
+        XCTAssertEqual(chapters[0].title, "第一章风雪夜")
+        XCTAssertEqual(chapters[1].title, "第二章灯火")
     }
 
     func testEnglishHeadingsBecomeChapters() {
