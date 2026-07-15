@@ -5,6 +5,27 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
+    func testSelectedCoverIsDownsampledBeforeItIsStored() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let source = UIGraphicsImageRenderer(
+            size: CGSize(width: 2600, height: 1200),
+            format: format
+        ).pngData { context in
+            UIColor.systemIndigo.setFill()
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 2600, height: 1200))
+        }
+
+        let processed = try CoverImageProcessor.preparedData(from: source)
+        let decoded = try XCTUnwrap(UIImage(data: processed))
+
+        XCTAssertLessThanOrEqual(
+            max(decoded.size.width, decoded.size.height),
+            CGFloat(CoverImageProcessor.maximumPixelSize)
+        )
+    }
+
     func testChineseHeadingsBecomeChapters() {
         let text = "序言内容\n第一章 开始\n这是第一章的正文。\n第二章 继续\n这是第二章的正文。"
         let chapters = NovelParser.chapters(from: text)

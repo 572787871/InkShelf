@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import PhotosUI
+import ImageIO
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -15,6 +17,9 @@ struct BookshelfView: View {
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
+    @State private var showingCoverPicker = false
+    @State private var coverPickerBookID: UUID?
+    @State private var selectedCoverPhoto: PhotosPickerItem?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
@@ -74,6 +79,11 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .photosPicker(
+                isPresented: $showingCoverPicker,
+                selection: $selectedCoverPhoto,
+                matching: .images
+            )
             .alert("墨架", isPresented: Binding(get: { library.alertMessage != nil }, set: { if !$0 { library.alertMessage = nil } })) {
                 Button("知道了", role: .cancel) { library.alertMessage = nil }
             } message: { Text(library.alertMessage ?? "") }
@@ -83,6 +93,9 @@ struct BookshelfView: View {
             }
             .onChange(of: library.books.map(\.id)) { oldIDs, newIDs in
                 if oldIDs != newIDs { frozenBookOrder = nil }
+            }
+            .onChange(of: selectedCoverPhoto) { _, item in
+                importSelectedCover(item)
             }
         }
     }
@@ -137,7 +150,8 @@ struct BookshelfView: View {
                         BookGridItem(
                             book: book,
                             isHidden: selectedBookSourceHidden && selectedBookID == book.id,
-                            onOpen: openReader
+                            onOpen: openReader,
+                            onChooseCover: beginCoverSelection
                         )
                     }
 
@@ -294,6 +308,38 @@ struct BookshelfView: View {
         }
     }
 
+    private func beginCoverSelection(_ book: NovelBook) {
+        guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
+        coverPickerBookID = book.id
+        selectedCoverPhoto = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard coverPickerBookID == book.id, selectedBookID == nil else { return }
+            showingCoverPicker = true
+        }
+    }
+
+    private func importSelectedCover(_ item: PhotosPickerItem?) {
+        guard let item, let bookID = coverPickerBookID else { return }
+        Task {
+            do {
+                guard let sourceData = try await item.loadTransferable(type: Data.self) else {
+                    throw CoverImageProcessingError.unreadableImage
+                }
+                let preparedData = try await Task.detached(priority: .userInitiated) {
+                    try CoverImageProcessor.preparedData(from: sourceData)
+                }.value
+                guard coverPickerBookID == bookID else { return }
+                library.updateCover(bookID: bookID, coverData: preparedData)
+            } catch {
+                library.reportCoverSelectionFailure(error)
+            }
+            if coverPickerBookID == bookID {
+                coverPickerBookID = nil
+                selectedCoverPhoto = nil
+            }
+        }
+    }
+
     private func fallbackBookFrame(in size: CGSize) -> CGRect {
         CGRect(x: (size.width - 92) / 2, y: 176, width: 92, height: 135)
     }
@@ -304,45 +350,70 @@ private struct BookGridItem: View {
     let book: NovelBook
     let isHidden: Bool
     let onOpen: (NovelBook) -> Void
+    let onChooseCover: (NovelBook) -> Void
 
     var body: some View {
-        Button { onOpen(book) } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                BookCoverView(book: book, compact: true)
-                    .frame(maxWidth: 108)
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(
-                                key: BookFramePreferenceKey.self,
-                                value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
-                            )
+        VStack(alignment: .leading, spacing: 8) {
+            Button { onOpen(book) } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    BookCoverView(book: book, compact: true)
+                        .frame(maxWidth: 108)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: BookFramePreferenceKey.self,
+                                    value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
+                                )
+                            }
                         }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-                Text(book.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                    Text(book.title)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
+            HStack(spacing: 4) {
                 Text(book.chapterProgressDescription)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Menu {
+                    Button { onChooseCover(book) } label: {
+                        Label("从相册设置封面", systemImage: "photo.on.rectangle")
+                    }
+                    if book.coverData != nil {
+                        Button { library.updateCover(bookID: book.id, coverData: nil) } label: {
+                            Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                        }
+                    }
+                    NavigationLink { BookInfoView(bookID: book.id) } label: {
+                        Label("书籍信息", systemImage: "info.circle")
+                    }
+                    Divider()
+                    Button(role: .destructive) { library.delete(bookID: book.id) } label: {
+                        Label("移出书架", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 25, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("《\(book.title)》更多操作")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(isHidden ? 0 : 1)
-        .contextMenu {
-            NavigationLink { BookInfoView(bookID: book.id) } label: {
-                Label("书籍信息", systemImage: "info.circle")
-            }
-            Button(role: .destructive) { library.delete(bookID: book.id) } label: {
-                Label("移出书架", systemImage: "trash")
-            }
-        }
     }
 }
 
@@ -379,11 +450,21 @@ private struct AddBookGridItem: View {
                         .foregroundStyle(Color(hex: "8A6048"))
                 }
                 .aspectRatio(0.68, contentMode: .fit)
+                .frame(maxWidth: 108)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color(hex: "CFAF99").opacity(0.48), lineWidth: 0.8)
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.white.opacity(0.42), Color(hex: "CFAF99").opacity(0.5), .black.opacity(0.2)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.8
+                        )
                 }
-                .shadow(color: .black.opacity(0.1), radius: 5, x: 2, y: 4)
+                .shadow(color: .black.opacity(0.28), radius: 5, x: 3, y: 5)
 
                 Text("导入本地书")
                     .font(.system(size: 14, weight: .medium))
@@ -605,6 +686,39 @@ private enum ReaderTransitionPhase: Equatable {
     case open
     case edgeDragging
     case closing
+}
+
+enum CoverImageProcessingError: LocalizedError {
+    case unreadableImage
+    case encodingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableImage: return "无法读取所选图片"
+        case .encodingFailed: return "无法生成封面图片"
+        }
+    }
+}
+
+enum CoverImageProcessor {
+    static let maximumPixelSize = 2048
+
+    static func preparedData(from data: Data) throws -> Data {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw CoverImageProcessingError.unreadableImage
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let encoded = UIImage(cgImage: image).jpegData(compressionQuality: 0.88) else {
+            throw CoverImageProcessingError.encodingFailed
+        }
+        return encoded
+    }
 }
 
 enum BookcaseLayoutMetrics {
