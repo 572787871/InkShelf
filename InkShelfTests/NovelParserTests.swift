@@ -397,6 +397,17 @@ final class ReaderThemeTests: XCTestCase {
             XCTAssertFalse(back.isEqual(UIColor.white), "\(theme.rawValue) 不应退回系统纯白背面")
         }
     }
+
+    func testReaderBackgroundChoicesHaveStableUniqueKeys() {
+        let styles = ReaderBackgroundStyle.allCases
+        XCTAssertEqual(styles.count, 5)
+        XCTAssertEqual(Set(styles.map(\.rawValue)).count, styles.count)
+        XCTAssertTrue(styles.contains(.plain))
+        XCTAssertTrue(styles.contains(.ricePaper))
+        XCTAssertTrue(styles.contains(.bamboo))
+        XCTAssertTrue(styles.contains(.mist))
+        XCTAssertTrue(styles.contains(.warmGlow))
+    }
 }
 
 final class ReaderRuntimeTests: XCTestCase {
@@ -405,82 +416,6 @@ final class ReaderRuntimeTests: XCTestCase {
             let assetName = BookPalette.defaultCoverAssetName(for: style)
             XCTAssertNotNil(UIImage(named: assetName), "缺少默认小说封面资源：\(assetName)")
         }
-    }
-
-    func testPhysicalBookTransitionCanRenderBothEndpoints() {
-        let book = NovelBook(
-            title: "实体书转场",
-            author: "墨架",
-            content: "第一章\n用于测试转场。",
-            coverStyle: 2
-        )
-        let canvas = BookTransitionCanvasView()
-        canvas.configure(book: book, paperColor: UIColor(ReaderTheme.paper.background))
-        canvas.update(
-            progress: 0,
-            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
-            containerSize: CGSize(width: 390, height: 760)
-        )
-        let closedFrame = canvas.renderedBookFrame
-        let closedAngle = canvas.renderedCoverAngle
-        let initialLayerCount = canvas.physicalLayerCount
-
-        canvas.update(
-            progress: 1,
-            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
-            containerSize: CGSize(width: 390, height: 760)
-        )
-
-        XCTAssertEqual(canvas.coverHingeAnchorPoint.x, 0, accuracy: 0.001)
-        XCTAssertEqual(canvas.coverHingeAnchorPoint.y, 0.5, accuracy: 0.001)
-        XCTAssertLessThan(canvas.perspectiveM34, 0)
-        XCTAssertEqual(closedFrame, CGRect(x: 24, y: 160, width: 92, height: 135))
-        XCTAssertEqual(closedAngle, 0, accuracy: 0.001)
-        XCTAssertEqual(canvas.renderedBookFrame, CGRect(x: 0, y: 0, width: 390, height: 760))
-        XCTAssertLessThan(canvas.renderedCoverAngle, -.pi * 0.8)
-        XCTAssertGreaterThanOrEqual(initialLayerCount, 20)
-
-        for _ in 0..<10 {
-            canvas.update(
-                progress: 0,
-                targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
-                containerSize: CGSize(width: 390, height: 760)
-            )
-            XCTAssertEqual(canvas.renderedBookFrame, closedFrame)
-            XCTAssertEqual(canvas.renderedCoverAngle, closedAngle, accuracy: 0.001)
-            XCTAssertEqual(canvas.physicalLayerCount, initialLayerCount, "重复开合不应残留或追加图层")
-            canvas.update(
-                progress: 1,
-                targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
-                containerSize: CGSize(width: 390, height: 760)
-            )
-        }
-    }
-
-    func testBookTransitionUsesTheSameMidpointAndTimingInBothDirections() {
-        let source = CGRect(x: 24, y: 160, width: 92, height: 135)
-        let destination = CGRect(x: 0, y: 0, width: 390, height: 760)
-        let openingMidpoint = BookTransitionAnimator.state(
-            progress: 0.5,
-            sourceFrame: source,
-            destinationFrame: destination
-        )
-        let closingMidpoint = BookTransitionAnimator.state(
-            progress: 0.5,
-            sourceFrame: source,
-            destinationFrame: destination
-        )
-
-        XCTAssertEqual(openingMidpoint, closingMidpoint)
-        XCTAssertEqual(
-            BookTransitionAnimator.remainingDuration(from: 0, to: 1),
-            BookTransitionAnimator.remainingDuration(from: 1, to: 0),
-            accuracy: 0.0001
-        )
-        XCTAssertEqual(openingMidpoint.bookFrame.midX, closingMidpoint.bookFrame.midX, accuracy: 0.001)
-        XCTAssertEqual(openingMidpoint.coverAngle, closingMidpoint.coverAngle, accuracy: 0.001)
-        XCTAssertEqual(openingMidpoint.readerOpacity, closingMidpoint.readerOpacity, accuracy: 0.001)
-        XCTAssertEqual(openingMidpoint.pageDepth, closingMidpoint.pageDepth, accuracy: 0.001)
     }
 
     func testCurlReaderCanOpenItsFirstPage() {
@@ -501,6 +436,7 @@ final class ReaderRuntimeTests: XCTestCase {
                 backgroundColor: UIColor(ReaderTheme.paper.background),
                 backsideColor: UIColor(ReaderTheme.paper.pageBack),
                 textColor: UIColor(ReaderTheme.paper.foreground),
+                backgroundStyle: .plain,
                 fontName: nil,
                 fontSize: 19,
                 lineSpacing: 9,
@@ -509,6 +445,8 @@ final class ReaderRuntimeTests: XCTestCase {
                 highlightedRange: nil
             )
             let host = ReaderPageTurnHostController()
+            var bodyTapCount = 0
+            host.onCenterTap = { bodyTapCount += 1 }
             host.loadViewIfNeeded()
             host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
 
@@ -530,6 +468,10 @@ final class ReaderRuntimeTests: XCTestCase {
             XCTAssertTrue(curl.isDoubleSided)
             XCTAssertEqual(displayed.count, 1)
             XCTAssertEqual(host.children[0].view.bounds.width, host.view.bounds.width, accuracy: 0.5)
+
+            host.performBodyTap()
+            XCTAssertEqual(bodyTapCount, 1, "点击正文只能切换工具栏，不能启动另一条程序化翻页事务")
+            XCTAssertEqual(curl.viewControllers?.count, 1)
         }
     }
 }

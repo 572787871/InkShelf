@@ -9,14 +9,7 @@ struct BookshelfView: View {
     @State private var showingImporter = false
     @State private var showingSettings = false
     @State private var searchText = ""
-    @State private var bookFrames: [UUID: CGRect] = [:]
     @State private var selectedBookID: UUID?
-    @State private var selectedBookFrame: CGRect?
-    @State private var selectedBookSourceHidden = false
-    @State private var readerTransitionProgress: CGFloat = 0
-    @State private var readerTransitionPhase = ReaderTransitionPhase.idle
-    @State private var bookshelfTransitionGeometry: ReaderTransitionGeometry?
-    @State private var selectedTransitionGeometry: ReaderTransitionGeometry?
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
     @State private var showingCoverPicker = false
@@ -24,9 +17,6 @@ struct BookshelfView: View {
     @State private var selectedCoverPhoto: PhotosPickerItem?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
-    @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
-
-    private var readerTheme: ReaderTheme { ReaderTheme(rawValue: readerThemeRaw) ?? .paper }
 
     private var displayedBooks: [NovelBook] {
         let filtered = searchText.isEmpty ? library.books : library.books.filter {
@@ -43,35 +33,39 @@ struct BookshelfView: View {
 
     var body: some View {
         NavigationStack {
-            GeometryReader { proxy in
-                let currentGeometry = ReaderTransitionGeometry(
-                    containerSize: proxy.size,
-                    safeAreaInsets: proxy.safeAreaInsets
-                )
-                ZStack {
-                    Color(hex: "EEE9DF").ignoresSafeArea()
-                    VStack(spacing: 0) {
-                        header
-                        shelfContent
-                    }
-                    if library.isImporting { importingOverlay }
-
-                    if let selectedBookID,
-                       let selectedBook = library.book(id: selectedBookID) {
-                        readerTransitionLayer(
-                            book: selectedBook,
-                            targetFrame: selectedBookFrame ?? bookFrames[selectedBookID] ?? fallbackBookFrame(in: proxy.size),
-                            geometry: selectedTransitionGeometry ?? currentGeometry
-                        )
-                        .zIndex(10)
-                    }
+            ZStack {
+                Color(hex: "EEE9DF").ignoresSafeArea()
+                VStack(spacing: 0) {
+                    header
+                    shelfContent
                 }
-                .coordinateSpace(name: "bookshelfRoot")
-                .onPreferenceChange(BookFramePreferenceKey.self) { bookFrames = $0 }
-                .onAppear { bookshelfTransitionGeometry = currentGeometry }
-                .onChange(of: currentGeometry) { _, geometry in
-                    guard selectedBookID == nil else { return }
-                    bookshelfTransitionGeometry = geometry
+
+                if library.isImporting { importingOverlay }
+
+                if let selectedBookID,
+                   library.book(id: selectedBookID) != nil {
+                    ReaderView(
+                        bookID: selectedBookID,
+                        onRequestClose: { closeReader(bookID: selectedBookID) },
+                        onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 }
+                    )
+                    .ignoresSafeArea()
+                    .overlay(alignment: .leading) {
+                        DirectReaderEdgeDismissGesture(
+                            isEnabled: !readerBlocksEdgeDismiss,
+                            onEnded: { translation, predictedTranslation, width in
+                                if ReaderDismissGestureDecision.shouldFinish(
+                                    translation: translation,
+                                    predictedTranslation: predictedTranslation,
+                                    width: width
+                                ) {
+                                    closeReader(bookID: selectedBookID)
+                                }
+                            }
+                        )
+                        .frame(width: 28)
+                    }
+                    .zIndex(10)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -159,7 +153,6 @@ struct BookshelfView: View {
                     ForEach(displayedBooks) { book in
                         BookGridItem(
                             book: book,
-                            isHidden: selectedBookSourceHidden && selectedBookID == book.id,
                             onOpen: openReader,
                             onChooseCover: beginCoverSelection
                         )
@@ -187,49 +180,8 @@ struct BookshelfView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    @ViewBuilder
-    private func readerTransitionLayer(
-        book: NovelBook,
-        targetFrame: CGRect,
-        geometry: ReaderTransitionGeometry
-    ) -> some View {
-        let phase = readerTransitionPhase
-        let containerSize = geometry.containerSize
-        let safeAreaInsets = geometry.safeAreaInsets
-        let fullSize = CGSize(
-            width: containerSize.width + safeAreaInsets.leading + safeAreaInsets.trailing,
-            height: containerSize.height + safeAreaInsets.top + safeAreaInsets.bottom
-        )
-        let fullTargetFrame = targetFrame.offsetBy(
-            dx: safeAreaInsets.leading,
-            dy: safeAreaInsets.top
-        )
-        ReaderTransitionLayer(
-            book: book,
-            targetFrame: fullTargetFrame,
-            containerSize: fullSize,
-            paperColor: UIColor(readerTheme.background),
-            progress: readerTransitionProgress,
-            interactionDisabled: phase != .open,
-            edgeGestureEnabled: (phase == .open || phase == .edgeDragging) && !readerBlocksEdgeDismiss,
-            onReady: { readerDidBecomeReady(bookID: book.id) },
-            onRequestClose: { closeReader(bookID: book.id) },
-            onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 },
-            onEdgeChanged: { edgeDragChanged($0, bookID: book.id, containerWidth: fullSize.width) },
-            onEdgeEnded: { translation, predicted in
-                edgeDragEnded(
-                    translation: translation,
-                    predictedTranslation: predicted,
-                    bookID: book.id,
-                    containerWidth: fullSize.width
-                )
-            }
-        )
-        .offset(x: -safeAreaInsets.leading, y: -safeAreaInsets.top)
-    }
-
     private func openReader(_ book: NovelBook) {
-        guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
+        guard selectedBookID == nil else { return }
         searchFieldFocused = false
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
@@ -239,99 +191,25 @@ struct BookshelfView: View {
         )
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
-        readerTransitionProgress = 0
-        readerTransitionPhase = .preparing
-        selectedBookSourceHidden = false
-        selectedBookFrame = bookFrames[book.id] ?? fallbackBookFrame(
-            in: bookshelfTransitionGeometry?.containerSize ?? UIScreen.main.bounds.size
-        )
-        selectedTransitionGeometry = bookshelfTransitionGeometry
-        selectedBookID = book.id
-    }
-
-    private func readerDidBecomeReady(bookID: UUID) {
-        guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-        // Keep the closed book on screen for several display frames so UIKit's
-        // layer tree commits the physical cover before interpolation begins.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-            selectedBookSourceHidden = true
-            driveReaderTransition(bookID: bookID, to: 1, phase: .opening) {
-                readerTransitionPhase = .open
-            }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedBookID = book.id
         }
     }
 
     private func closeReader(bookID: UUID) {
-        guard selectedBookID == bookID,
-              readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
-        driveReaderTransition(bookID: bookID, to: 0, phase: .closing) {
-            finishReaderDismissal(bookID: bookID)
-        }
-    }
-
-    private func edgeDragChanged(_ translation: CGFloat, bookID: UUID, containerWidth: CGFloat) {
-        guard selectedBookID == bookID,
-              !readerBlocksEdgeDismiss,
-              readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
-        readerTransitionPhase = .edgeDragging
-        readerTransitionProgress = 1 - min(1, max(0, translation / max(containerWidth, 1)))
-    }
-
-    private func edgeDragEnded(
-        translation: CGFloat,
-        predictedTranslation: CGFloat,
-        bookID: UUID,
-        containerWidth: CGFloat
-    ) {
-        guard selectedBookID == bookID, readerTransitionPhase == .edgeDragging else { return }
-        if ReaderDismissGestureDecision.shouldFinish(
-            translation: translation,
-            predictedTranslation: predictedTranslation,
-            width: containerWidth
-        ) {
-            closeReader(bookID: bookID)
-        } else {
-            driveReaderTransition(bookID: bookID, to: 1, phase: .opening) {
-                readerTransitionPhase = .open
-            }
-        }
-    }
-
-    private func driveReaderTransition(
-        bookID: UUID,
-        to target: CGFloat,
-        phase: ReaderTransitionPhase,
-        completion: @escaping () -> Void
-    ) {
         guard selectedBookID == bookID else { return }
-        let duration = BookTransitionAnimator.remainingDuration(
-            from: readerTransitionProgress,
-            to: target
-        )
-        readerTransitionPhase = phase
-        withAnimation(BookTransitionAnimator.animation(duration: duration)) {
-            readerTransitionProgress = target
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            selectedBookID = nil
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            guard selectedBookID == bookID, readerTransitionPhase == phase else { return }
-            completion()
-        }
-    }
-
-    private func finishReaderDismissal(bookID: UUID) {
-        guard selectedBookID == bookID, readerTransitionPhase == .closing else { return }
-        selectedBookID = nil
-        selectedBookFrame = nil
-        selectedTransitionGeometry = nil
-        selectedBookSourceHidden = false
-        readerTransitionProgress = 0
-        readerTransitionPhase = .idle
         readerBlocksEdgeDismiss = false
     }
 
     private func beginCoverSelection(_ book: NovelBook) {
-        guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
+        guard selectedBookID == nil else { return }
         coverPickerBookID = book.id
         selectedCoverPhoto = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -361,16 +239,11 @@ struct BookshelfView: View {
             }
         }
     }
-
-    private func fallbackBookFrame(in size: CGSize) -> CGRect {
-        CGRect(x: (size.width - 92) / 2, y: 176, width: 92, height: 135)
-    }
 }
 
 private struct BookGridItem: View {
     @EnvironmentObject private var library: LibraryStore
     let book: NovelBook
-    let isHidden: Bool
     let onOpen: (NovelBook) -> Void
     let onChooseCover: (NovelBook) -> Void
 
@@ -384,14 +257,6 @@ private struct BookGridItem: View {
                             height: BookGridLayout.coverHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear.preference(
-                                    key: BookFramePreferenceKey.self,
-                                    value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
-                                )
-                            }
-                        }
                         .frame(maxWidth: .infinity, alignment: .center)
 
                     Text(book.title)
@@ -439,7 +304,6 @@ private struct BookGridItem: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .opacity(isHidden ? 0 : 1)
     }
 }
 
@@ -579,118 +443,16 @@ private struct NovelDocumentPicker: UIViewControllerRepresentable {
     }
 }
 
-private struct ReaderTransitionLayer: View {
-    let book: NovelBook
-    let targetFrame: CGRect
-    let containerSize: CGSize
-    let paperColor: UIColor
-    let progress: CGFloat
-    let interactionDisabled: Bool
-    let edgeGestureEnabled: Bool
-    let onReady: () -> Void
-    let onRequestClose: () -> Void
-    let onBlockingStateChanged: (Bool) -> Void
-    let onEdgeChanged: (CGFloat) -> Void
-    let onEdgeEnded: (CGFloat, CGFloat) -> Void
-
-    var body: some View {
-        let boundedProgress = min(1, max(0, progress))
-        let width = max(containerSize.width, 1)
-        let height = max(containerSize.height, 1)
-        // Keep the reader's geometry locked to the UIKit book body. The live
-        // reader is prepared once at full size, then only composited by the GPU;
-        // its layout and pagination never change during the transition.
-        let state = BookTransitionAnimator.state(
-            progress: boundedProgress,
-            sourceFrame: targetFrame,
-            destinationFrame: CGRect(origin: .zero, size: containerSize)
-        )
-        let scaleX = state.bookFrame.width / width
-        let scaleY = state.bookFrame.height / height
-
-        ZStack(alignment: .topLeading) {
-            ReaderView(
-                bookID: book.id,
-                interactionDisabled: interactionDisabled,
-                onRequestClose: onRequestClose,
-                onReady: onReady,
-                onBlockingStateChanged: onBlockingStateChanged
-            )
-            .frame(width: width, height: height)
-            .opacity(state.readerOpacity)
-            .clipShape(RoundedRectangle(cornerRadius: state.readerCornerRadius, style: .continuous))
-            .scaleEffect(x: scaleX, y: scaleY, anchor: .topLeading)
-            .offset(x: state.bookFrame.minX, y: state.bookFrame.minY)
-            .shadow(color: .black.opacity(state.readerShadowOpacity), radius: 14, x: 3, y: 7)
-
-            BookOpeningTransitionView(
-                book: book,
-                targetFrame: targetFrame,
-                containerSize: containerSize,
-                paperColor: paperColor,
-                progress: boundedProgress
-            )
-            .frame(width: width, height: height)
-                .allowsHitTesting(false)
-
-            ScreenEdgeDismissGesture(
-                isEnabled: edgeGestureEnabled,
-                onChanged: onEdgeChanged,
-                onEnded: onEdgeEnded
-            )
-            .frame(width: width, height: height)
-        }
-        .frame(width: width, height: height, alignment: .topLeading)
-        .background(Color.clear.contentShape(Rectangle()))
-    }
-}
-
-private struct ReaderTransitionGeometry: Equatable {
-    let containerSize: CGSize
-    let topInset: CGFloat
-    let leadingInset: CGFloat
-    let bottomInset: CGFloat
-    let trailingInset: CGFloat
-
-    init(containerSize: CGSize, safeAreaInsets: EdgeInsets) {
-        self.containerSize = containerSize
-        topInset = safeAreaInsets.top
-        leadingInset = safeAreaInsets.leading
-        bottomInset = safeAreaInsets.bottom
-        trailingInset = safeAreaInsets.trailing
-    }
-
-    var safeAreaInsets: EdgeInsets {
-        EdgeInsets(
-            top: topInset,
-            leading: leadingInset,
-            bottom: bottomInset,
-            trailing: trailingInset
-        )
-    }
-}
-
-private struct BookFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-/// A native screen-edge recognizer owns only the system's left-edge hit region.
-/// The page-turn controllers below it therefore never receive the same touch.
-private struct ScreenEdgeDismissGesture: UIViewRepresentable {
+private struct DirectReaderEdgeDismissGesture: UIViewRepresentable {
     let isEnabled: Bool
-    let onChanged: (CGFloat) -> Void
-    let onEnded: (CGFloat, CGFloat) -> Void
+    let onEnded: (CGFloat, CGFloat, CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onChanged: onChanged, onEnded: onEnded)
+        Coordinator(onEnded: onEnded)
     }
 
-    func makeUIView(context: Context) -> EdgeGestureHitView {
-        let view = EdgeGestureHitView()
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
         view.backgroundColor = .clear
         let gesture = UIScreenEdgePanGestureRecognizer(
             target: context.coordinator,
@@ -698,68 +460,34 @@ private struct ScreenEdgeDismissGesture: UIViewRepresentable {
         )
         gesture.edges = .left
         gesture.maximumNumberOfTouches = 1
-        gesture.delegate = context.coordinator
         gesture.isEnabled = isEnabled
         view.addGestureRecognizer(gesture)
         context.coordinator.gesture = gesture
         return view
     }
 
-    func updateUIView(_ view: EdgeGestureHitView, context: Context) {
-        context.coordinator.onChanged = onChanged
+    func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.onEnded = onEnded
         context.coordinator.gesture?.isEnabled = isEnabled
-        view.edgeInteractionEnabled = isEnabled
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onChanged: (CGFloat) -> Void
-        var onEnded: (CGFloat, CGFloat) -> Void
+    final class Coordinator: NSObject {
+        var onEnded: (CGFloat, CGFloat, CGFloat) -> Void
         weak var gesture: UIScreenEdgePanGestureRecognizer?
 
-        init(onChanged: @escaping (CGFloat) -> Void, onEnded: @escaping (CGFloat, CGFloat) -> Void) {
-            self.onChanged = onChanged
+        init(onEnded: @escaping (CGFloat, CGFloat, CGFloat) -> Void) {
             self.onEnded = onEnded
         }
 
         @objc func handle(_ recognizer: UIScreenEdgePanGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
             let translation = max(0, recognizer.translation(in: recognizer.view).x)
-            switch recognizer.state {
-            case .changed:
-                onChanged(translation)
-            case .ended:
-                let velocity = recognizer.velocity(in: recognizer.view).x
-                onEnded(translation, max(0, translation + velocity * 0.18))
-            case .cancelled, .failed:
-                onEnded(translation, 0)
-            default:
-                break
-            }
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let edge = gestureRecognizer as? UIScreenEdgePanGestureRecognizer else { return false }
-            let velocity = edge.velocity(in: edge.view)
-            return velocity.x > 0 && abs(velocity.x) > abs(velocity.y)
+            let velocity = max(0, recognizer.velocity(in: recognizer.view).x)
+            let projected = translation + velocity * 0.18
+            let width = recognizer.view?.window?.bounds.width ?? UIScreen.main.bounds.width
+            onEnded(translation, projected, width)
         }
     }
-}
-
-private final class EdgeGestureHitView: UIView {
-    var edgeInteractionEnabled = true
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        edgeInteractionEnabled && point.x <= max(24, safeAreaInsets.left + 18)
-    }
-}
-
-private enum ReaderTransitionPhase: Equatable {
-    case idle
-    case preparing
-    case opening
-    case open
-    case edgeDragging
-    case closing
 }
 
 enum CoverImageProcessingError: LocalizedError {

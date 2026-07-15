@@ -29,6 +29,26 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
     var foreground: Color { self == .night ? Color(hex: "CAC6BD") : Color(hex: "27231F") }
 }
 
+enum ReaderBackgroundStyle: String, CaseIterable, Identifiable {
+    case plain = "纯色"
+    case ricePaper = "宣纸"
+    case bamboo = "竹影"
+    case mist = "远山"
+    case warmGlow = "暖光"
+
+    var id: String { rawValue }
+
+    var symbolName: String {
+        switch self {
+        case .plain: return "rectangle.fill"
+        case .ricePaper: return "text.page"
+        case .bamboo: return "leaf"
+        case .mist: return "mountain.2"
+        case .warmGlow: return "sun.haze"
+        }
+    }
+}
+
 enum PageTurnStyle: String, CaseIterable, Identifiable {
     case curl = "仿真"
     case slide = "覆盖"

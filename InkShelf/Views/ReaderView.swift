@@ -23,6 +23,8 @@ struct ReaderView: View {
     @State private var originalBrightness = UIScreen.main.brightness
 
     @AppStorage("readerTheme") private var themeRaw = ReaderTheme.paper.rawValue
+    @AppStorage("readerDayTheme") private var dayThemeRaw = ReaderTheme.paper.rawValue
+    @AppStorage("readerBackground") private var backgroundRaw = ReaderBackgroundStyle.plain.rawValue
     @AppStorage("readerFont") private var fontRaw = ReaderFont.system.rawValue
     @AppStorage("pageTurnStyle") private var turnRaw = PageTurnStyle.curl.rawValue
     @AppStorage("readerFontSize") private var fontSize = 19.0
@@ -32,6 +34,9 @@ struct ReaderView: View {
 
     private var book: NovelBook? { library.book(id: bookID) }
     private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .paper }
+    private var backgroundStyle: ReaderBackgroundStyle {
+        ReaderBackgroundStyle(rawValue: backgroundRaw) ?? .plain
+    }
     private var turnStyle: PageTurnStyle { PageTurnStyle(rawValue: turnRaw) ?? .curl }
     private var readerFont: ReaderFont { ReaderFont(rawValue: fontRaw) ?? .system }
 
@@ -57,7 +62,9 @@ struct ReaderView: View {
                     let capacity = charactersPerPage(in: proxy.size)
                     let layout = paginationLayout(for: book, size: proxy.size)
                     ZStack {
-                        theme.background.ignoresSafeArea()
+                        ReaderBackgroundSurface(theme: theme, style: backgroundStyle)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
                         if turnStyle == .vertical {
                             verticalReader(book: book, chapter: chapter)
                         } else if catalog.isEmpty {
@@ -135,6 +142,9 @@ struct ReaderView: View {
 
     private func safeChapter(in book: NovelBook) -> NovelChapter {
         let chapters = book.chapters
+        guard !chapters.isEmpty else {
+            return NovelChapter(index: 0, title: "正文", content: book.content)
+        }
         return chapters[min(max(location.chapterIndex, 0), max(chapters.count - 1, 0))]
     }
 
@@ -157,11 +167,12 @@ struct ReaderView: View {
 
     private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
         ReaderPageAppearance(
-            themeID: theme.rawValue,
+            themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)",
             bookTitle: bookTitle,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
+            backgroundStyle: backgroundStyle,
             fontName: readerFont.name,
             fontSize: fontSize,
             lineSpacing: lineSpacing,
@@ -288,18 +299,28 @@ struct ReaderView: View {
             .allowsHitTesting(!showingAppearance)
             Spacer()
             VStack(spacing: 14) {
-                if turnStyle != .vertical {
+                if turnStyle != .vertical && !showingAppearance {
                     wholeBookProgressControl(book: book)
                 }
-                if !showingAppearance {
-                    HStack {
-                        ChromeAction(icon: "list.bullet", label: "目录") { showingIndex = true }
-                        ChromeAction(icon: "hexagon", label: "设置", showsCenterDot: true) { showingAppearance = true }
-                        ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
-                        ChromeAction(icon: "ellipsis", label: "更多") { showingIndex = true }
+                if showingAppearance { appearanceControls }
+                HStack {
+                    ChromeAction(icon: "list.bullet", label: "目录") { showingIndex = true }
+                    ChromeAction(
+                        icon: theme == .night ? "sun.max.fill" : "moon.fill",
+                        label: theme == .night ? "日间" : "夜间"
+                    ) {
+                        toggleNightMode()
+                    }
+                    ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
+                    ChromeAction(
+                        icon: showingAppearance ? "chevron.down.circle.fill" : "paintpalette",
+                        label: showingAppearance ? "收起" : "背景"
+                    ) {
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            showingAppearance.toggle()
+                        }
                     }
                 }
-                if showingAppearance { appearanceControls }
             }
             .padding(.horizontal, 18).padding(.top, 13).padding(.bottom, 18)
             .background(.ultraThinMaterial)
@@ -437,38 +458,108 @@ struct ReaderView: View {
     }
 
     private var appearanceControls: some View {
-        VStack(spacing: 13) {
-            HStack {
+        VStack(spacing: 15) {
+            HStack(spacing: 13) {
+                Text("颜色")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .leading)
+                ForEach(ReaderTheme.allCases) { item in
+                    Button {
+                        themeRaw = item.rawValue
+                        if item != .night { dayThemeRaw = item.rawValue }
+                    } label: {
+                        Circle()
+                            .fill(item.background)
+                            .frame(width: 32, height: 32)
+                            .overlay {
+                                Circle().stroke(
+                                    themeRaw == item.rawValue ? theme.foreground.opacity(0.82) : .gray.opacity(0.3),
+                                    lineWidth: themeRaw == item.rawValue ? 2 : 1
+                                )
+                            }
+                            .overlay {
+                                if themeRaw == item.rawValue {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(item.foreground)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 9) {
+                Text("背景")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .leading)
+                ForEach(ReaderBackgroundStyle.allCases) { style in
+                    Button { backgroundRaw = style.rawValue } label: {
+                        ReaderBackgroundSurface(theme: theme, style: style)
+                            .frame(width: 48, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .stroke(
+                                        backgroundStyle == style ? theme.foreground.opacity(0.82) : .gray.opacity(0.24),
+                                        lineWidth: backgroundStyle == style ? 2 : 1
+                                    )
+                            }
+                            .overlay {
+                                Image(systemName: style.symbolName)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(theme.foreground.opacity(0.56))
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Divider().opacity(0.5)
+
+            HStack(spacing: 10) {
                 Image(systemName: "sun.min")
                 Slider(value: $brightness, in: 0.05...1) { _ in UIScreen.main.brightness = brightness }
                 Image(systemName: "sun.max.fill")
             }
-            HStack {
-                Text("字号").font(.caption)
+
+            HStack(spacing: 10) {
                 Button("A−") { fontSize = max(14, fontSize - 1) }.buttonStyle(.bordered)
                 Text("\(Int(fontSize))").font(.caption.monospacedDigit()).frame(width: 25)
                 Button("A+") { fontSize = min(32, fontSize + 1) }.buttonStyle(.bordered)
-                Spacer()
-                Picker("字体", selection: $fontRaw) { ForEach(ReaderFont.allCases) { Text($0.rawValue).tag($0.rawValue) } }.labelsHidden()
-            }
-            HStack(spacing: 10) {
-                Text("行距").frame(width: 28, alignment: .leading)
-                Slider(value: $lineSpacing, in: 3...16, step: 1)
-                Text("边距").frame(width: 28, alignment: .leading)
-                Slider(value: $margin, in: 14...38, step: 2)
-            }
-            HStack {
-                ForEach(ReaderTheme.allCases) { item in
-                    Button { themeRaw = item.rawValue } label: {
-                        Circle().fill(item.background).frame(width: 29, height: 29)
-                            .overlay(Circle().stroke(themeRaw == item.rawValue ? Color.accentColor : .gray.opacity(0.35), lineWidth: 2))
-                    }
+                Picker("字体", selection: $fontRaw) {
+                    ForEach(ReaderFont.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
+                .labelsHidden()
                 Spacer()
-                Picker("翻页", selection: $turnRaw) { ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) } }.labelsHidden()
+                Picker("翻页", selection: $turnRaw) {
+                    ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                }
+                .labelsHidden()
+            }
+
+            HStack(spacing: 9) {
+                Text("行距")
+                Slider(value: $lineSpacing, in: 3...16, step: 1)
+                Text("边距")
+                Slider(value: $margin, in: 14...38, step: 2)
             }
         }
         .font(.caption)
+    }
+
+    private func toggleNightMode() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            if theme == .night {
+                let restored = ReaderTheme(rawValue: dayThemeRaw) ?? .paper
+                themeRaw = restored == .night ? ReaderTheme.paper.rawValue : restored.rawValue
+            } else {
+                dayThemeRaw = theme.rawValue
+                themeRaw = ReaderTheme.night.rawValue
+            }
+        }
     }
 
     private func readerSwiftUIFont(size: Double) -> Font {
@@ -507,19 +598,98 @@ private struct PaginationLayout: Hashable {
 private struct ChromeAction: View {
     let icon: String
     let label: String
-    var showsCenterDot = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VStack(spacing: 5) {
-                ZStack {
-                    Image(systemName: icon).font(.system(size: 18))
-                    if showsCenterDot { Circle().fill(.primary).frame(width: 3, height: 3) }
-                }
+                Image(systemName: icon).font(.system(size: 18))
                 Text(label).font(.caption2)
             }
             .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+private struct ReaderBackgroundSurface: View {
+    let theme: ReaderTheme
+    let style: ReaderBackgroundStyle
+
+    var body: some View {
+        ZStack {
+            theme.background
+            switch style {
+            case .plain:
+                Color.clear
+            case .warmGlow:
+                RadialGradient(
+                    colors: [Color(hex: "F5C879").opacity(theme == .night ? 0.08 : 0.2), .clear],
+                    center: .topTrailing,
+                    startRadius: 8,
+                    endRadius: 310
+                )
+            case .ricePaper, .bamboo, .mist:
+                ReaderBackgroundPattern(theme: theme, style: style)
+            }
+        }
+        .clipped()
+    }
+}
+
+private struct ReaderBackgroundPattern: View {
+    let theme: ReaderTheme
+    let style: ReaderBackgroundStyle
+
+    var body: some View {
+        Canvas(rendersAsynchronously: true) { context, size in
+            let ink = theme.foreground
+            switch style {
+            case .ricePaper:
+                for index in 0..<22 {
+                    let y = size.height * CGFloat(index + 1) / 23
+                    var fiber = Path()
+                    fiber.move(to: CGPoint(x: 0, y: y))
+                    for step in 1...12 {
+                        let x = size.width * CGFloat(step) / 12
+                        fiber.addLine(to: CGPoint(
+                            x: x,
+                            y: y + sin(CGFloat(step * 3 + index) * 0.61) * 0.8
+                        ))
+                    }
+                    context.stroke(fiber, with: .color(ink.opacity(index.isMultiple(of: 4) ? 0.04 : 0.018)), lineWidth: 0.45)
+                }
+            case .bamboo:
+                for stalk in 0..<3 {
+                    let x = size.width * (0.72 + CGFloat(stalk) * 0.105)
+                    var stem = Path()
+                    stem.move(to: CGPoint(x: x, y: -8))
+                    stem.addCurve(
+                        to: CGPoint(x: x - size.width * 0.09, y: size.height * 0.52),
+                        control1: CGPoint(x: x + 8, y: size.height * 0.16),
+                        control2: CGPoint(x: x - 12, y: size.height * 0.34)
+                    )
+                    context.stroke(stem, with: .color(ink.opacity(0.07)), lineWidth: 2.2)
+                    for leaf in 0..<4 {
+                        let leafY = size.height * (0.1 + CGFloat(leaf) * 0.09 + CGFloat(stalk) * 0.025)
+                        let leafRect = CGRect(x: x - 30 - CGFloat(leaf % 2) * 9, y: leafY, width: 38, height: 9)
+                        context.fill(Path(ellipseIn: leafRect), with: .color(ink.opacity(0.045)))
+                    }
+                }
+            case .mist:
+                for ridge in 0..<4 {
+                    let y = size.height * (0.73 + CGFloat(ridge) * 0.075)
+                    var mountain = Path()
+                    mountain.move(to: CGPoint(x: -20, y: y))
+                    mountain.addCurve(
+                        to: CGPoint(x: size.width + 20, y: y - 4),
+                        control1: CGPoint(x: size.width * 0.23, y: y - 58 + CGFloat(ridge) * 7),
+                        control2: CGPoint(x: size.width * 0.65, y: y + 24 - CGFloat(ridge) * 5)
+                    )
+                    context.stroke(mountain, with: .color(ink.opacity(0.025 + Double(ridge) * 0.012)), lineWidth: 1.1)
+                }
+            case .plain, .warmGlow:
+                break
+            }
         }
     }
 }

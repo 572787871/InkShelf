@@ -13,6 +13,7 @@ struct ReaderPageAppearance: Equatable {
     let backgroundColor: UIColor
     let backsideColor: UIColor
     let textColor: UIColor
+    let backgroundStyle: ReaderBackgroundStyle
     let fontName: String?
     let fontSize: CGFloat
     let lineSpacing: CGFloat
@@ -26,6 +27,7 @@ struct ReaderPageAppearance: Equatable {
         lhs.backgroundColor.isEqual(rhs.backgroundColor) &&
         lhs.backsideColor.isEqual(rhs.backsideColor) &&
         lhs.textColor.isEqual(rhs.textColor) &&
+        lhs.backgroundStyle == rhs.backgroundStyle &&
         lhs.fontName == rhs.fontName &&
         lhs.fontSize == rhs.fontSize &&
         lhs.lineSpacing == rhs.lineSpacing &&
@@ -84,7 +86,6 @@ private protocol PageTurnEngine: AnyObject {
     var onCommit: ((ReaderPageLocation) -> Void)? { get set }
     var isTransitioning: Bool { get }
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance)
-    func turn(_ direction: PageTurnDirection)
     func setInteractionEnabled(_ enabled: Bool)
 }
 
@@ -153,15 +154,17 @@ final class ReaderPageTurnHostController: UIViewController {
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
-        guard recognizer.state == .ended, let engine, !engine.isTransitioning else { return }
-        let x = recognizer.location(in: view).x
-        if x < view.bounds.width * 0.28 {
-            engine.turn(.backward)
-        } else if x > view.bounds.width * 0.72 {
-            engine.turn(.forward)
-        } else {
-            onCenterTap?()
-        }
+        guard recognizer.state == .ended else { return }
+        performBodyTap()
+    }
+
+    func performBodyTap() {
+        guard let engine, !engine.isTransitioning else { return }
+        // A body tap has one safe, predictable meaning: show or hide reader
+        // controls. Page navigation remains owned by the interactive pan/curl
+        // gestures, avoiding a second programmatic UIPageViewController turn
+        // starting from the same touch.
+        onCenterTap?()
     }
 }
 
@@ -198,7 +201,124 @@ extension ReaderPageContentController: CurlPageSide {
     var physicalPageIndex: Int { pageIndex * 2 }
 }
 
+private final class ReaderPageBackgroundView: UIView {
+    private let washLayer = CAGradientLayer()
+    private let strokeLayer = CAShapeLayer()
+    private let fillLayer = CAShapeLayer()
+    private var style = ReaderBackgroundStyle.plain
+    private var inkColor = UIColor.clear
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        layer.addSublayer(washLayer)
+        layer.addSublayer(strokeLayer)
+        layer.addSublayer(fillLayer)
+        strokeLayer.fillColor = UIColor.clear.cgColor
+        strokeLayer.lineCap = .round
+        strokeLayer.lineJoin = .round
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(style: ReaderBackgroundStyle, backgroundColor: UIColor, textColor: UIColor) {
+        self.style = style
+        inkColor = textColor
+        if style == .warmGlow {
+            washLayer.type = .radial
+            washLayer.startPoint = CGPoint(x: 0.82, y: 0.02)
+            washLayer.endPoint = CGPoint(x: 0.2, y: 0.82)
+            washLayer.colors = [
+                UIColor(red: 0.96, green: 0.72, blue: 0.31, alpha: backgroundColor.isDark ? 0.07 : 0.19).cgColor,
+                UIColor.clear.cgColor
+            ]
+        } else {
+            washLayer.type = .axial
+            washLayer.colors = [UIColor.clear.cgColor, UIColor.clear.cgColor]
+        }
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        washLayer.frame = bounds
+        strokeLayer.frame = bounds
+        fillLayer.frame = bounds
+        let strokes = UIBezierPath()
+        let fills = UIBezierPath()
+
+        switch style {
+        case .plain, .warmGlow:
+            break
+        case .ricePaper:
+            for index in 0..<24 {
+                let y = bounds.height * CGFloat(index + 1) / 25
+                strokes.move(to: CGPoint(x: 0, y: y))
+                for step in 1...14 {
+                    let x = bounds.width * CGFloat(step) / 14
+                    strokes.addLine(to: CGPoint(
+                        x: x,
+                        y: y + sin(CGFloat(index + step * 3) * 0.61) * 0.8
+                    ))
+                }
+            }
+        case .bamboo:
+            for stalk in 0..<3 {
+                let x = bounds.width * (0.73 + CGFloat(stalk) * 0.105)
+                strokes.move(to: CGPoint(x: x, y: -8))
+                strokes.addCurve(
+                    to: CGPoint(x: x - bounds.width * 0.09, y: bounds.height * 0.52),
+                    controlPoint1: CGPoint(x: x + 8, y: bounds.height * 0.16),
+                    controlPoint2: CGPoint(x: x - 12, y: bounds.height * 0.34)
+                )
+                for leaf in 0..<4 {
+                    let y = bounds.height * (0.1 + CGFloat(leaf) * 0.09 + CGFloat(stalk) * 0.025)
+                    fills.append(UIBezierPath(ovalIn: CGRect(
+                        x: x - 30 - CGFloat(leaf % 2) * 9,
+                        y: y,
+                        width: 38,
+                        height: 9
+                    )))
+                }
+            }
+        case .mist:
+            for ridge in 0..<4 {
+                let y = bounds.height * (0.73 + CGFloat(ridge) * 0.075)
+                strokes.move(to: CGPoint(x: -20, y: y))
+                strokes.addCurve(
+                    to: CGPoint(x: bounds.width + 20, y: y - 4),
+                    controlPoint1: CGPoint(x: bounds.width * 0.23, y: y - 58 + CGFloat(ridge) * 7),
+                    controlPoint2: CGPoint(x: bounds.width * 0.65, y: y + 24 - CGFloat(ridge) * 5)
+                )
+            }
+        }
+
+        strokeLayer.path = strokes.cgPath
+        fillLayer.path = fills.cgPath
+        switch style {
+        case .ricePaper:
+            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.025).cgColor
+            strokeLayer.lineWidth = 0.45
+            fillLayer.fillColor = UIColor.clear.cgColor
+        case .bamboo:
+            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.065).cgColor
+            strokeLayer.lineWidth = 2.2
+            fillLayer.fillColor = inkColor.withAlphaComponent(0.04).cgColor
+        case .mist:
+            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.055).cgColor
+            strokeLayer.lineWidth = 1.1
+            fillLayer.fillColor = UIColor.clear.cgColor
+        case .plain, .warmGlow:
+            strokeLayer.strokeColor = UIColor.clear.cgColor
+            fillLayer.fillColor = UIColor.clear.cgColor
+        }
+    }
+}
+
 private final class ReaderPageContentView: UIView {
+    private let backgroundDecoration = ReaderPageBackgroundView()
     private let titleLabel = UILabel()
     private let brandLabel = UILabel()
     private let textView = UITextView()
@@ -215,6 +335,12 @@ private final class ReaderPageContentView: UIView {
         isOpaque = true
         backgroundColor = appearance.backgroundColor
         layer.drawsAsynchronously = true
+        backgroundDecoration.configure(
+            style: appearance.backgroundStyle,
+            backgroundColor: appearance.backgroundColor,
+            textColor: appearance.textColor
+        )
+        addSubview(backgroundDecoration)
 
         titleLabel.text = page.chapterTitle
         titleLabel.font = .systemFont(ofSize: 10)
@@ -260,6 +386,7 @@ private final class ReaderPageContentView: UIView {
         let width = max(0, bounds.width - margin * 2)
         let headerY = max(16, safeAreaInsets.top + 12)
         let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
+        backgroundDecoration.frame = bounds
         titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 16)
         brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 16)
         textView.frame = CGRect(x: margin, y: headerY + 38, width: width, height: max(0, footerY - headerY - 58))
@@ -272,6 +399,12 @@ private final class ReaderPageContentView: UIView {
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
         self.appearance = appearance
+        backgroundColor = appearance.backgroundColor
+        backgroundDecoration.configure(
+            style: appearance.backgroundStyle,
+            backgroundColor: appearance.backgroundColor,
+            textColor: appearance.textColor
+        )
         textView.attributedText = attributedBody(page.displayText)
     }
 
@@ -491,6 +624,15 @@ private enum ReaderPageStatus {
 }
 
 private extension UIColor {
+    var isDark: Bool {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return false }
+        return red * 0.299 + green * 0.587 + blue * 0.114 < 0.45
+    }
+
     func mixed(with color: UIColor, fraction: CGFloat) -> UIColor {
         let amount = min(max(fraction, 0), 1)
         var red1: CGFloat = 0
@@ -575,23 +717,6 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         view.backgroundColor = appearance.backgroundColor
         view.layer.backgroundColor = appearance.backgroundColor.cgColor
         preloadPages(around: safeIndex)
-    }
-
-    func turn(_ direction: PageTurnDirection) {
-        guard let target = transaction.begin(direction: direction, pageCount: pages.count) else {
-            bounceAtBoundary(direction)
-            return
-        }
-        let navigation: NavigationDirection = direction == .forward ? .forward : .reverse
-        setViewControllers(visibleControllers(index: target), direction: navigation, animated: true) { [weak self] finished in
-            guard let self else { return }
-            let committed = self.transaction.finish(committed: finished)
-            if let committed {
-                self.preloadPages(around: committed)
-                self.onCommit?(self.pages[committed].location)
-            }
-            self.applyPendingConfigurationIfNeeded()
-        }
     }
 
     func setInteractionEnabled(_ enabled: Bool) {
@@ -685,17 +810,6 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         backCache = backCache.filter { retainedBacks.contains($0.key) }
     }
 
-    private func bounceAtBoundary(_ direction: PageTurnDirection) {
-        let distance: CGFloat = direction == .forward ? -13 : 13
-        UIView.animateKeyframes(withDuration: 0.24, delay: 0, options: [.allowUserInteraction, .calculationModeCubic]) {
-            UIView.addKeyframe(withRelativeStartTime: 0, relativeDuration: 0.45) { self.view.transform = CGAffineTransform(translationX: distance, y: 0) }
-            UIView.addKeyframe(withRelativeStartTime: 0.45, relativeDuration: 0.55) { self.view.transform = .identity }
-        } completion: { [weak self] _ in
-            _ = self?.transaction.finish(committed: false)
-            self?.applyPendingConfigurationIfNeeded()
-        }
-    }
-
     private func applyPendingConfigurationIfNeeded() {
         guard let pendingConfiguration else { return }
         self.pendingConfiguration = nil
@@ -760,15 +874,6 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
             controllerCache.values.forEach { $0.updateHighlight(using: appearance) }
         }
         preloadNeighbors(around: safeIndex)
-    }
-
-    func turn(_ direction: PageTurnDirection) {
-        guard let target = transaction.begin(direction: direction, pageCount: pages.count) else {
-            boundaryBounce(direction)
-            return
-        }
-        prepareAdjacent(index: target, direction: direction)
-        settle(commit: true, direction: direction)
     }
 
     func setInteractionEnabled(_ enabled: Bool) {
@@ -895,20 +1000,6 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
             onCommit?(pages[committedIndex].location)
         }
         applyPendingConfigurationIfNeeded()
-    }
-
-    private func boundaryBounce(_ direction: PageTurnDirection) {
-        let distance: CGFloat = direction == .forward ? -15 : 15
-        UIView.animate(withDuration: 0.11, animations: {
-            self.currentController?.view.transform = CGAffineTransform(translationX: distance, y: 0)
-        }) { _ in
-            UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.7, initialSpringVelocity: 0) {
-                self.currentController?.view.transform = .identity
-            } completion: { [weak self] _ in
-                _ = self?.transaction.finish(committed: false)
-                self?.applyPendingConfigurationIfNeeded()
-            }
-        }
     }
 
     private func replaceCurrent(with controller: ReaderPageContentController) {
