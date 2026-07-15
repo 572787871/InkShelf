@@ -55,11 +55,7 @@ struct ReaderView: View {
                 GeometryReader { proxy in
                     let chapter = safeChapter(in: book)
                     let capacity = charactersPerPage(in: proxy.size)
-                    let layout = paginationLayout(
-                        for: book,
-                        size: proxy.size,
-                        focusedChapter: location.chapterIndex
-                    )
+                    let layout = paginationLayout(for: book, size: proxy.size)
                     ZStack {
                         theme.background.ignoresSafeArea()
                         if turnStyle == .vertical {
@@ -83,13 +79,7 @@ struct ReaderView: View {
                         if chromeVisible { readerChrome(book: book) }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-                    .task(id: layout) {
-                        await rebuildCatalog(
-                            for: book,
-                            charactersPerPage: capacity,
-                            focusedChapter: layout.focusedChapter
-                        )
-                    }
+                    .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
                     .allowsHitTesting(!interactionDisabled)
                 }
                 .statusBarHidden(!chromeVisible)
@@ -181,33 +171,20 @@ struct ReaderView: View {
         )
     }
 
-    private func paginationLayout(
-        for book: NovelBook,
-        size: CGSize,
-        focusedChapter: Int
-    ) -> PaginationLayout {
+    private func paginationLayout(for book: NovelBook, size: CGSize) -> PaginationLayout {
         PaginationLayout(
             bookID: book.id,
             width: Int(size.width.rounded()),
             height: Int(size.height.rounded()),
             fontSize: Int((fontSize * 10).rounded()),
             lineSpacing: Int((lineSpacing * 10).rounded()),
-            margin: Int((margin * 10).rounded()),
-            focusedChapter: focusedChapter
+            margin: Int((margin * 10).rounded())
         )
     }
 
-    private func rebuildCatalog(
-        for book: NovelBook,
-        charactersPerPage: Int,
-        focusedChapter: Int
-    ) async {
+    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) async {
         let rebuilt = await Task.detached(priority: .userInitiated) {
-            ReaderPageCatalog(
-                book: book,
-                charactersPerPage: charactersPerPage,
-                focusedChapter: focusedChapter
-            )
+            ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
         }.value
         guard !Task.isCancelled else { return }
         guard let settledLocation = rebuilt.nearest(to: location) else { return }
@@ -228,14 +205,6 @@ struct ReaderView: View {
     }
 
     private func jump(to requestedLocation: ReaderPageLocation) {
-        guard catalog.pages.contains(where: {
-            $0.location.chapterIndex == requestedLocation.chapterIndex
-        }) else {
-            catalog = .empty
-            location = requestedLocation
-            persist(requestedLocation)
-            return
-        }
         let settled = catalog.nearest(to: requestedLocation) ?? requestedLocation
         location = settled
         persist(settled)
@@ -533,7 +502,6 @@ private struct PaginationLayout: Hashable {
     let fontSize: Int
     let lineSpacing: Int
     let margin: Int
-    let focusedChapter: Int
 }
 
 private struct ChromeAction: View {
