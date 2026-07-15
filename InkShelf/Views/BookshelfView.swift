@@ -740,60 +740,29 @@ private struct WoodSurface: View {
     let colors: [Color]
 
     var body: some View {
-        LinearGradient(
-            colors: colors,
-            startPoint: axis == .horizontal ? .top : .leading,
-            endPoint: axis == .horizontal ? .bottom : .trailing
-        )
-        .overlay {
-            Canvas(rendersAsynchronously: true) { context, size in
-                let lineCount = axis == .horizontal ? 15 : 9
-                for index in 0..<lineCount {
-                    var path = Path()
-                    if axis == .horizontal {
-                        let baseY = size.height * CGFloat(index + 1) / CGFloat(lineCount + 1)
-                        path.move(to: CGPoint(x: 0, y: baseY))
-                        for step in 1...18 {
-                            let x = size.width * CGFloat(step) / 18
-                            let wave = sin(CGFloat(step + index * 3) * 0.72) * 1.25
-                            path.addLine(to: CGPoint(x: x, y: baseY + wave))
-                        }
-                    } else {
-                        let baseX = size.width * CGFloat(index + 1) / CGFloat(lineCount + 1)
-                        path.move(to: CGPoint(x: baseX, y: 0))
-                        for step in 1...22 {
-                            let y = size.height * CGFloat(step) / 22
-                            let wave = sin(CGFloat(step + index * 4) * 0.61) * 1.15
-                            path.addLine(to: CGPoint(x: baseX + wave, y: y))
-                        }
-                    }
-                    context.stroke(path, with: .color(.black.opacity(index.isMultiple(of: 3) ? 0.18 : 0.09)), lineWidth: 0.7)
-                }
+        GeometryReader { proxy in
+            ZStack {
+                Image(axis == .horizontal ? "WoodHorizontalTexture" : "WoodVerticalTexture")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
 
-                // A few deterministic growth rings make the surface read as
-                // timber without introducing a large raster texture asset.
-                let knotCount = axis == .horizontal ? 3 : 2
-                for index in 0..<knotCount {
-                    let center = CGPoint(
-                        x: size.width * CGFloat(index * 3 + 2) / CGFloat(knotCount * 3 + 1),
-                        y: size.height * CGFloat(index + 1) / CGFloat(knotCount + 1)
-                    )
-                    for ring in 0..<3 {
-                        let radius = CGFloat(3 + ring * 3)
-                        let rect = CGRect(
-                            x: center.x - radius * 1.8,
-                            y: center.y - radius * 0.48,
-                            width: radius * 3.6,
-                            height: radius * 0.96
-                        )
-                        context.stroke(
-                            Path(ellipseIn: rect),
-                            with: .color(.black.opacity(0.08 + Double(ring) * 0.025)),
-                            lineWidth: 0.65
-                        )
-                    }
-                }
+                LinearGradient(
+                    colors: colors.map { $0.opacity(0.48) },
+                    startPoint: axis == .horizontal ? .top : .leading,
+                    endPoint: axis == .horizontal ? .bottom : .trailing
+                )
+                .blendMode(.multiply)
+
+                LinearGradient(
+                    colors: [.white.opacity(0.12), .clear, .black.opacity(0.24)],
+                    startPoint: axis == .horizontal ? .top : .leading,
+                    endPoint: axis == .horizontal ? .bottom : .trailing
+                )
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
     }
 }

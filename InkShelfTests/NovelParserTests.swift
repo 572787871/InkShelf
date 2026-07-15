@@ -370,6 +370,15 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
+    func testGeneratedShelfAndCoverAssetsAreBundled() {
+        let assetNames = ["WoodVerticalTexture", "WoodHorizontalTexture"]
+            + (0..<BookPalette.styles.count).map { BookPalette.coverAssetName(for: $0) }
+
+        for assetName in assetNames {
+            XCTAssertNotNil(UIImage(named: assetName), "缺少高清资源：\(assetName)")
+        }
+    }
+
     func testBookcaseKeepsItsPreTransitionViewportHeight() {
         let cachedHeight: CGFloat = 690
         let expandedRootHeight: CGFloat = 742
