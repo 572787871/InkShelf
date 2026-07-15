@@ -139,6 +139,14 @@ struct BookshelfView: View {
             }
             .padding(.horizontal, 13).frame(height: 42)
             .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 13))
+            if shelfPages.count > 1 {
+                ShelfPageControls(
+                    pageCount: shelfPages.count,
+                    selection: min(shelfPage, shelfPages.count - 1),
+                    onPrevious: { shelfPage = max(0, shelfPage - 1) },
+                    onNext: { shelfPage = min(shelfPages.count - 1, shelfPage + 1) }
+                )
+            }
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
     }
@@ -150,10 +158,10 @@ struct BookshelfView: View {
                 cached: stableShelfViewportHeight,
                 readerPresented: selectedBookID != nil
             )
-            Group {
+            ScrollView {
                 if displayedBooks.isEmpty {
                     ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.top, 80)
                 } else {
                     let pages = shelfPages
                     let resolvedPage = min(shelfPage, max(pages.count - 1, 0))
@@ -176,31 +184,18 @@ struct BookshelfView: View {
                                     onOpen: openReader,
                                     onChooseCover: beginCoverSelection
                                 )
-                                .id("\(resolvedPage)-\(row.count)-\(row.first?.id.uuidString ?? "empty")")
                             }
                         }
-                        .id(resolvedPage)
-                        .transition(.opacity)
-                        .animation(.easeInOut(duration: 0.18), value: resolvedPage)
                     }
-                    // This is a fixed viewport with no full-size scroll or page
-                    // recognizer. Only the small explicit controls below can
-                    // change pages; book taps and long presses remain direct.
                     .frame(height: bookcaseHeight)
                     .padding(.horizontal, 12)
-                    .overlay(alignment: .bottom) {
-                        if pages.count > 1 {
-                            ShelfPageControls(
-                                pageCount: pages.count,
-                                selection: resolvedPage,
-                                onPrevious: { shelfPage = max(0, resolvedPage - 1) },
-                                onNext: { shelfPage = min(pages.count - 1, resolvedPage + 1) }
-                            )
-                            .padding(.bottom, 2)
-                        }
-                    }
                 }
             }
+            // This is the same direct ScrollView/LazyVStack hierarchy used by
+            // the last known-good bookshelf. Disabling scrolling keeps the
+            // cabinet fixed without placing a gesture recognizer over books.
+            .scrollDisabled(true)
+            .scrollIndicators(.hidden)
             .onAppear {
                 if stableShelfViewportHeight == nil {
                     stableShelfViewportHeight = proxy.size.height
@@ -434,10 +429,9 @@ private struct ShelfRow: View {
             HStack(alignment: .bottom, spacing: 17) {
                 ForEach(books) { book in
                     Button { onOpen(book) } label: {
-                        let coverWidth = min(92, max(62, (rowContentHeight - 35) * 0.68))
                         VStack(spacing: 9) {
                             BookCoverView(book: book, compact: true)
-                                .frame(width: coverWidth)
+                                .frame(maxWidth: 92)
                                 .background {
                                     GeometryReader { proxy in
                                         Color.clear.preference(
