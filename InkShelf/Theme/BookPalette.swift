@@ -11,7 +11,6 @@ enum BookPalette {
     ]
 
     static func colors(for style: Int) -> [Color] { styles[abs(style) % styles.count] }
-    static func coverAssetName(for style: Int) -> String { "CoverArt\(abs(style) % styles.count)" }
 }
 
 extension Color {

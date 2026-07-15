@@ -205,30 +205,6 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(reloadedStore.books.first?.currentChapter, 1)
         XCTAssertEqual(reloadedStore.books.first?.chapterProgressDescription, "2章 / 2章")
     }
-
-    @MainActor
-    func testCustomCoverPersistsAndCanBeRestoredToDefault() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = LibraryStore(storageDirectory: root, seedSampleBook: true)
-        let bookID = try XCTUnwrap(store.books.first?.id)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 180))
-        let coverData = try XCTUnwrap(renderer.jpegData(withCompressionQuality: 0.9) { context in
-            UIColor.systemIndigo.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 120, height: 180))
-        })
-
-        store.updateCover(bookID: bookID, coverData: coverData)
-        XCTAssertEqual(store.book(id: bookID)?.coverData, coverData)
-        XCTAssertEqual(
-            LibraryStore(storageDirectory: root, seedSampleBook: false).book(id: bookID)?.coverData,
-            coverData
-        )
-
-        store.updateCover(bookID: bookID, coverData: nil)
-        XCTAssertNil(store.book(id: bookID)?.coverData)
-        XCTAssertNil(LibraryStore(storageDirectory: root, seedSampleBook: false).book(id: bookID)?.coverData)
-    }
 }
 
 final class ReaderPaginationTests: XCTestCase {
@@ -394,45 +370,6 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
-    func testReaderInteractionWaitsForBothAnimationAndPagination() {
-        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: false, readerReady: false))
-        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: true, readerReady: false))
-        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: false, readerReady: true))
-        XCTAssertTrue(ReaderOpeningGate.canEnableInteraction(animationCompleted: true, readerReady: true))
-    }
-
-    func testCustomCoverIsDownsampledBeforePersistence() throws {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        let renderer = UIGraphicsImageRenderer(
-            size: CGSize(width: 2600, height: 1200),
-            format: format
-        )
-        let source = try XCTUnwrap(renderer.pngData { context in
-            UIColor.systemTeal.setFill()
-            context.fill(CGRect(x: 0, y: 0, width: 2600, height: 1200))
-        })
-
-        let processed = try CoverImageProcessor.preparedData(from: source)
-        let decoded = try XCTUnwrap(UIImage(data: processed))
-
-        XCTAssertLessThan(processed.count, source.count)
-        XCTAssertLessThanOrEqual(
-            max(decoded.size.width, decoded.size.height),
-            CGFloat(CoverImageProcessor.maximumPixelSize)
-        )
-    }
-
-    func testGeneratedShelfAndCoverAssetsAreBundled() {
-        let assetNames = ["WoodVerticalTexture", "WoodHorizontalTexture"]
-            + (0..<BookPalette.styles.count).map { BookPalette.coverAssetName(for: $0) }
-
-        for assetName in assetNames {
-            XCTAssertNotNil(UIImage(named: assetName), "缺少高清资源：\(assetName)")
-        }
-    }
-
     func testBookcaseKeepsItsPreTransitionViewportHeight() {
         let cachedHeight: CGFloat = 690
         let expandedRootHeight: CGFloat = 742

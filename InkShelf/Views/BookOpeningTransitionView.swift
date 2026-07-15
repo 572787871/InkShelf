@@ -195,10 +195,6 @@ final class BookTransitionCanvasView: UIView {
             textLayer.contentsScale = UIScreen.main.scale
             textLayer.truncationMode = .end
             textLayer.foregroundColor = UIColor.white.withAlphaComponent(0.94).cgColor
-            textLayer.shadowColor = UIColor.black.cgColor
-            textLayer.shadowOpacity = 0.78
-            textLayer.shadowRadius = 2
-            textLayer.shadowOffset = CGSize(width: 0, height: 1)
             coverFront.addSublayer(textLayer)
         }
     }
@@ -240,8 +236,7 @@ final class BookTransitionCanvasView: UIView {
             coverFront.contentsGravity = .resizeAspectFill
             [titleLayer, brandLayer, authorLayer].forEach { $0.isHidden = true }
         } else {
-            coverFront.contents = UIImage(named: BookPalette.coverAssetName(for: book.coverStyle))?.cgImage
-            coverFront.contentsGravity = .resizeAspectFill
+            coverFront.contents = nil
             [titleLayer, brandLayer, authorLayer].forEach { $0.isHidden = false }
             brandLayer.string = "墨 架"
             titleLayer.string = book.title

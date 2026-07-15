@@ -153,26 +153,6 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    func updateCover(bookID: UUID, coverData: Data?) {
-        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
-        do {
-            if let coverData {
-                try coverData.write(to: coverURL(for: bookID), options: .atomic)
-            } else {
-                try? FileManager.default.removeItem(at: coverURL(for: bookID))
-            }
-            books[index].coverData = coverData
-            try saveThrowing()
-            alertMessage = coverData == nil ? "已恢复默认封面" : "封面已更新"
-        } catch {
-            alertMessage = "封面保存失败：\(error.localizedDescription)"
-        }
-    }
-
-    func reportCoverSelectionFailure(_ error: Error) {
-        alertMessage = "封面读取失败：\(error.localizedDescription)"
-    }
-
     func addNote(bookID: UUID, chapter: Int, page: Int, excerpt: String, text: String) {
         guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
         books[index].notes.append(ReaderNote(chapterIndex: chapter, pageIndex: page, excerpt: excerpt, text: text, createdAt: .now))
