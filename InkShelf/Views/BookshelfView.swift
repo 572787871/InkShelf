@@ -15,6 +15,7 @@ struct BookshelfView: View {
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
+    @State private var stableShelfViewportHeight: CGFloat?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
@@ -121,15 +122,24 @@ struct BookshelfView: View {
 
     private var shelfContent: some View {
         GeometryReader { proxy in
+            let layoutHeight = BookcaseLayoutMetrics.resolvedViewportHeight(
+                current: proxy.size.height,
+                cached: stableShelfViewportHeight,
+                readerPresented: selectedBookID != nil
+            )
             ScrollView {
                 if displayedBooks.isEmpty {
                     ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
                         .padding(.top, 80)
                 } else {
                     let rows = shelfRows
-                    let rowContentHeight = max(
-                        166,
-                        (proxy.size.height - 38) / CGFloat(max(rows.count, 1)) - 23
+                    let rowContentHeight = BookcaseLayoutMetrics.rowContentHeight(
+                        viewportHeight: layoutHeight,
+                        rowCount: rows.count
+                    )
+                    let bookcaseHeight = BookcaseLayoutMetrics.totalHeight(
+                        rowContentHeight: rowContentHeight,
+                        rowCount: rows.count
                     )
                     WoodenBookcase {
                         LazyVStack(spacing: 0) {
@@ -143,11 +153,30 @@ struct BookshelfView: View {
                             }
                         }
                     }
-                    .frame(minHeight: proxy.size.height)
+                    // ReaderView hides the status bar while it is being
+                    // presented, which changes this GeometryReader's proposed
+                    // height. Keep the shelf at its pre-transition height so
+                    // the bottom plinth cannot stretch behind the animation.
+                    .frame(height: bookcaseHeight)
                     .padding(.horizontal, 12)
                 }
             }
             .scrollIndicators(.hidden)
+            .onAppear {
+                if stableShelfViewportHeight == nil {
+                    stableShelfViewportHeight = proxy.size.height
+                }
+            }
+            .onChange(of: proxy.size.height) { _, newHeight in
+                if selectedBookID == nil {
+                    stableShelfViewportHeight = newHeight
+                }
+            }
+            .onChange(of: selectedBookID) { _, newBookID in
+                if newBookID == nil {
+                    stableShelfViewportHeight = proxy.size.height
+                }
+            }
         }
     }
 
@@ -572,6 +601,35 @@ private enum ReaderTransitionPhase: Equatable {
     case closing
 }
 
+enum BookcaseLayoutMetrics {
+    static let topInset: CGFloat = 27
+    static let bottomInset: CGFloat = 23
+    static let shelfHeight: CGFloat = 26
+    static let minimumRowContentHeight: CGFloat = 158
+
+    static func resolvedViewportHeight(
+        current: CGFloat,
+        cached: CGFloat?,
+        readerPresented: Bool
+    ) -> CGFloat {
+        guard readerPresented, let cached, cached > 0 else { return current }
+        return cached
+    }
+
+    static func rowContentHeight(viewportHeight: CGFloat, rowCount: Int) -> CGFloat {
+        let rows = max(rowCount, 1)
+        let fixedHeight = topInset + bottomInset + shelfHeight * CGFloat(rows)
+        return max(minimumRowContentHeight, (viewportHeight - fixedHeight) / CGFloat(rows))
+    }
+
+    static func totalHeight(rowContentHeight: CGFloat, rowCount: Int) -> CGFloat {
+        let rows = max(rowCount, 1)
+        return topInset
+            + bottomInset
+            + CGFloat(rows) * (rowContentHeight + shelfHeight)
+    }
+}
+
 private struct WoodenBookcase<Content: View>: View {
     let content: Content
 
@@ -581,39 +639,94 @@ private struct WoodenBookcase<Content: View>: View {
 
     var body: some View {
         ZStack {
-            WoodSurface(axis: .vertical, colors: [Color(hex: "3A2115"), Color(hex: "1E120D"), Color(hex: "4B2C1B")])
+            // Recessed cabinet back: dark at the edges and warmer in the
+            // center, with narrow vertical boards rather than one flat panel.
+            WoodSurface(axis: .vertical, colors: [Color(hex: "21130E"), Color(hex: "3A2117"), Color(hex: "170D09")])
+                .overlay {
+                    LinearGradient(
+                        colors: [.black.opacity(0.52), .clear, .black.opacity(0.38)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                }
+                .overlay {
+                    HStack(spacing: 0) {
+                        ForEach(0..<4, id: \.self) { index in
+                            Color.clear
+                                .overlay(alignment: .trailing) {
+                                    Rectangle()
+                                        .fill(index.isMultiple(of: 2) ? .black.opacity(0.18) : .white.opacity(0.025))
+                                        .frame(width: 1)
+                                }
+                        }
+                    }
+                }
             content
-                .padding(.horizontal, 13)
-                .padding(.top, 21)
-                .padding(.bottom, 17)
+                .padding(.horizontal, 17)
+                .padding(.top, BookcaseLayoutMetrics.topInset)
+                .padding(.bottom, BookcaseLayoutMetrics.bottomInset)
         }
+        .background(Color(hex: "170D09"))
         .overlay {
-            RoundedRectangle(cornerRadius: 25, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.46), lineWidth: 3)
-                .padding(1)
+            RoundedRectangle(cornerRadius: 27, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.2), .black.opacity(0.72)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 3
+                )
+                .padding(2)
         }
         .overlay(alignment: .leading) {
-            WoodSurface(axis: .vertical, colors: [Color(hex: "815637"), Color(hex: "4B2B1A"), Color(hex: "2C190F")])
-                .frame(width: 17)
-                .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.32)).frame(width: 2) }
+            CabinetPost(isLeading: true)
         }
         .overlay(alignment: .trailing) {
-            WoodSurface(axis: .vertical, colors: [Color(hex: "2C190F"), Color(hex: "5E3822"), Color(hex: "8B6040")])
-                .frame(width: 17)
-                .overlay(alignment: .leading) { Rectangle().fill(.black.opacity(0.38)).frame(width: 2) }
+            CabinetPost(isLeading: false)
         }
         .overlay(alignment: .top) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "936946"), Color(hex: "57331F"), Color(hex: "2C190F")])
-                .frame(height: 23)
-                .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.34)).frame(height: 3) }
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "A0714B"), Color(hex: "684128"), Color(hex: "2E190F")])
+                .frame(height: 27)
+                .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.25)).frame(height: 1) }
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.black.opacity(0.08), .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 7)
+                }
         }
         .overlay(alignment: .bottom) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "392015"), Color(hex: "6F452B"), Color(hex: "936746")])
-                .frame(height: 18)
-                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.4)).frame(height: 3) }
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "2A160E"), Color(hex: "71472C"), Color(hex: "9A6B47"), Color(hex: "3B2115")])
+                .frame(height: 23)
+                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.58)).frame(height: 3) }
+                .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 1) }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 12, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
+        .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 9)
+    }
+}
+
+private struct CabinetPost: View {
+    let isLeading: Bool
+
+    var body: some View {
+        WoodSurface(
+            axis: .vertical,
+            colors: isLeading
+                ? [Color(hex: "A27551"), Color(hex: "634027"), Color(hex: "321C12")]
+                : [Color(hex: "321C12"), Color(hex: "68442A"), Color(hex: "9A6D4B")]
+        )
+        .frame(width: 21)
+        .overlay(alignment: isLeading ? .trailing : .leading) {
+            LinearGradient(
+                colors: [.black.opacity(0.12), .black.opacity(0.62)],
+                startPoint: isLeading ? .leading : .trailing,
+                endPoint: isLeading ? .trailing : .leading
+            )
+            .frame(width: 5)
+        }
+        .overlay(alignment: isLeading ? .leading : .trailing) {
+            Rectangle().fill(.white.opacity(0.16)).frame(width: 1).padding(.horizontal, 3)
+        }
     }
 }
 
@@ -656,6 +769,30 @@ private struct WoodSurface: View {
                     }
                     context.stroke(path, with: .color(.black.opacity(index.isMultiple(of: 3) ? 0.18 : 0.09)), lineWidth: 0.7)
                 }
+
+                // A few deterministic growth rings make the surface read as
+                // timber without introducing a large raster texture asset.
+                let knotCount = axis == .horizontal ? 3 : 2
+                for index in 0..<knotCount {
+                    let center = CGPoint(
+                        x: size.width * CGFloat(index * 3 + 2) / CGFloat(knotCount * 3 + 1),
+                        y: size.height * CGFloat(index + 1) / CGFloat(knotCount + 1)
+                    )
+                    for ring in 0..<3 {
+                        let radius = CGFloat(3 + ring * 3)
+                        let rect = CGRect(
+                            x: center.x - radius * 1.8,
+                            y: center.y - radius * 0.48,
+                            width: radius * 3.6,
+                            height: radius * 0.96
+                        )
+                        context.stroke(
+                            Path(ellipseIn: rect),
+                            with: .color(.black.opacity(0.08 + Double(ring) * 0.025)),
+                            lineWidth: 0.65
+                        )
+                    }
+                }
             }
         }
     }
@@ -664,11 +801,14 @@ private struct WoodSurface: View {
 private struct WoodenShelf: View {
     var body: some View {
         VStack(spacing: 0) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "9B704C"), Color(hex: "603A24"), Color(hex: "3B2114")]).frame(height: 14)
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "321B11"), Color(hex: "74492D"), Color(hex: "936443")]).frame(height: 9)
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "A97B55"), Color(hex: "684129"), Color(hex: "351C11")])
+                .frame(height: 15)
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "2B160D"), Color(hex: "70452A"), Color(hex: "9A6A48")])
+                .frame(height: 11)
         }
         .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.24)).frame(height: 1) }
-        .shadow(color: .black.opacity(0.25), radius: 5, y: 4)
+        .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.38)).frame(height: 2) }
+        .shadow(color: .black.opacity(0.46), radius: 6, y: 5)
     }
 }
 
