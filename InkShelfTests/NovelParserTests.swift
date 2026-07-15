@@ -5,6 +5,36 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
+    func testReaderOpeningDoesNotUnlockBeforeBothAnimationAndContentAreReady() {
+        XCTAssertFalse(
+            ReaderOpeningGate.canEnableInteraction(
+                animationCompleted: false,
+                readerReady: false
+            )
+        )
+        XCTAssertFalse(
+            ReaderOpeningGate.canEnableInteraction(
+                animationCompleted: true,
+                readerReady: false
+            )
+        )
+        XCTAssertFalse(
+            ReaderOpeningGate.canEnableInteraction(
+                animationCompleted: false,
+                readerReady: true
+            )
+        )
+    }
+
+    func testReaderOpeningUnlocksAfterAnimationAndContentAreReady() {
+        XCTAssertTrue(
+            ReaderOpeningGate.canEnableInteraction(
+                animationCompleted: true,
+                readerReady: true
+            )
+        )
+    }
+
     func testChineseHeadingsBecomeChapters() {
         let text = "序言内容\n第一章 开始\n这是第一章的正文。\n第二章 继续\n这是第二章的正文。"
         let chapters = NovelParser.chapters(from: text)

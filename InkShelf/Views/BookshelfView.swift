@@ -16,6 +16,8 @@ struct BookshelfView: View {
     @State private var readerTransitionProgress: CGFloat = 1
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
+    @State private var readerIsReady = false
+    @State private var readerOpenAnimationCompleted = false
     @State private var frozenBookOrder: [UUID]?
     @State private var stableShelfViewportHeight: CGFloat?
     @State private var shelfPage = 0
@@ -268,8 +270,10 @@ struct BookshelfView: View {
             targetFrame: fullTargetFrame,
             containerSize: fullSize,
             paperColor: UIColor(readerTheme.background),
+            foregroundColor: UIColor(readerTheme.foreground),
             progress: readerTransitionProgress,
             interactionDisabled: phase != .open,
+            showsReaderLoading: phase == .waitingForReader,
             edgeGestureEnabled: (phase == .open || phase == .edgeDragging) && !readerBlocksEdgeDismiss,
             onReady: { readerDidBecomeReady(bookID: book.id) },
             onRequestClose: { closeReader(bookID: book.id) },
@@ -298,34 +302,55 @@ struct BookshelfView: View {
         )
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
+        readerIsReady = false
+        readerOpenAnimationCompleted = false
         readerTransitionProgress = 1
         readerTransitionPhase = .preparing
         selectedBookSourceHidden = false
         selectedBookFrame = bookFrames[book.id]
         selectedBookID = book.id
+
+        // The physical book transition must acknowledge the tap immediately.
+        // Reader pagination continues behind it and only gates interaction.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            beginReaderOpening(bookID: book.id)
+        }
+    }
+
+    private func beginReaderOpening(bookID: UUID) {
+        guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
+        selectedBookSourceHidden = true
+        readerTransitionPhase = .opening
+        withAnimation(.easeInOut(duration: 0.56)) {
+            readerTransitionProgress = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
+            guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
+            readerOpenAnimationCompleted = true
+            readerTransitionPhase = ReaderOpeningGate.canEnableInteraction(
+                animationCompleted: readerOpenAnimationCompleted,
+                readerReady: readerIsReady
+            ) ? .open : .waitingForReader
+        }
     }
 
     private func readerDidBecomeReady(bookID: UUID) {
-        guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-        // Keep the closed book on screen for several display frames so UIKit's
-        // layer tree commits the physical cover before interpolation begins.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-            selectedBookSourceHidden = true
-            readerTransitionPhase = .opening
-            withAnimation(.easeInOut(duration: 0.56)) {
-                readerTransitionProgress = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
-                guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
-                readerTransitionPhase = .open
-            }
+        guard selectedBookID == bookID else { return }
+        readerIsReady = true
+        if readerTransitionPhase == .waitingForReader,
+           ReaderOpeningGate.canEnableInteraction(
+               animationCompleted: readerOpenAnimationCompleted,
+               readerReady: readerIsReady
+           ) {
+            readerTransitionPhase = .open
         }
     }
 
     private func closeReader(bookID: UUID) {
         guard selectedBookID == bookID,
-              readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
+              readerTransitionPhase == .open
+                || readerTransitionPhase == .edgeDragging
+                || readerTransitionPhase == .waitingForReader else { return }
         readerTransitionPhase = .closing
         withAnimation(.easeInOut(duration: 0.56)) {
             readerTransitionProgress = 1
@@ -375,6 +400,8 @@ struct BookshelfView: View {
             readerTransitionProgress = 1
             readerTransitionPhase = .idle
             readerBlocksEdgeDismiss = false
+            readerIsReady = false
+            readerOpenAnimationCompleted = false
         }
     }
 
@@ -525,8 +552,10 @@ private struct ReaderTransitionLayer: View {
     let targetFrame: CGRect
     let containerSize: CGSize
     let paperColor: UIColor
+    let foregroundColor: UIColor
     let progress: CGFloat
     let interactionDisabled: Bool
+    let showsReaderLoading: Bool
     let edgeGestureEnabled: Bool
     let onReady: () -> Void
     let onRequestClose: () -> Void
@@ -572,6 +601,27 @@ private struct ReaderTransitionLayer: View {
             )
             .frame(width: width, height: height)
                 .allowsHitTesting(false)
+
+            if showsReaderLoading {
+                VStack(spacing: 0) {
+                    HStack {
+                        Button(action: onRequestClose) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("返回书架")
+                        Spacer()
+                    }
+                    .padding(.top, 48)
+                    .padding(.horizontal, 8)
+                    Spacer()
+                }
+                .frame(width: width, height: height)
+                .foregroundStyle(Color(uiColor: foregroundColor))
+            }
 
             ScreenEdgeDismissGesture(
                 isEnabled: edgeGestureEnabled,
@@ -677,9 +727,16 @@ private enum ReaderTransitionPhase: Equatable {
     case idle
     case preparing
     case opening
+    case waitingForReader
     case open
     case edgeDragging
     case closing
+}
+
+enum ReaderOpeningGate {
+    static func canEnableInteraction(animationCompleted: Bool, readerReady: Bool) -> Bool {
+        animationCompleted && readerReady
+    }
 }
 
 enum CoverImageProcessingError: LocalizedError {
