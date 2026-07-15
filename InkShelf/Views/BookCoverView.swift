@@ -12,15 +12,8 @@ struct BookCoverView: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(BookPalette.defaultCoverAssetName(for: book.coverStyle))
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-                LinearGradient(
-                    colors: [.black.opacity(0.08), .clear, .black.opacity(0.58)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                LinearGradient(colors: BookPalette.colors(for: book.coverStyle), startPoint: .topLeading, endPoint: .bottomTrailing)
+                coverOrnament
                 coverDecoration
             }
             CoverMaterialTexture(seed: book.coverStyle)
@@ -77,37 +70,80 @@ struct BookCoverView: View {
         }
     }
 
+    private var coverOrnament: some View {
+        GeometryReader { proxy in
+            Canvas(rendersAsynchronously: true) { context, size in
+                let ink = Color.white.opacity(0.2)
+                switch abs(book.coverStyle) % 3 {
+                case 0:
+                    var mountains = Path()
+                    mountains.move(to: CGPoint(x: size.width * 0.08, y: size.height * 0.7))
+                    mountains.addCurve(
+                        to: CGPoint(x: size.width * 0.92, y: size.height * 0.64),
+                        control1: CGPoint(x: size.width * 0.3, y: size.height * 0.46),
+                        control2: CGPoint(x: size.width * 0.56, y: size.height * 0.78)
+                    )
+                    context.stroke(mountains, with: .color(ink), lineWidth: compact ? 0.7 : 1)
+                case 1:
+                    let moon = CGRect(
+                        x: size.width * 0.62,
+                        y: size.height * 0.17,
+                        width: size.width * 0.18,
+                        height: size.width * 0.18
+                    )
+                    context.stroke(Path(ellipseIn: moon), with: .color(ink), lineWidth: compact ? 0.8 : 1.2)
+                    var water = Path()
+                    for line in 0..<4 {
+                        let y = size.height * (0.68 + CGFloat(line) * 0.045)
+                        water.move(to: CGPoint(x: size.width * 0.17, y: y))
+                        water.addCurve(
+                            to: CGPoint(x: size.width * 0.83, y: y),
+                            control1: CGPoint(x: size.width * 0.36, y: y - 3),
+                            control2: CGPoint(x: size.width * 0.61, y: y + 3)
+                        )
+                    }
+                    context.stroke(water, with: .color(ink.opacity(0.72)), lineWidth: 0.65)
+                default:
+                    var branch = Path()
+                    branch.move(to: CGPoint(x: size.width * 0.75, y: size.height * 0.2))
+                    branch.addCurve(
+                        to: CGPoint(x: size.width * 0.36, y: size.height * 0.77),
+                        control1: CGPoint(x: size.width * 0.68, y: size.height * 0.4),
+                        control2: CGPoint(x: size.width * 0.52, y: size.height * 0.57)
+                    )
+                    context.stroke(branch, with: .color(ink), lineWidth: compact ? 0.8 : 1.1)
+                    for leaf in 0..<5 {
+                        let x = size.width * (0.67 - CGFloat(leaf) * 0.065)
+                        let y = size.height * (0.31 + CGFloat(leaf) * 0.085)
+                        let leafRect = CGRect(x: x, y: y, width: size.width * 0.1, height: size.height * 0.035)
+                        context.stroke(Path(ellipseIn: leafRect), with: .color(ink.opacity(0.78)), lineWidth: 0.65)
+                    }
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
     private var coverDecoration: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("墨架典藏")
-                    .font(.system(size: compact ? 6.5 : 8, weight: .medium, design: .serif))
-                    .tracking(compact ? 1.2 : 1.8)
-                    .opacity(0.82)
-                Spacer(minLength: 0)
-            }
+        VStack(spacing: compact ? 6 : 12) {
+            Text("墨 架")
+                .font(.system(size: compact ? 7 : 9, weight: .semibold, design: .serif))
+                .tracking(3)
+                .opacity(0.68)
+            Rectangle().fill(.white.opacity(0.55)).frame(width: 28, height: 1)
+            Text(book.title)
+                .font(.custom("Songti SC", size: compact ? 14 : 19).weight(.semibold))
+                .multilineTextAlignment(.center)
+                .lineLimit(4)
+                .minimumScaleFactor(0.72)
+                .padding(.horizontal, compact ? 9 : 15)
             Spacer(minLength: 0)
-            VStack(spacing: compact ? 5 : 8) {
-                Rectangle()
-                    .fill(.white.opacity(0.64))
-                    .frame(width: compact ? 22 : 32, height: 0.8)
-                Text(book.title)
-                    .font(.custom("Songti SC", size: compact ? 13 : 19).weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.68)
-                Text(book.author)
-                    .font(.system(size: compact ? 7.5 : 10, design: .serif))
-                    .lineLimit(1)
-                    .opacity(0.78)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, compact ? 5 : 8)
-            .padding(.vertical, compact ? 8 : 12)
-            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: compact ? 3 : 5))
+            Text(book.author)
+                .font(.system(size: compact ? 8 : 10, design: .serif))
+                .opacity(0.72)
         }
         .foregroundStyle(.white.opacity(0.94))
-        .padding(compact ? 9 : 14)
+        .padding(.vertical, compact ? 12 : 18)
     }
 }
 

@@ -236,12 +236,9 @@ final class BookTransitionCanvasView: UIView {
             coverFront.contentsGravity = .resizeAspectFill
             [titleLayer, brandLayer, authorLayer].forEach { $0.isHidden = true }
         } else {
-            coverFront.contents = UIImage(
-                named: BookPalette.defaultCoverAssetName(for: book.coverStyle)
-            )?.cgImage
-            coverFront.contentsGravity = .resizeAspectFill
+            coverFront.contents = nil
             [titleLayer, brandLayer, authorLayer].forEach { $0.isHidden = false }
-            brandLayer.string = "墨 架 典 藏"
+            brandLayer.string = "墨 架"
             titleLayer.string = book.title
             authorLayer.string = book.author
         }

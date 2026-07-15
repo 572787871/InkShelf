@@ -5,48 +5,6 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
-    func testNativeBookshelfControlForwardsTouchUpInside() {
-        let control = NativeBookTapControl()
-        var tapCount = 0
-        control.onTap = { tapCount += 1 }
-
-        control.sendActions(for: .touchUpInside)
-
-        XCTAssertEqual(tapCount, 1)
-        XCTAssertTrue(control.isAccessibilityElement)
-        XCTAssertTrue(control.accessibilityTraits.contains(.button))
-    }
-
-    func testReaderOpeningDoesNotUnlockBeforeBothAnimationAndContentAreReady() {
-        XCTAssertFalse(
-            ReaderOpeningGate.canEnableInteraction(
-                animationCompleted: false,
-                readerReady: false
-            )
-        )
-        XCTAssertFalse(
-            ReaderOpeningGate.canEnableInteraction(
-                animationCompleted: true,
-                readerReady: false
-            )
-        )
-        XCTAssertFalse(
-            ReaderOpeningGate.canEnableInteraction(
-                animationCompleted: false,
-                readerReady: true
-            )
-        )
-    }
-
-    func testReaderOpeningUnlocksAfterAnimationAndContentAreReady() {
-        XCTAssertTrue(
-            ReaderOpeningGate.canEnableInteraction(
-                animationCompleted: true,
-                readerReady: true
-            )
-        )
-    }
-
     func testChineseHeadingsBecomeChapters() {
         let text = "序言内容\n第一章 开始\n这是第一章的正文。\n第二章 继续\n这是第二章的正文。"
         let chapters = NovelParser.chapters(from: text)
@@ -247,30 +205,6 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(reloadedStore.books.first?.currentChapter, 1)
         XCTAssertEqual(reloadedStore.books.first?.chapterProgressDescription, "2章 / 2章")
     }
-
-    @MainActor
-    func testCustomCoverPersistsAndCanReturnToDefault() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let store = LibraryStore(storageDirectory: root, seedSampleBook: true)
-        let bookID = try XCTUnwrap(store.books.first?.id)
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 180))
-        let coverData = renderer.jpegData(withCompressionQuality: 0.9) { context in
-            UIColor.systemIndigo.setFill()
-            context.cgContext.fill(CGRect(x: 0, y: 0, width: 120, height: 180))
-        }
-
-        store.updateCover(bookID: bookID, coverData: coverData)
-        XCTAssertEqual(store.book(id: bookID)?.coverData, coverData)
-        XCTAssertEqual(
-            LibraryStore(storageDirectory: root, seedSampleBook: false).book(id: bookID)?.coverData,
-            coverData
-        )
-
-        store.updateCover(bookID: bookID, coverData: nil)
-        XCTAssertNil(store.book(id: bookID)?.coverData)
-        XCTAssertNil(LibraryStore(storageDirectory: root, seedSampleBook: false).book(id: bookID)?.coverData)
-    }
 }
 
 final class ReaderPaginationTests: XCTestCase {
@@ -436,43 +370,6 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
-    func testPremiumShelfAssetsAreBundled() {
-        let assetNames = ["WalnutHorizontal", "WalnutVertical"]
-            + (0..<BookPalette.styles.count).map { BookPalette.defaultCoverAssetName(for: $0) }
-
-        for assetName in assetNames {
-            XCTAssertNotNil(UIImage(named: assetName), "缺少高清书架资源：\(assetName)")
-        }
-    }
-
-    func testFixedBookcaseUsesHorizontalPagesOfNineBooks() {
-        XCTAssertEqual(BookcaseLayoutMetrics.pageCount(forBookCount: 0), 1)
-        XCTAssertEqual(BookcaseLayoutMetrics.pageCount(forBookCount: 9), 1)
-        XCTAssertEqual(BookcaseLayoutMetrics.pageCount(forBookCount: 10), 2)
-        XCTAssertEqual(BookcaseLayoutMetrics.pageCount(forBookCount: 27), 3)
-    }
-
-    func testSelectedCoverIsDownsampledBeforeSaving() throws {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        let source = UIGraphicsImageRenderer(
-            size: CGSize(width: 2600, height: 1200),
-            format: format
-        ).pngData { context in
-            UIColor.systemTeal.setFill()
-            context.cgContext.fill(CGRect(x: 0, y: 0, width: 2600, height: 1200))
-        }
-
-        let processed = try CoverImageProcessor.preparedData(from: source)
-        let decoded = try XCTUnwrap(UIImage(data: processed))
-
-        XCTAssertLessThanOrEqual(
-            max(decoded.size.width, decoded.size.height),
-            CGFloat(CoverImageProcessor.maximumPixelSize)
-        )
-    }
-
     func testBookcaseKeepsItsPreTransitionViewportHeight() {
         let cachedHeight: CGFloat = 690
         let expandedRootHeight: CGFloat = 742

@@ -1,8 +1,6 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
-import PhotosUI
-import ImageIO
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -16,14 +14,8 @@ struct BookshelfView: View {
     @State private var readerTransitionProgress: CGFloat = 1
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
-    @State private var readerIsReady = false
-    @State private var readerOpenAnimationCompleted = false
     @State private var frozenBookOrder: [UUID]?
     @State private var stableShelfViewportHeight: CGFloat?
-    @State private var shelfPage = 0
-    @State private var showingCoverPicker = false
-    @State private var coverPickerBookID: UUID?
-    @State private var selectedCoverPhoto: PhotosPickerItem?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
@@ -83,32 +75,15 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .photosPicker(
-                isPresented: $showingCoverPicker,
-                selection: $selectedCoverPhoto,
-                matching: .images
-            )
             .alert("墨架", isPresented: Binding(get: { library.alertMessage != nil }, set: { if !$0 { library.alertMessage = nil } })) {
                 Button("知道了", role: .cancel) { library.alertMessage = nil }
             } message: { Text(library.alertMessage ?? "") }
-            .onChange(of: sortRaw) { _, _ in
-                frozenBookOrder = nil
-                shelfPage = 0
-            }
+            .onChange(of: sortRaw) { _, _ in frozenBookOrder = nil }
             .onChange(of: searchText) { _, _ in
-                if selectedBookID == nil {
-                    frozenBookOrder = nil
-                    shelfPage = 0
-                }
+                if selectedBookID == nil { frozenBookOrder = nil }
             }
             .onChange(of: library.books.map(\.id)) { oldIDs, newIDs in
-                if oldIDs != newIDs {
-                    frozenBookOrder = nil
-                    shelfPage = min(shelfPage, max(shelfPages.count - 1, 0))
-                }
-            }
-            .onChange(of: selectedCoverPhoto) { _, item in
-                importSelectedCover(item)
+                if oldIDs != newIDs { frozenBookOrder = nil }
             }
         }
     }
@@ -141,14 +116,6 @@ struct BookshelfView: View {
             }
             .padding(.horizontal, 13).frame(height: 42)
             .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 13))
-            if shelfPages.count > 1 {
-                ShelfPageControls(
-                    pageCount: shelfPages.count,
-                    selection: min(shelfPage, shelfPages.count - 1),
-                    onPrevious: { shelfPage = max(0, shelfPage - 1) },
-                    onNext: { shelfPage = min(shelfPages.count - 1, shelfPage + 1) }
-                )
-            }
         }
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
     }
@@ -165,38 +132,35 @@ struct BookshelfView: View {
                     ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
                         .padding(.top, 80)
                 } else {
-                    let pages = shelfPages
-                    let resolvedPage = min(shelfPage, max(pages.count - 1, 0))
-                    let pageBooks = pages[resolvedPage]
+                    let rows = shelfRows
                     let rowContentHeight = BookcaseLayoutMetrics.rowContentHeight(
                         viewportHeight: layoutHeight,
-                        rowCount: 3
+                        rowCount: rows.count
                     )
                     let bookcaseHeight = BookcaseLayoutMetrics.totalHeight(
                         rowContentHeight: rowContentHeight,
-                        rowCount: 3
+                        rowCount: rows.count
                     )
                     WoodenBookcase {
                         LazyVStack(spacing: 0) {
-                            ForEach(Array(shelfRows(for: pageBooks).enumerated()), id: \.offset) { _, row in
+                            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                                 ShelfRow(
                                     books: row,
                                     rowContentHeight: rowContentHeight,
                                     selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
-                                    onOpen: openReader,
-                                    onChooseCover: beginCoverSelection
+                                    onOpen: openReader
                                 )
                             }
                         }
                     }
+                    // ReaderView hides the status bar while it is being
+                    // presented, which changes this GeometryReader's proposed
+                    // height. Keep the shelf at its pre-transition height so
+                    // the bottom plinth cannot stretch behind the animation.
                     .frame(height: bookcaseHeight)
                     .padding(.horizontal, 12)
                 }
             }
-            // This is the same direct ScrollView/LazyVStack hierarchy used by
-            // the last known-good bookshelf. Disabling scrolling keeps the
-            // cabinet fixed without placing a gesture recognizer over books.
-            .scrollDisabled(true)
             .scrollIndicators(.hidden)
             .onAppear {
                 if stableShelfViewportHeight == nil {
@@ -216,12 +180,8 @@ struct BookshelfView: View {
         }
     }
 
-    private var shelfPages: [[NovelBook]] {
-        displayedBooks.chunked(into: BookcaseLayoutMetrics.booksPerPage)
-    }
-
-    private func shelfRows(for books: [NovelBook]) -> [[NovelBook]] {
-        var rows = books.chunked(into: 3)
+    private var shelfRows: [[NovelBook]] {
+        var rows = displayedBooks.chunked(into: 3)
         while rows.count < 3 { rows.append([]) }
         return rows
     }
@@ -270,10 +230,8 @@ struct BookshelfView: View {
             targetFrame: fullTargetFrame,
             containerSize: fullSize,
             paperColor: UIColor(readerTheme.background),
-            foregroundColor: UIColor(readerTheme.foreground),
             progress: readerTransitionProgress,
             interactionDisabled: phase != .open,
-            showsReaderLoading: phase == .waitingForReader,
             edgeGestureEnabled: (phase == .open || phase == .edgeDragging) && !readerBlocksEdgeDismiss,
             onReady: { readerDidBecomeReady(bookID: book.id) },
             onRequestClose: { closeReader(bookID: book.id) },
@@ -302,55 +260,34 @@ struct BookshelfView: View {
         )
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
-        readerIsReady = false
-        readerOpenAnimationCompleted = false
         readerTransitionProgress = 1
         readerTransitionPhase = .preparing
         selectedBookSourceHidden = false
         selectedBookFrame = bookFrames[book.id]
         selectedBookID = book.id
-
-        // The physical book transition must acknowledge the tap immediately.
-        // Reader pagination continues behind it and only gates interaction.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            beginReaderOpening(bookID: book.id)
-        }
-    }
-
-    private func beginReaderOpening(bookID: UUID) {
-        guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
-        selectedBookSourceHidden = true
-        readerTransitionPhase = .opening
-        withAnimation(.easeInOut(duration: 0.56)) {
-            readerTransitionProgress = 0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
-            guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
-            readerOpenAnimationCompleted = true
-            readerTransitionPhase = ReaderOpeningGate.canEnableInteraction(
-                animationCompleted: readerOpenAnimationCompleted,
-                readerReady: readerIsReady
-            ) ? .open : .waitingForReader
-        }
     }
 
     private func readerDidBecomeReady(bookID: UUID) {
-        guard selectedBookID == bookID else { return }
-        readerIsReady = true
-        if readerTransitionPhase == .waitingForReader,
-           ReaderOpeningGate.canEnableInteraction(
-               animationCompleted: readerOpenAnimationCompleted,
-               readerReady: readerIsReady
-           ) {
-            readerTransitionPhase = .open
+        guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
+        // Keep the closed book on screen for several display frames so UIKit's
+        // layer tree commits the physical cover before interpolation begins.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
+            selectedBookSourceHidden = true
+            readerTransitionPhase = .opening
+            withAnimation(.easeInOut(duration: 0.56)) {
+                readerTransitionProgress = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
+                guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
+                readerTransitionPhase = .open
+            }
         }
     }
 
     private func closeReader(bookID: UUID) {
         guard selectedBookID == bookID,
-              readerTransitionPhase == .open
-                || readerTransitionPhase == .edgeDragging
-                || readerTransitionPhase == .waitingForReader else { return }
+              readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
         readerTransitionPhase = .closing
         withAnimation(.easeInOut(duration: 0.56)) {
             readerTransitionProgress = 1
@@ -400,41 +337,6 @@ struct BookshelfView: View {
             readerTransitionProgress = 1
             readerTransitionPhase = .idle
             readerBlocksEdgeDismiss = false
-            readerIsReady = false
-            readerOpenAnimationCompleted = false
-        }
-    }
-
-    private func beginCoverSelection(_ book: NovelBook) {
-        guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
-        coverPickerBookID = book.id
-        selectedCoverPhoto = nil
-        // The context menu must finish dismissing before PhotosPicker presents.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            guard coverPickerBookID == book.id, selectedBookID == nil else { return }
-            showingCoverPicker = true
-        }
-    }
-
-    private func importSelectedCover(_ item: PhotosPickerItem?) {
-        guard let item, let bookID = coverPickerBookID else { return }
-        Task {
-            do {
-                guard let sourceData = try await item.loadTransferable(type: Data.self) else {
-                    throw CoverImageProcessingError.unreadableImage
-                }
-                let preparedData = try await Task.detached(priority: .userInitiated) {
-                    try CoverImageProcessor.preparedData(from: sourceData)
-                }.value
-                guard coverPickerBookID == bookID else { return }
-                library.updateCover(bookID: bookID, coverData: preparedData)
-            } catch {
-                library.reportCoverSelectionFailure(error)
-            }
-            if coverPickerBookID == bookID {
-                coverPickerBookID = nil
-                selectedCoverPhoto = nil
-            }
         }
     }
 
@@ -449,51 +351,37 @@ private struct ShelfRow: View {
     let rowContentHeight: CGFloat
     let selectedBookID: UUID?
     let onOpen: (NovelBook) -> Void
-    let onChooseCover: (NovelBook) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .bottom, spacing: 17) {
                 ForEach(books) { book in
-                    VStack(spacing: 9) {
-                        BookCoverView(book: book, compact: true)
-                            .frame(maxWidth: 92)
-                            .background {
-                                GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: BookFramePreferenceKey.self,
-                                        value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
-                                    )
+                    Button { onOpen(book) } label: {
+                        VStack(spacing: 9) {
+                            BookCoverView(book: book, compact: true)
+                                .frame(maxWidth: 92)
+                                .background {
+                                    GeometryReader { proxy in
+                                        Color.clear.preference(
+                                            key: BookFramePreferenceKey.self,
+                                            value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
+                                        )
+                                    }
                                 }
+                            VStack(spacing: 2) {
+                                Text(book.title)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .lineLimit(1)
+                                Text(book.chapterProgressDescription)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.white.opacity(0.62))
                             }
-                        VStack(spacing: 2) {
-                            Text(book.title)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .lineLimit(1)
-                            Text(book.chapterProgressDescription)
-                                .font(.system(size: 9))
-                                .foregroundStyle(.white.opacity(0.62))
                         }
                     }
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                    .overlay {
-                        NativeBookTapSurface(
-                            accessibilityLabel: "打开《\(book.title)》",
-                            onTap: { onOpen(book) }
-                        )
-                    }
+                    .buttonStyle(.plain)
                     .opacity(selectedBookID == book.id ? 0 : 1)
                     .contextMenu {
-                        Button { onChooseCover(book) } label: {
-                            Label("从相册设置封面", systemImage: "photo.on.rectangle")
-                        }
-                        if book.coverData != nil {
-                            Button { library.updateCover(bookID: book.id, coverData: nil) } label: {
-                                Label("恢复默认封面", systemImage: "arrow.uturn.backward")
-                            }
-                        }
                         NavigationLink { BookInfoView(bookID: book.id) } label: { Label("书籍信息", systemImage: "info.circle") }
                         Button(role: .destructive) { library.delete(bookID: book.id) } label: { Label("移出书架", systemImage: "trash") }
                     }
@@ -506,49 +394,6 @@ private struct ShelfRow: View {
         }
     }
 
-}
-
-struct NativeBookTapSurface: UIViewRepresentable {
-    let accessibilityLabel: String
-    let onTap: () -> Void
-
-    func makeUIView(context: Context) -> NativeBookTapControl {
-        let control = NativeBookTapControl()
-        control.backgroundColor = .clear
-        return control
-    }
-
-    func updateUIView(_ control: NativeBookTapControl, context: Context) {
-        control.onTap = onTap
-        control.accessibilityLabel = accessibilityLabel
-    }
-}
-
-final class NativeBookTapControl: UIControl {
-    var onTap: (() -> Void)?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isAccessibilityElement = true
-        accessibilityTraits = .button
-        addTarget(self, action: #selector(didTap), for: .touchUpInside)
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        isAccessibilityElement = true
-        accessibilityTraits = .button
-        addTarget(self, action: #selector(didTap), for: .touchUpInside)
-    }
-
-    override func accessibilityActivate() -> Bool {
-        onTap?()
-        return true
-    }
-
-    @objc private func didTap() {
-        onTap?()
-    }
 }
 
 private struct NovelDocumentPicker: UIViewControllerRepresentable {
@@ -599,10 +444,8 @@ private struct ReaderTransitionLayer: View {
     let targetFrame: CGRect
     let containerSize: CGSize
     let paperColor: UIColor
-    let foregroundColor: UIColor
     let progress: CGFloat
     let interactionDisabled: Bool
-    let showsReaderLoading: Bool
     let edgeGestureEnabled: Bool
     let onReady: () -> Void
     let onRequestClose: () -> Void
@@ -648,27 +491,6 @@ private struct ReaderTransitionLayer: View {
             )
             .frame(width: width, height: height)
                 .allowsHitTesting(false)
-
-            if showsReaderLoading {
-                VStack(spacing: 0) {
-                    HStack {
-                        Button(action: onRequestClose) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 19, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("返回书架")
-                        Spacer()
-                    }
-                    .padding(.top, 48)
-                    .padding(.horizontal, 8)
-                    Spacer()
-                }
-                .frame(width: width, height: height)
-                .foregroundStyle(Color(uiColor: foregroundColor))
-            }
 
             ScreenEdgeDismissGesture(
                 isEnabled: edgeGestureEnabled,
@@ -774,57 +596,16 @@ private enum ReaderTransitionPhase: Equatable {
     case idle
     case preparing
     case opening
-    case waitingForReader
     case open
     case edgeDragging
     case closing
 }
 
-enum ReaderOpeningGate {
-    static func canEnableInteraction(animationCompleted: Bool, readerReady: Bool) -> Bool {
-        animationCompleted && readerReady
-    }
-}
-
-enum CoverImageProcessingError: LocalizedError {
-    case unreadableImage
-    case encodingFailed
-
-    var errorDescription: String? {
-        switch self {
-        case .unreadableImage: return "无法读取所选图片"
-        case .encodingFailed: return "无法生成封面图片"
-        }
-    }
-}
-
-enum CoverImageProcessor {
-    static let maximumPixelSize = 2048
-
-    static func preparedData(from data: Data) throws -> Data {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            throw CoverImageProcessingError.unreadableImage
-        }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
-            kCGImageSourceShouldCacheImmediately: true
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
-              let encoded = UIImage(cgImage: image).jpegData(compressionQuality: 0.9) else {
-            throw CoverImageProcessingError.encodingFailed
-        }
-        return encoded
-    }
-}
-
 enum BookcaseLayoutMetrics {
-    static let booksPerPage = 9
-    static let topInset: CGFloat = 31
-    static let bottomInset: CGFloat = 28
+    static let topInset: CGFloat = 27
+    static let bottomInset: CGFloat = 23
     static let shelfHeight: CGFloat = 26
-    static let minimumRowContentHeight: CGFloat = 110
+    static let minimumRowContentHeight: CGFloat = 158
 
     static func resolvedViewportHeight(
         current: CGFloat,
@@ -847,10 +628,6 @@ enum BookcaseLayoutMetrics {
             + bottomInset
             + CGFloat(rows) * (rowContentHeight + shelfHeight)
     }
-
-    static func pageCount(forBookCount count: Int) -> Int {
-        max(1, Int(ceil(Double(max(count, 0)) / Double(booksPerPage))))
-    }
 }
 
 private struct WoodenBookcase<Content: View>: View {
@@ -862,96 +639,69 @@ private struct WoodenBookcase<Content: View>: View {
 
     var body: some View {
         ZStack {
+            // Recessed cabinet back: dark at the edges and warmer in the
+            // center, with narrow vertical boards rather than one flat panel.
             WoodSurface(axis: .vertical, colors: [Color(hex: "21130E"), Color(hex: "3A2117"), Color(hex: "170D09")])
                 .overlay {
                     LinearGradient(
-                        colors: [.black.opacity(0.58), .clear, .black.opacity(0.46)],
+                        colors: [.black.opacity(0.52), .clear, .black.opacity(0.38)],
                         startPoint: .leading,
                         endPoint: .trailing
                     )
                 }
                 .overlay {
                     HStack(spacing: 0) {
-                        ForEach(0..<3, id: \.self) { index in
-                            Rectangle()
-                                .fill(.clear)
+                        ForEach(0..<4, id: \.self) { index in
+                            Color.clear
                                 .overlay(alignment: .trailing) {
                                     Rectangle()
-                                        .fill(index == 1 ? .white.opacity(0.035) : .black.opacity(0.28))
+                                        .fill(index.isMultiple(of: 2) ? .black.opacity(0.18) : .white.opacity(0.025))
                                         .frame(width: 1)
                                 }
                         }
                     }
                 }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(.black.opacity(0.62), lineWidth: 10)
-                        .blur(radius: 4)
-                        .padding(15)
-                }
             content
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 17)
                 .padding(.top, BookcaseLayoutMetrics.topInset)
                 .padding(.bottom, BookcaseLayoutMetrics.bottomInset)
         }
-        .background(Color(hex: "120A07"))
+        .background(Color(hex: "170D09"))
         .overlay {
             RoundedRectangle(cornerRadius: 27, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.3), Color(hex: "6F432A"), .black.opacity(0.82)],
+                        colors: [.white.opacity(0.2), .black.opacity(0.72)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 3.5
+                    lineWidth: 3
                 )
                 .padding(2)
-                .allowsHitTesting(false)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 23, style: .continuous)
-                .strokeBorder(.black.opacity(0.54), lineWidth: 1)
-                .padding(7)
-                .allowsHitTesting(false)
         }
         .overlay(alignment: .leading) {
             CabinetPost(isLeading: true)
-                .allowsHitTesting(false)
         }
         .overlay(alignment: .trailing) {
             CabinetPost(isLeading: false)
-                .allowsHitTesting(false)
         }
         .overlay(alignment: .top) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "9A6745"), Color(hex: "5D3824"), Color(hex: "24130C")])
-                .frame(height: BookcaseLayoutMetrics.topInset)
-                .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.3)).frame(height: 1) }
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "A0714B"), Color(hex: "684128"), Color(hex: "2E190F")])
+                .frame(height: 27)
+                .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.25)).frame(height: 1) }
                 .overlay(alignment: .bottom) {
-                    LinearGradient(colors: [.clear, .black.opacity(0.78)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 9)
+                    LinearGradient(colors: [.black.opacity(0.08), .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 7)
                 }
-                .overlay(alignment: .bottom) { Rectangle().fill(Color(hex: "B78A62").opacity(0.34)).frame(height: 1).padding(.bottom, 8) }
-                .allowsHitTesting(false)
         }
         .overlay(alignment: .bottom) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "24120C"), Color(hex: "684027"), Color(hex: "986747"), Color(hex: "2D180F")])
-                .frame(height: BookcaseLayoutMetrics.bottomInset)
-                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.68)).frame(height: 4) }
-                .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.2)).frame(height: 1).padding(.bottom, 3) }
-                .allowsHitTesting(false)
-        }
-        .overlay {
-            VStack {
-                HStack { BrassStud(); Spacer(); BrassStud() }
-                Spacer()
-                HStack { BrassStud(); Spacer(); BrassStud() }
-            }
-            .padding(9)
-            .allowsHitTesting(false)
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "2A160E"), Color(hex: "71472C"), Color(hex: "9A6B47"), Color(hex: "3B2115")])
+                .frame(height: 23)
+                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.58)).frame(height: 3) }
+                .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 1) }
         }
         .clipShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
-        .shadow(color: .black.opacity(0.4), radius: 17, x: 0, y: 11)
-        .shadow(color: Color(hex: "7F4C2F").opacity(0.14), radius: 4, x: 0, y: -1)
+        .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 9)
     }
 }
 
@@ -962,20 +712,20 @@ private struct CabinetPost: View {
         WoodSurface(
             axis: .vertical,
             colors: isLeading
-                ? [Color(hex: "9D6A49"), Color(hex: "5B3623"), Color(hex: "26140D")]
-                : [Color(hex: "26140D"), Color(hex: "5F3925"), Color(hex: "9B6948")]
+                ? [Color(hex: "A27551"), Color(hex: "634027"), Color(hex: "321C12")]
+                : [Color(hex: "321C12"), Color(hex: "68442A"), Color(hex: "9A6D4B")]
         )
-        .frame(width: 24)
+        .frame(width: 21)
         .overlay(alignment: isLeading ? .trailing : .leading) {
             LinearGradient(
-                colors: [.black.opacity(0.08), .black.opacity(0.72)],
+                colors: [.black.opacity(0.12), .black.opacity(0.62)],
                 startPoint: isLeading ? .leading : .trailing,
                 endPoint: isLeading ? .trailing : .leading
             )
-            .frame(width: 7)
+            .frame(width: 5)
         }
         .overlay(alignment: isLeading ? .leading : .trailing) {
-            Rectangle().fill(.white.opacity(0.22)).frame(width: 1).padding(.horizontal, 4)
+            Rectangle().fill(.white.opacity(0.16)).frame(width: 1).padding(.horizontal, 3)
         }
     }
 }
@@ -990,47 +740,61 @@ private struct WoodSurface: View {
     let colors: [Color]
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Image(axis == .horizontal ? "WalnutHorizontal" : "WalnutVertical")
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
+        LinearGradient(
+            colors: colors,
+            startPoint: axis == .horizontal ? .top : .leading,
+            endPoint: axis == .horizontal ? .bottom : .trailing
+        )
+        .overlay {
+            Canvas(rendersAsynchronously: true) { context, size in
+                let lineCount = axis == .horizontal ? 15 : 9
+                for index in 0..<lineCount {
+                    var path = Path()
+                    if axis == .horizontal {
+                        let baseY = size.height * CGFloat(index + 1) / CGFloat(lineCount + 1)
+                        path.move(to: CGPoint(x: 0, y: baseY))
+                        for step in 1...18 {
+                            let x = size.width * CGFloat(step) / 18
+                            let wave = sin(CGFloat(step + index * 3) * 0.72) * 1.25
+                            path.addLine(to: CGPoint(x: x, y: baseY + wave))
+                        }
+                    } else {
+                        let baseX = size.width * CGFloat(index + 1) / CGFloat(lineCount + 1)
+                        path.move(to: CGPoint(x: baseX, y: 0))
+                        for step in 1...22 {
+                            let y = size.height * CGFloat(step) / 22
+                            let wave = sin(CGFloat(step + index * 4) * 0.61) * 1.15
+                            path.addLine(to: CGPoint(x: baseX + wave, y: y))
+                        }
+                    }
+                    context.stroke(path, with: .color(.black.opacity(index.isMultiple(of: 3) ? 0.18 : 0.09)), lineWidth: 0.7)
+                }
 
-                LinearGradient(
-                    colors: colors.map { $0.opacity(0.48) },
-                    startPoint: axis == .horizontal ? .top : .leading,
-                    endPoint: axis == .horizontal ? .bottom : .trailing
-                )
-                .blendMode(.multiply)
-
-                LinearGradient(
-                    colors: [.white.opacity(0.14), .clear, .black.opacity(0.28)],
-                    startPoint: axis == .horizontal ? .top : .leading,
-                    endPoint: axis == .horizontal ? .bottom : .trailing
-                )
+                // A few deterministic growth rings make the surface read as
+                // timber without introducing a large raster texture asset.
+                let knotCount = axis == .horizontal ? 3 : 2
+                for index in 0..<knotCount {
+                    let center = CGPoint(
+                        x: size.width * CGFloat(index * 3 + 2) / CGFloat(knotCount * 3 + 1),
+                        y: size.height * CGFloat(index + 1) / CGFloat(knotCount + 1)
+                    )
+                    for ring in 0..<3 {
+                        let radius = CGFloat(3 + ring * 3)
+                        let rect = CGRect(
+                            x: center.x - radius * 1.8,
+                            y: center.y - radius * 0.48,
+                            width: radius * 3.6,
+                            height: radius * 0.96
+                        )
+                        context.stroke(
+                            Path(ellipseIn: rect),
+                            with: .color(.black.opacity(0.08 + Double(ring) * 0.025)),
+                            lineWidth: 0.65
+                        )
+                    }
+                }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
         }
-    }
-}
-
-private struct BrassStud: View {
-    var body: some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [Color(hex: "F4D69A"), Color(hex: "9A632C"), Color(hex: "3D2412")],
-                    center: .topLeading,
-                    startRadius: 0,
-                    endRadius: 6
-                )
-            )
-            .frame(width: 7, height: 7)
-            .overlay(Circle().stroke(.black.opacity(0.55), lineWidth: 0.6))
-            .shadow(color: .black.opacity(0.45), radius: 1, y: 1)
     }
 }
 
@@ -1045,43 +809,6 @@ private struct WoodenShelf: View {
         .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.24)).frame(height: 1) }
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.38)).frame(height: 2) }
         .shadow(color: .black.opacity(0.46), radius: 6, y: 5)
-    }
-}
-
-private struct ShelfPageControls: View {
-    let pageCount: Int
-    let selection: Int
-    let onPrevious: () -> Void
-    let onNext: () -> Void
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Button(action: onPrevious) {
-                Image(systemName: "chevron.left")
-                    .frame(width: 28, height: 24)
-            }
-            .disabled(selection == 0)
-
-            HStack(spacing: 5) {
-                ForEach(0..<pageCount, id: \.self) { index in
-                    Capsule()
-                        .fill(index == selection ? Color(hex: "D4AE72") : .white.opacity(0.28))
-                        .frame(width: index == selection ? 13 : 5, height: 4)
-                }
-            }
-
-            Button(action: onNext) {
-                Image(systemName: "chevron.right")
-                    .frame(width: 28, height: 24)
-            }
-            .disabled(selection == pageCount - 1)
-        }
-        .font(.system(size: 11, weight: .bold))
-        .foregroundStyle(Color(hex: "E8CCA0"))
-        .padding(.horizontal, 5)
-        .background(.black.opacity(0.32), in: Capsule())
-        .buttonStyle(.plain)
-        .accessibilityLabel("书架第 \(selection + 1) 页，共 \(pageCount) 页")
     }
 }
 
