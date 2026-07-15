@@ -17,7 +17,11 @@ struct ReaderView: View {
     @State private var showingIndex = false
     @State private var showingAppearance = false
     @State private var showingNote = false
-    @State private var showingVoiceInfo = false
+    @StateObject private var readAloud = ReadAloudService()
+    @State private var readAloudPlayerVisible = false
+    @State private var readAloudError: String?
+    @State private var automatedTurnTarget: ReaderPageLocation?
+    @State private var originalReadAloudLocation: ReaderPageLocation?
     @State private var scrubbedWholeBookChapterIndex: Double?
     @State private var isScrubbingWholeBookProgress = false
     @State private var brightness = Double(UIScreen.main.brightness)
@@ -115,12 +119,19 @@ struct ReaderView: View {
                                 isInteractionEnabled: !showingAppearance
                                     && !isScrubbingWholeBookProgress
                                     && !interactionDisabled,
+                                automatedTurnTarget: automatedTurnTarget,
                                 onCommit: commit,
+                                onPlayParagraph: playParagraph,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
                             .ignoresSafeArea()
                         }
                         if chromeVisible { readerChrome(book: book) }
+                        if chromeVisible, readAloudPlayerVisible, readAloud.hasSession {
+                            readAloudFloater(book: book)
+                        } else if !chromeVisible {
+                            immersiveReadAloudBar
+                        }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
                     .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
@@ -146,11 +157,15 @@ struct ReaderView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             UIScreen.main.brightness = originalBrightness
+            readAloud.onPageFinished = nil
+            readAloud.stop()
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
         .onChange(of: showingIndex) { _, _ in reportBlockingState() }
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
-        .onChange(of: showingVoiceInfo) { _, _ in reportBlockingState() }
+        .onChange(of: readAloud.state) { _, state in
+            if case let .failed(message) = state { readAloudError = message }
+        }
         .onChange(of: isScrubbingWholeBookProgress) { _, _ in reportBlockingState() }
         .onChange(of: showingCustomBackgroundEditor) { _, _ in reportBlockingState() }
         .onChange(of: selectedBackgroundPhoto) { _, item in
@@ -193,10 +208,16 @@ struct ReaderView: View {
                 )
             }
         }
-        .alert("AI 朗读已预留", isPresented: $showingVoiceInfo) {
-            Button("知道了", role: .cancel) { }
+        .alert(
+            "朗读失败",
+            isPresented: Binding(
+                get: { readAloudError != nil },
+                set: { if !$0 { readAloudError = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) { readAloudError = nil }
         } message: {
-            Text("配音服务尚未接入。播放状态、章节预处理、句子定位和断点续播接口已准备好。")
+            Text(readAloudError ?? "无法开始朗读")
         }
         .alert(
             "背景导入失败",
@@ -251,8 +272,8 @@ struct ReaderView: View {
             fontSize: fontSize,
             lineSpacing: lineSpacing,
             horizontalMargin: margin,
-            highlightedLocation: nil,
-            highlightedRange: nil
+            highlightedLocation: readAloud.currentPageLocation,
+            highlightedRange: readAloud.currentSentenceRange
         )
     }
 
@@ -284,16 +305,85 @@ struct ReaderView: View {
 
     private func commit(_ settledLocation: ReaderPageLocation) {
         guard settledLocation != location else { return }
+        let shouldContinuePlaying = readAloud.isPlaying || automatedTurnTarget == settledLocation
+        let hadReadAloudSession = readAloud.hasSession
+        automatedTurnTarget = nil
         location = settledLocation
         persist(settledLocation)
-        // Audio playback and sentence highlighting remain owned by the reading
-        // session. They are notified only after a visual page turn settles.
+        guard hadReadAloudSession, let page = catalog.page(at: settledLocation) else { return }
+        readAloud.setPage(text: page.text, location: page.location)
+        if shouldContinuePlaying { readAloud.play() }
     }
 
     private func jump(to requestedLocation: ReaderPageLocation) {
         let settled = catalog.nearest(to: requestedLocation) ?? requestedLocation
         location = settled
         persist(settled)
+    }
+
+    private func startReadingCurrentPage() {
+        guard let page = catalog.page(at: location) else {
+            readAloudError = "当前页面尚未加载完成"
+            return
+        }
+        beginReading(page: page, paragraphLocation: nil)
+    }
+
+    private func playParagraph(_ page: ReaderPage, range: NSRange) {
+        if readAloud.currentPageLocation == page.location,
+           let highlightedRange = readAloud.currentSentenceRange,
+           NSIntersectionRange(highlightedRange, range).length > 0 {
+            if readAloud.isPlaying {
+                readAloud.pause()
+            } else {
+                readAloud.play()
+            }
+            return
+        }
+        if page.location != location { jump(to: page.location) }
+        beginReading(page: page, paragraphLocation: range.location)
+    }
+
+    private func beginReading(page: ReaderPage, paragraphLocation: Int?) {
+        if originalReadAloudLocation == nil { originalReadAloudLocation = location }
+        readAloud.onPageFinished = { [weak readAloud] in
+            guard readAloud != nil else { return }
+            Task { @MainActor in autoAdvanceReadAloud() }
+        }
+        readAloud.setPage(
+            text: page.text,
+            location: page.location,
+            startAtUTF16Location: paragraphLocation ?? 0
+        )
+        readAloud.play()
+        readAloudPlayerVisible = true
+    }
+
+    private func autoAdvanceReadAloud() {
+        guard readAloud.currentPageLocation == location,
+              let nextPage = catalog.adjacent(to: location, direction: .forward) else { return }
+        automatedTurnTarget = nextPage.location
+        if turnStyle == .vertical {
+            commit(nextPage.location)
+        }
+    }
+
+    private func moveReadAloudToChapter(_ offset: Int, in book: NovelBook) {
+        let chapterIndex = location.chapterIndex + offset
+        guard book.chapters.indices.contains(chapterIndex) else { return }
+        let target = ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: 0)
+        guard let settled = catalog.nearest(to: target), let page = catalog.page(at: settled) else { return }
+        jump(to: settled)
+        beginReading(page: page, paragraphLocation: nil)
+    }
+
+    private func returnToOriginalReadAloudProgress() {
+        guard let originalReadAloudLocation else { return }
+        readAloud.stop()
+        readAloudPlayerVisible = false
+        automatedTurnTarget = nil
+        self.originalReadAloudLocation = nil
+        jump(to: originalReadAloudLocation)
     }
 
     private func persist(_ settledLocation: ReaderPageLocation) {
@@ -317,7 +407,6 @@ struct ReaderView: View {
             showingAppearance
                 || showingIndex
                 || showingNote
-                || showingVoiceInfo
                 || showingCustomBackgroundEditor
                 || isScrubbingWholeBookProgress
         )
@@ -387,7 +476,14 @@ struct ReaderView: View {
                     ) {
                         toggleNightMode()
                     }
-                    ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
+                    ChromeAction(icon: "waveform", label: "朗读") {
+                        if readAloud.hasSession {
+                            readAloudPlayerVisible.toggle()
+                        } else {
+                            startReadingCurrentPage()
+                            readAloudPlayerVisible = true
+                        }
+                    }
                     ChromeAction(
                         icon: showingAppearance ? "chevron.down.circle.fill" : "paintpalette",
                         label: showingAppearance ? "收起" : "设置"
@@ -415,6 +511,60 @@ struct ReaderView: View {
             }
         }
         .foregroundStyle(Color.primary)
+        .transition(.opacity)
+    }
+
+    private func readAloudFloater(book: NovelBook) -> some View {
+        ReaderReadAloudFloater(
+            readAloud: readAloud,
+            coverData: book.coverData,
+            hasPreviousChapter: location.chapterIndex > 0,
+            hasNextChapter: location.chapterIndex + 1 < book.chapters.count,
+            onPreviousChapter: { moveReadAloudToChapter(-1, in: book) },
+            onPlayPause: {
+                if readAloud.isPlaying { readAloud.pause() } else { readAloud.play() }
+            },
+            onNextChapter: { moveReadAloudToChapter(1, in: book) },
+            onClose: {
+                readAloud.stop()
+                readAloudPlayerVisible = false
+                originalReadAloudLocation = nil
+            }
+        )
+        .padding(.leading, 24)
+        .padding(.bottom, 152)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .transition(.scale(scale: 0.92, anchor: .bottomLeading).combined(with: .opacity))
+    }
+
+    private var immersiveReadAloudBar: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 9) {
+                Button(action: returnToOriginalReadAloudProgress) {
+                    Label("原进度", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(originalReadAloudLocation == nil)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.34))
+                    .frame(width: 1, height: 15)
+
+                Button(action: startReadingCurrentPage) {
+                    Label("从本页听", systemImage: "headphones")
+                }
+            }
+            .font(.caption.weight(.medium))
+            .labelStyle(.titleAndIcon)
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 15)
+            .frame(height: 38)
+            .background(Color(hex: "8A795D").opacity(0.9), in: Capsule())
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+            .padding(.bottom, 10)
+        }
+        .allowsHitTesting(true)
         .transition(.opacity)
     }
 
@@ -758,6 +908,85 @@ struct ReaderView: View {
             page: location.pageIndex,
             excerpt: currentExcerpt(book: book)
         )
+    }
+}
+
+private struct ReaderReadAloudFloater: View {
+    @ObservedObject var readAloud: ReadAloudService
+    let coverData: Data?
+    let hasPreviousChapter: Bool
+    let hasNextChapter: Bool
+    let onPreviousChapter: () -> Void
+    let onPlayPause: () -> Void
+    let onNextChapter: () -> Void
+    let onClose: () -> Void
+
+    @State private var settledOffset = CGSize.zero
+    @GestureState private var dragOffset = CGSize.zero
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Group {
+                if let coverData, let image = UIImage(data: coverData) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "book.closed.fill")
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(hex: "6B4E3A"))
+                }
+            }
+            .frame(width: 42, height: 42)
+            .clipShape(Circle())
+
+            playerButton("backward.end.fill", enabled: hasPreviousChapter, action: onPreviousChapter)
+            playerButton(readAloud.isPlaying ? "pause.fill" : "play.fill", enabled: true, action: onPlayPause)
+                .background(.white.opacity(0.18), in: Circle())
+            playerButton("forward.end.fill", enabled: hasNextChapter, action: onNextChapter)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 28, height: 38)
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .frame(height: 58)
+        .background(Color(hex: "7B745A").opacity(0.92), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.24), radius: 12, y: 5)
+        .offset(
+            x: settledOffset.width + dragOffset.width,
+            y: settledOffset.height + dragOffset.height
+        )
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 8)
+                .updating($dragOffset) { value, state, _ in state = value.translation }
+                .onEnded { value in
+                    settledOffset.width += value.translation.width
+                    settledOffset.height += value.translation.height
+                }
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("朗读悬浮控制")
+    }
+
+    private func playerButton(
+        _ symbol: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: symbol.contains("play") || symbol.contains("pause") ? 17 : 12, weight: .semibold))
+                .frame(width: 36, height: 38)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(enabled ? 1 : 0.34)
+        .disabled(!enabled)
     }
 }
 

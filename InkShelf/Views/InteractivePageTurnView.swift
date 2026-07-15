@@ -57,56 +57,69 @@ struct InteractivePageTurnView: UIViewControllerRepresentable {
     let appearance: ReaderPageAppearance
     let mode: InteractivePageTurnMode
     let isInteractionEnabled: Bool
+    let automatedTurnTarget: ReaderPageLocation?
     let onCommit: (ReaderPageLocation) -> Void
+    let onPlayParagraph: (ReaderPage, NSRange) -> Void
     let onCenterTap: () -> Void
 
     func makeUIViewController(context: Context) -> ReaderPageTurnHostController {
         let controller = ReaderPageTurnHostController()
         controller.onCommit = onCommit
+        controller.onPlayParagraph = onPlayParagraph
         controller.onCenterTap = onCenterTap
         controller.configure(
             pages: pages,
             location: location,
             appearance: appearance,
             mode: mode,
-            isInteractionEnabled: isInteractionEnabled
+            isInteractionEnabled: isInteractionEnabled,
+            automatedTurnTarget: automatedTurnTarget
         )
         return controller
     }
 
     func updateUIViewController(_ controller: ReaderPageTurnHostController, context: Context) {
         controller.onCommit = onCommit
+        controller.onPlayParagraph = onPlayParagraph
         controller.onCenterTap = onCenterTap
         controller.configure(
             pages: pages,
             location: location,
             appearance: appearance,
             mode: mode,
-            isInteractionEnabled: isInteractionEnabled
+            isInteractionEnabled: isInteractionEnabled,
+            automatedTurnTarget: automatedTurnTarget
         )
     }
 }
 
 private protocol PageTurnEngine: AnyObject {
     var onCommit: ((ReaderPageLocation) -> Void)? { get set }
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? { get set }
     var isTransitioning: Bool { get }
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance)
     func setInteractionEnabled(_ enabled: Bool)
+    func performAutomatedTurn(to index: Int)
 }
 
-final class ReaderPageTurnHostController: UIViewController {
+final class ReaderPageTurnHostController: UIViewController, UIGestureRecognizerDelegate {
     var onCommit: ((ReaderPageLocation) -> Void)?
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? {
+        didSet { engine?.onPlayParagraph = onPlayParagraph }
+    }
     var onCenterTap: (() -> Void)?
 
     private var engine: (UIViewController & PageTurnEngine)?
     private var mode: InteractivePageTurnMode?
     private weak var tapGesture: UITapGestureRecognizer?
+    private var handledAutomatedTarget: ReaderPageLocation?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.clipsToBounds = true
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.cancelsTouchesInView = false
+        tap.delegate = self
         view.addGestureRecognizer(tap)
         tapGesture = tap
     }
@@ -116,7 +129,8 @@ final class ReaderPageTurnHostController: UIViewController {
         location: ReaderPageLocation,
         appearance: ReaderPageAppearance,
         mode: InteractivePageTurnMode,
-        isInteractionEnabled: Bool = true
+        isInteractionEnabled: Bool = true,
+        automatedTurnTarget: ReaderPageLocation? = nil
     ) {
         guard !pages.isEmpty else { return }
         let index = pages.firstIndex(where: { $0.location == location }) ?? 0
@@ -125,6 +139,14 @@ final class ReaderPageTurnHostController: UIViewController {
         engine?.configure(pages: pages, index: index, appearance: appearance)
         engine?.setInteractionEnabled(isInteractionEnabled)
         tapGesture?.isEnabled = isInteractionEnabled
+        if let automatedTurnTarget,
+           handledAutomatedTarget != automatedTurnTarget,
+           let targetIndex = pages.firstIndex(where: { $0.location == automatedTurnTarget }) {
+            handledAutomatedTarget = automatedTurnTarget
+            engine?.performAutomatedTurn(to: targetIndex)
+        } else if automatedTurnTarget == nil {
+            handledAutomatedTarget = nil
+        }
     }
 
     private func installEngine(for mode: InteractivePageTurnMode) {
@@ -144,6 +166,9 @@ final class ReaderPageTurnHostController: UIViewController {
             newEngine = CoverPageTurnController(animationDuration: 0.01)
         }
         newEngine.onCommit = { [weak self] location in self?.onCommit?(location) }
+        newEngine.onPlayParagraph = { [weak self] page, range in
+            self?.onPlayParagraph?(page, range)
+        }
         addChild(newEngine)
         view.addSubview(newEngine.view)
         newEngine.view.translatesAutoresizingMaskIntoConstraints = false
@@ -171,12 +196,24 @@ final class ReaderPageTurnHostController: UIViewController {
         // starting from the same touch.
         onCenterTap?()
     }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var touchedView: UIView? = touch.view
+        while let view = touchedView {
+            if view is UIControl { return false }
+            touchedView = view.superview
+        }
+        return true
+    }
 }
 
 private final class ReaderPageContentController: UIViewController {
     let pageIndex: Int
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? {
+        didSet { (viewIfLoaded as? ReaderPageContentView)?.onPlayParagraph = onPlayParagraph }
+    }
 
     init(page: ReaderPage, pageIndex: Int, appearance: ReaderPageAppearance) {
         self.page = page
@@ -189,7 +226,9 @@ private final class ReaderPageContentController: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func loadView() {
-        view = ReaderPageContentView(page: page, appearance: appearance)
+        let contentView = ReaderPageContentView(page: page, appearance: appearance)
+        contentView.onPlayParagraph = onPlayParagraph
+        view = contentView
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
@@ -277,10 +316,14 @@ private final class ReaderPageContentView: UIView {
     private let batteryImageView = UIImageView()
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
+    private let paragraphRanges: [NSRange]
+    private var paragraphButtons: [UIButton] = []
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)?
 
     init(page: ReaderPage, appearance: ReaderPageAppearance) {
         self.page = page
         self.appearance = appearance
+        paragraphRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
         super.init(frame: .zero)
         isOpaque = true
         backgroundColor = appearance.backgroundColor
@@ -327,6 +370,7 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
+        configureParagraphButtons()
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
     }
 
@@ -348,6 +392,7 @@ private final class ReaderPageContentView: UIView {
         clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 29, height: 18)
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
+        layoutParagraphButtons()
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
@@ -361,6 +406,13 @@ private final class ReaderPageContentView: UIView {
             blur: appearance.backgroundBlur
         )
         textView.attributedText = attributedBody(page.displayText)
+        titleLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
+        brandLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
+        pageLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
+        clockLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
+        batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.6)
+        updateParagraphButtonAppearance()
+        setNeedsLayout()
     }
 
     private func attributedBody(_ text: String) -> NSAttributedString {
@@ -369,6 +421,7 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = appearance.lineSpacing
         paragraph.alignment = .natural
+        paragraph.firstLineHeadIndent = paragraphRanges.isEmpty ? 0 : 31
         let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -403,10 +456,78 @@ private final class ReaderPageContentView: UIView {
         let titleParagraph = NSMutableParagraphStyle()
         titleParagraph.lineSpacing = appearance.lineSpacing
         titleParagraph.paragraphSpacing = appearance.lineSpacing + 8
+        titleParagraph.firstLineHeadIndent = 0
         attributed.addAttributes([
             .font: titleFont,
             .paragraphStyle: titleParagraph
         ], range: titleRange)
+    }
+
+    private func configureParagraphButtons() {
+        paragraphButtons = paragraphRanges.enumerated().map { index, _ in
+            let button = UIButton(type: .system)
+            button.tag = index
+            button.tintColor = appearance.textColor.withAlphaComponent(0.42)
+            button.backgroundColor = appearance.backgroundColor.withAlphaComponent(0.46)
+            button.layer.cornerRadius = 8
+            button.layer.borderWidth = 0.8
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(0.24).cgColor
+            button.setImage(
+                UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)),
+                for: .normal
+            )
+            button.accessibilityLabel = "从本段开始朗读"
+            button.addTarget(self, action: #selector(playParagraph(_:)), for: .touchUpInside)
+            addSubview(button)
+            return button
+        }
+        updateParagraphButtonAppearance()
+    }
+
+    private func layoutParagraphButtons() {
+        guard !paragraphButtons.isEmpty, textView.bounds.width > 0 else { return }
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let prefixLength = page.chapterHeadingPrefix.utf16.count
+        for (index, button) in paragraphButtons.enumerated() {
+            let paragraphRange = paragraphRanges[index]
+            let displayRange = NSRange(location: prefixLength + paragraphRange.location, length: 1)
+            guard NSMaxRange(displayRange) <= textView.attributedText.length else {
+                button.isHidden = true
+                continue
+            }
+            let glyphRange = textView.layoutManager.glyphRange(
+                forCharacterRange: displayRange,
+                actualCharacterRange: nil
+            )
+            let glyphRect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
+            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 16) / 2)
+            button.frame = CGRect(x: textView.frame.minX + 3, y: y, width: 24, height: 16)
+            button.isHidden = !textView.frame.insetBy(dx: 0, dy: -4).intersects(button.frame)
+        }
+    }
+
+    private func updateParagraphButtonAppearance() {
+        let highlightedRange = appearance.highlightedLocation == page.location
+            ? appearance.highlightedRange
+            : nil
+        for (index, button) in paragraphButtons.enumerated() {
+            let isCurrent = highlightedRange.map { NSIntersectionRange($0, paragraphRanges[index]).length > 0 } ?? false
+            let symbol = isCurrent ? "pause.fill" : "play.fill"
+            button.setImage(
+                UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)),
+                for: .normal
+            )
+            button.tintColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.86 : 0.42)
+            button.backgroundColor = isCurrent
+                ? UIColor.systemYellow.withAlphaComponent(0.22)
+                : appearance.backgroundColor.withAlphaComponent(0.46)
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.46 : 0.24).cgColor
+        }
+    }
+
+    @objc private func playParagraph(_ sender: UIButton) {
+        guard paragraphRanges.indices.contains(sender.tag) else { return }
+        onPlayParagraph?(page, paragraphRanges[sender.tag])
     }
 
 }
@@ -620,6 +741,9 @@ private struct EngineConfiguration {
 
 private final class CurlPageTurnController: UIPageViewController, PageTurnEngine, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
     var onCommit: ((ReaderPageLocation) -> Void)?
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? {
+        didSet { frontCache.values.forEach { $0.onPlayParagraph = onPlayParagraph } }
+    }
     var isTransitioning: Bool { transaction.isLocked }
 
     private var pages: [ReaderPage] = []
@@ -678,6 +802,22 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     func setInteractionEnabled(_ enabled: Bool) {
         for gesture in gestureRecognizers where !(gesture is UITapGestureRecognizer) {
             gesture.isEnabled = enabled
+        }
+    }
+
+    func performAutomatedTurn(to index: Int) {
+        let current = transaction.currentIndex
+        guard abs(index - current) == 1,
+              transaction.begin(targetIndex: index, pageCount: pages.count) else { return }
+        let direction: UIPageViewController.NavigationDirection = index > current ? .forward : .reverse
+        setViewControllers(visibleControllers(index: index), direction: direction, animated: true) { [weak self] finished in
+            guard let self else { return }
+            let committed = self.transaction.finish(committed: finished)
+            if let committed {
+                self.preloadPages(around: committed)
+                self.onCommit?(self.pages[committed].location)
+            }
+            self.applyPendingConfigurationIfNeeded()
         }
     }
 
@@ -743,6 +883,7 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     private func makeFrontController(index: Int) -> ReaderPageContentController {
         if let cached = frontCache[index] { return cached }
         let controller = ReaderPageContentController(page: pages[index], pageIndex: index, appearance: appearance!)
+        controller.onPlayParagraph = onPlayParagraph
         controller.loadViewIfNeeded()
         frontCache[index] = controller
         return controller
@@ -775,6 +916,9 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
 
 private final class CoverPageTurnController: UIViewController, PageTurnEngine, UIGestureRecognizerDelegate {
     var onCommit: ((ReaderPageLocation) -> Void)?
+    var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? {
+        didSet { controllerCache.values.forEach { $0.onPlayParagraph = onPlayParagraph } }
+    }
     var isTransitioning: Bool { transaction.isLocked }
 
     private let animationDuration: TimeInterval
@@ -836,10 +980,31 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         panGesture?.isEnabled = enabled
     }
 
+    func performAutomatedTurn(to index: Int) {
+        let current = transaction.currentIndex
+        guard abs(index - current) == 1,
+              transaction.begin(targetIndex: index, pageCount: pages.count) else { return }
+        let direction: PageTurnDirection = index > current ? .forward : .backward
+        interactionDirection = direction
+        prepareAdjacent(index: index, direction: direction)
+        DispatchQueue.main.async { [weak self] in
+            self?.settle(commit: true, direction: direction)
+        }
+    }
+
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard !transaction.isLocked, let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
         let velocity = pan.velocity(in: view)
         return abs(velocity.x) > abs(velocity.y)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var touchedView: UIView? = touch.view
+        while let view = touchedView {
+            if view is UIControl { return false }
+            touchedView = view.superview
+        }
+        return true
     }
 
     @objc private func handlePan(_ pan: UIPanGestureRecognizer) {
@@ -970,6 +1135,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
     private func makeController(index: Int) -> ReaderPageContentController {
         if let cached = controllerCache[index] { return cached }
         let controller = ReaderPageContentController(page: pages[index], pageIndex: index, appearance: appearance!)
+        controller.onPlayParagraph = onPlayParagraph
         controller.loadViewIfNeeded()
         controllerCache[index] = controller
         return controller

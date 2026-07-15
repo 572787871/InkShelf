@@ -5,6 +5,34 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
+    func testReadAloudPlanKeepsSentenceAndParagraphRangesInUTF16Coordinates() throws {
+        let text = "  第一段😀第一句。第二句！\n\n第二段内容。  "
+        let plan = ReadAloudTextPlan(text: text)
+        let nsText = text as NSString
+
+        XCTAssertEqual(plan.sentences.map { nsText.substring(with: $0.range) }, [
+            "第一段😀第一句。",
+            "第二句！",
+            "第二段内容。"
+        ])
+        XCTAssertEqual(plan.paragraphRanges.map { nsText.substring(with: $0) }, [
+            "第一段😀第一句。第二句！",
+            "第二段内容。"
+        ])
+    }
+
+    func testParagraphStartResolvesToItsFirstSpokenSentence() throws {
+        let text = "第一段第一句。第一段第二句。\n第二段第一句。"
+        let plan = ReadAloudTextPlan(text: text)
+        let secondParagraph = try XCTUnwrap(plan.paragraphRanges.last)
+        let sentenceIndex = try XCTUnwrap(
+            plan.sentenceIndex(atOrAfterUTF16Location: secondParagraph.location)
+        )
+
+        XCTAssertEqual(plan.sentences[sentenceIndex].text, "第二段第一句。")
+        XCTAssertTrue(NSIntersectionRange(plan.sentences[sentenceIndex].range, secondParagraph).length > 0)
+    }
+
     func testBookGridCoverSizeKeepsAStablePortraitRatio() {
         XCTAssertEqual(BookGridLayout.coverWidth, 96)
         XCTAssertEqual(
