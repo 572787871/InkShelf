@@ -232,6 +232,25 @@ final class NovelParserTests: XCTestCase {
 }
 
 final class ReaderPaginationTests: XCTestCase {
+    func testFocusedCatalogBuildsOnlyCurrentAndAdjacentChapters() {
+        let content = (1...7).map { chapter in
+            "第\(chapter)章 测试\n" + String(repeating: "第\(chapter)章正文。", count: 40)
+        }.joined(separator: "\n")
+        let book = NovelBook(title: "长篇窗口分页", content: content)
+        let catalog = ReaderPageCatalog(
+            book: book,
+            charactersPerPage: 120,
+            focusedChapter: 3
+        )
+        let loadedChapters = Set(catalog.pages.map(\.location.chapterIndex))
+
+        XCTAssertEqual(loadedChapters, Set([2, 3, 4]))
+        XCTAssertNotNil(catalog.pages.first { $0.location.chapterIndex == 2 })
+        XCTAssertNotNil(catalog.pages.first { $0.location.chapterIndex == 4 })
+        XCTAssertNil(catalog.pages.first { $0.location.chapterIndex == 0 })
+        XCTAssertNil(catalog.pages.first { $0.location.chapterIndex == 6 })
+    }
+
     func testCatalogPreloadsAcrossChapterBoundary() {
         let book = NovelBook(
             title: "Test",
@@ -394,6 +413,13 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
+    func testReaderInteractionWaitsForAnimationAndFocusedPagination() {
+        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: false, readerReady: false))
+        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: true, readerReady: false))
+        XCTAssertFalse(ReaderOpeningGate.canEnableInteraction(animationCompleted: false, readerReady: true))
+        XCTAssertTrue(ReaderOpeningGate.canEnableInteraction(animationCompleted: true, readerReady: true))
+    }
+
     func testPremiumShelfAssetsAreBundled() {
         let assetNames = ["WalnutHorizontal", "WalnutVertical"]
             + (0..<BookPalette.styles.count).map { BookPalette.defaultCoverAssetName(for: $0) }

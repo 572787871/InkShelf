@@ -39,8 +39,35 @@ struct ReaderPageCatalog: Equatable, Sendable {
     }
 
     init(book: NovelBook, charactersPerPage: Int) {
+        self.init(chapters: book.chapters[...], charactersPerPage: charactersPerPage)
+    }
+
+    /// Builds only the focused chapter and its immediate neighbors. Opening a
+    /// long novel must not allocate every rendered page before the reader can
+    /// appear; adjacent chapters still guarantee seamless cross-chapter turns.
+    init(
+        book: NovelBook,
+        charactersPerPage: Int,
+        focusedChapter: Int,
+        preloadRadius: Int = 1
+    ) {
+        guard !book.chapters.isEmpty else {
+            self.init(pages: [])
+            return
+        }
+        let safeFocus = min(max(focusedChapter, 0), book.chapters.count - 1)
+        let radius = max(preloadRadius, 0)
+        let lowerBound = max(0, safeFocus - radius)
+        let upperBound = min(book.chapters.count, safeFocus + radius + 1)
+        self.init(
+            chapters: book.chapters[lowerBound..<upperBound],
+            charactersPerPage: charactersPerPage
+        )
+    }
+
+    private init(chapters: ArraySlice<NovelChapter>, charactersPerPage: Int) {
         var drafts: [(ReaderPageLocation, String, String, Int, Int)] = []
-        for chapter in book.chapters {
+        for chapter in chapters {
             let chapterPages = NovelParser.pages(
                 for: chapter,
                 charactersPerPage: charactersPerPage,

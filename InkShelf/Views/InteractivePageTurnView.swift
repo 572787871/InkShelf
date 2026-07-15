@@ -236,7 +236,7 @@ private final class ReaderPageContentView: UIView {
         textView.textContainer.lineBreakMode = .byWordWrapping
         textView.attributedText = attributedBody(page.displayText)
 
-        pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
+        pageLabel.text = "\(page.pageInChapter) / \(page.pageCountInChapter)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         for label in [pageLabel, clockLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -400,7 +400,7 @@ private final class ReaderPageBackContentView: UIView {
         textView.textContainer.lineBreakMode = .byWordWrapping
         textView.attributedText = attributedGhostText(page.displayText, color: ghostColor)
 
-        pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
+        pageLabel.text = "\(page.pageInChapter) / \(page.pageCountInChapter)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         for label in [pageLabel, clockLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
