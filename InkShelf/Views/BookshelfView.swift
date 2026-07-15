@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import PhotosUI
+import ImageIO
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -16,6 +18,10 @@ struct BookshelfView: View {
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
     @State private var stableShelfViewportHeight: CGFloat?
+    @State private var shelfPage = 0
+    @State private var showingCoverPicker = false
+    @State private var coverPickerBookID: UUID?
+    @State private var selectedCoverPhoto: PhotosPickerItem?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
@@ -75,15 +81,32 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .photosPicker(
+                isPresented: $showingCoverPicker,
+                selection: $selectedCoverPhoto,
+                matching: .images
+            )
             .alert("墨架", isPresented: Binding(get: { library.alertMessage != nil }, set: { if !$0 { library.alertMessage = nil } })) {
                 Button("知道了", role: .cancel) { library.alertMessage = nil }
             } message: { Text(library.alertMessage ?? "") }
-            .onChange(of: sortRaw) { _, _ in frozenBookOrder = nil }
+            .onChange(of: sortRaw) { _, _ in
+                frozenBookOrder = nil
+                shelfPage = 0
+            }
             .onChange(of: searchText) { _, _ in
-                if selectedBookID == nil { frozenBookOrder = nil }
+                if selectedBookID == nil {
+                    frozenBookOrder = nil
+                    shelfPage = 0
+                }
             }
             .onChange(of: library.books.map(\.id)) { oldIDs, newIDs in
-                if oldIDs != newIDs { frozenBookOrder = nil }
+                if oldIDs != newIDs {
+                    frozenBookOrder = nil
+                    shelfPage = min(shelfPage, max(shelfPages.count - 1, 0))
+                }
+            }
+            .onChange(of: selectedCoverPhoto) { _, item in
+                importSelectedCover(item)
             }
         }
     }
@@ -127,41 +150,52 @@ struct BookshelfView: View {
                 cached: stableShelfViewportHeight,
                 readerPresented: selectedBookID != nil
             )
-            ScrollView {
+            Group {
                 if displayedBooks.isEmpty {
                     ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
-                        .padding(.top, 80)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    let rows = shelfRows
+                    let pages = shelfPages
                     let rowContentHeight = BookcaseLayoutMetrics.rowContentHeight(
                         viewportHeight: layoutHeight,
-                        rowCount: rows.count
+                        rowCount: 3
                     )
                     let bookcaseHeight = BookcaseLayoutMetrics.totalHeight(
                         rowContentHeight: rowContentHeight,
-                        rowCount: rows.count
+                        rowCount: 3
                     )
                     WoodenBookcase {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                                ShelfRow(
-                                    books: row,
-                                    rowContentHeight: rowContentHeight,
-                                    selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
-                                    onOpen: openReader
-                                )
+                        TabView(selection: $shelfPage) {
+                            ForEach(Array(pages.enumerated()), id: \.offset) { pageIndex, pageBooks in
+                                LazyVStack(spacing: 0) {
+                                    ForEach(Array(shelfRows(for: pageBooks).enumerated()), id: \.offset) { _, row in
+                                        ShelfRow(
+                                            books: row,
+                                            rowContentHeight: rowContentHeight,
+                                            selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
+                                            onOpen: openReader,
+                                            onChooseCover: beginCoverSelection
+                                        )
+                                    }
+                                }
+                                .tag(pageIndex)
                             }
                         }
+                        .tabViewStyle(.page(indexDisplayMode: .never))
                     }
-                    // ReaderView hides the status bar while it is being
-                    // presented, which changes this GeometryReader's proposed
-                    // height. Keep the shelf at its pre-transition height so
-                    // the bottom plinth cannot stretch behind the animation.
+                    // The cabinet is a fixed viewport. Large libraries move only
+                    // by horizontal pages, so vertical drags can never stretch the
+                    // frame or expose empty space below it.
                     .frame(height: bookcaseHeight)
                     .padding(.horizontal, 12)
+                    .overlay(alignment: .bottom) {
+                        if pages.count > 1 {
+                            ShelfPageIndicator(pageCount: pages.count, selection: shelfPage)
+                                .padding(.bottom, 6)
+                        }
+                    }
                 }
             }
-            .scrollIndicators(.hidden)
             .onAppear {
                 if stableShelfViewportHeight == nil {
                     stableShelfViewportHeight = proxy.size.height
@@ -180,8 +214,12 @@ struct BookshelfView: View {
         }
     }
 
-    private var shelfRows: [[NovelBook]] {
-        var rows = displayedBooks.chunked(into: 3)
+    private var shelfPages: [[NovelBook]] {
+        displayedBooks.chunked(into: BookcaseLayoutMetrics.booksPerPage)
+    }
+
+    private func shelfRows(for books: [NovelBook]) -> [[NovelBook]] {
+        var rows = books.chunked(into: 3)
         while rows.count < 3 { rows.append([]) }
         return rows
     }
@@ -340,6 +378,39 @@ struct BookshelfView: View {
         }
     }
 
+    private func beginCoverSelection(_ book: NovelBook) {
+        guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
+        coverPickerBookID = book.id
+        selectedCoverPhoto = nil
+        // The context menu must finish dismissing before PhotosPicker presents.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            guard coverPickerBookID == book.id, selectedBookID == nil else { return }
+            showingCoverPicker = true
+        }
+    }
+
+    private func importSelectedCover(_ item: PhotosPickerItem?) {
+        guard let item, let bookID = coverPickerBookID else { return }
+        Task {
+            do {
+                guard let sourceData = try await item.loadTransferable(type: Data.self) else {
+                    throw CoverImageProcessingError.unreadableImage
+                }
+                let preparedData = try await Task.detached(priority: .userInitiated) {
+                    try CoverImageProcessor.preparedData(from: sourceData)
+                }.value
+                guard coverPickerBookID == bookID else { return }
+                library.updateCover(bookID: bookID, coverData: preparedData)
+            } catch {
+                library.reportCoverSelectionFailure(error)
+            }
+            if coverPickerBookID == bookID {
+                coverPickerBookID = nil
+                selectedCoverPhoto = nil
+            }
+        }
+    }
+
     private func fallbackBookFrame(in size: CGSize) -> CGRect {
         CGRect(x: (size.width - 92) / 2, y: 176, width: 92, height: 135)
     }
@@ -351,15 +422,17 @@ private struct ShelfRow: View {
     let rowContentHeight: CGFloat
     let selectedBookID: UUID?
     let onOpen: (NovelBook) -> Void
+    let onChooseCover: (NovelBook) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .bottom, spacing: 17) {
                 ForEach(books) { book in
                     Button { onOpen(book) } label: {
+                        let coverWidth = min(92, max(62, (rowContentHeight - 35) * 0.68))
                         VStack(spacing: 9) {
                             BookCoverView(book: book, compact: true)
-                                .frame(maxWidth: 92)
+                                .frame(width: coverWidth)
                                 .background {
                                     GeometryReader { proxy in
                                         Color.clear.preference(
@@ -378,10 +451,19 @@ private struct ShelfRow: View {
                                     .foregroundStyle(.white.opacity(0.62))
                             }
                         }
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .opacity(selectedBookID == book.id ? 0 : 1)
                     .contextMenu {
+                        Button { onChooseCover(book) } label: {
+                            Label("从相册设置封面", systemImage: "photo.on.rectangle")
+                        }
+                        if book.coverData != nil {
+                            Button { library.updateCover(bookID: book.id, coverData: nil) } label: {
+                                Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                            }
+                        }
                         NavigationLink { BookInfoView(bookID: book.id) } label: { Label("书籍信息", systemImage: "info.circle") }
                         Button(role: .destructive) { library.delete(bookID: book.id) } label: { Label("移出书架", systemImage: "trash") }
                     }
@@ -601,11 +683,45 @@ private enum ReaderTransitionPhase: Equatable {
     case closing
 }
 
+enum CoverImageProcessingError: LocalizedError {
+    case unreadableImage
+    case encodingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableImage: return "无法读取所选图片"
+        case .encodingFailed: return "无法生成封面图片"
+        }
+    }
+}
+
+enum CoverImageProcessor {
+    static let maximumPixelSize = 2048
+
+    static func preparedData(from data: Data) throws -> Data {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw CoverImageProcessingError.unreadableImage
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              let encoded = UIImage(cgImage: image).jpegData(compressionQuality: 0.9) else {
+            throw CoverImageProcessingError.encodingFailed
+        }
+        return encoded
+    }
+}
+
 enum BookcaseLayoutMetrics {
-    static let topInset: CGFloat = 27
-    static let bottomInset: CGFloat = 23
+    static let booksPerPage = 9
+    static let topInset: CGFloat = 31
+    static let bottomInset: CGFloat = 28
     static let shelfHeight: CGFloat = 26
-    static let minimumRowContentHeight: CGFloat = 158
+    static let minimumRowContentHeight: CGFloat = 110
 
     static func resolvedViewportHeight(
         current: CGFloat,
@@ -628,6 +744,10 @@ enum BookcaseLayoutMetrics {
             + bottomInset
             + CGFloat(rows) * (rowContentHeight + shelfHeight)
     }
+
+    static func pageCount(forBookCount count: Int) -> Int {
+        max(1, Int(ceil(Double(max(count, 0)) / Double(booksPerPage))))
+    }
 }
 
 private struct WoodenBookcase<Content: View>: View {
@@ -639,45 +759,55 @@ private struct WoodenBookcase<Content: View>: View {
 
     var body: some View {
         ZStack {
-            // Recessed cabinet back: dark at the edges and warmer in the
-            // center, with narrow vertical boards rather than one flat panel.
             WoodSurface(axis: .vertical, colors: [Color(hex: "21130E"), Color(hex: "3A2117"), Color(hex: "170D09")])
                 .overlay {
                     LinearGradient(
-                        colors: [.black.opacity(0.52), .clear, .black.opacity(0.38)],
+                        colors: [.black.opacity(0.58), .clear, .black.opacity(0.46)],
                         startPoint: .leading,
                         endPoint: .trailing
                     )
                 }
                 .overlay {
                     HStack(spacing: 0) {
-                        ForEach(0..<4, id: \.self) { index in
-                            Color.clear
+                        ForEach(0..<3, id: \.self) { index in
+                            Rectangle()
+                                .fill(.clear)
                                 .overlay(alignment: .trailing) {
                                     Rectangle()
-                                        .fill(index.isMultiple(of: 2) ? .black.opacity(0.18) : .white.opacity(0.025))
+                                        .fill(index == 1 ? .white.opacity(0.035) : .black.opacity(0.28))
                                         .frame(width: 1)
                                 }
                         }
                     }
                 }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(.black.opacity(0.62), lineWidth: 10)
+                        .blur(radius: 4)
+                        .padding(15)
+                }
             content
-                .padding(.horizontal, 17)
+                .padding(.horizontal, 20)
                 .padding(.top, BookcaseLayoutMetrics.topInset)
                 .padding(.bottom, BookcaseLayoutMetrics.bottomInset)
         }
-        .background(Color(hex: "170D09"))
+        .background(Color(hex: "120A07"))
         .overlay {
             RoundedRectangle(cornerRadius: 27, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.2), .black.opacity(0.72)],
+                        colors: [.white.opacity(0.3), Color(hex: "6F432A"), .black.opacity(0.82)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 3
+                    lineWidth: 3.5
                 )
                 .padding(2)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 23, style: .continuous)
+                .strokeBorder(.black.opacity(0.54), lineWidth: 1)
+                .padding(7)
         }
         .overlay(alignment: .leading) {
             CabinetPost(isLeading: true)
@@ -686,22 +816,33 @@ private struct WoodenBookcase<Content: View>: View {
             CabinetPost(isLeading: false)
         }
         .overlay(alignment: .top) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "A0714B"), Color(hex: "684128"), Color(hex: "2E190F")])
-                .frame(height: 27)
-                .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.25)).frame(height: 1) }
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "9A6745"), Color(hex: "5D3824"), Color(hex: "24130C")])
+                .frame(height: BookcaseLayoutMetrics.topInset)
+                .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.3)).frame(height: 1) }
                 .overlay(alignment: .bottom) {
-                    LinearGradient(colors: [.black.opacity(0.08), .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 7)
+                    LinearGradient(colors: [.clear, .black.opacity(0.78)], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 9)
                 }
+                .overlay(alignment: .bottom) { Rectangle().fill(Color(hex: "B78A62").opacity(0.34)).frame(height: 1).padding(.bottom, 8) }
         }
         .overlay(alignment: .bottom) {
-            WoodSurface(axis: .horizontal, colors: [Color(hex: "2A160E"), Color(hex: "71472C"), Color(hex: "9A6B47"), Color(hex: "3B2115")])
-                .frame(height: 23)
-                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.58)).frame(height: 3) }
-                .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 1) }
+            WoodSurface(axis: .horizontal, colors: [Color(hex: "24120C"), Color(hex: "684027"), Color(hex: "986747"), Color(hex: "2D180F")])
+                .frame(height: BookcaseLayoutMetrics.bottomInset)
+                .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.68)).frame(height: 4) }
+                .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.2)).frame(height: 1).padding(.bottom, 3) }
+        }
+        .overlay {
+            VStack {
+                HStack { BrassStud(); Spacer(); BrassStud() }
+                Spacer()
+                HStack { BrassStud(); Spacer(); BrassStud() }
+            }
+            .padding(9)
+            .allowsHitTesting(false)
         }
         .clipShape(RoundedRectangle(cornerRadius: 27, style: .continuous))
-        .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 9)
+        .shadow(color: .black.opacity(0.4), radius: 17, x: 0, y: 11)
+        .shadow(color: Color(hex: "7F4C2F").opacity(0.14), radius: 4, x: 0, y: -1)
     }
 }
 
@@ -712,20 +853,20 @@ private struct CabinetPost: View {
         WoodSurface(
             axis: .vertical,
             colors: isLeading
-                ? [Color(hex: "A27551"), Color(hex: "634027"), Color(hex: "321C12")]
-                : [Color(hex: "321C12"), Color(hex: "68442A"), Color(hex: "9A6D4B")]
+                ? [Color(hex: "9D6A49"), Color(hex: "5B3623"), Color(hex: "26140D")]
+                : [Color(hex: "26140D"), Color(hex: "5F3925"), Color(hex: "9B6948")]
         )
-        .frame(width: 21)
+        .frame(width: 24)
         .overlay(alignment: isLeading ? .trailing : .leading) {
             LinearGradient(
-                colors: [.black.opacity(0.12), .black.opacity(0.62)],
+                colors: [.black.opacity(0.08), .black.opacity(0.72)],
                 startPoint: isLeading ? .leading : .trailing,
                 endPoint: isLeading ? .trailing : .leading
             )
-            .frame(width: 5)
+            .frame(width: 7)
         }
         .overlay(alignment: isLeading ? .leading : .trailing) {
-            Rectangle().fill(.white.opacity(0.16)).frame(width: 1).padding(.horizontal, 3)
+            Rectangle().fill(.white.opacity(0.22)).frame(width: 1).padding(.horizontal, 4)
         }
     }
 }
@@ -740,61 +881,47 @@ private struct WoodSurface: View {
     let colors: [Color]
 
     var body: some View {
-        LinearGradient(
-            colors: colors,
-            startPoint: axis == .horizontal ? .top : .leading,
-            endPoint: axis == .horizontal ? .bottom : .trailing
-        )
-        .overlay {
-            Canvas(rendersAsynchronously: true) { context, size in
-                let lineCount = axis == .horizontal ? 15 : 9
-                for index in 0..<lineCount {
-                    var path = Path()
-                    if axis == .horizontal {
-                        let baseY = size.height * CGFloat(index + 1) / CGFloat(lineCount + 1)
-                        path.move(to: CGPoint(x: 0, y: baseY))
-                        for step in 1...18 {
-                            let x = size.width * CGFloat(step) / 18
-                            let wave = sin(CGFloat(step + index * 3) * 0.72) * 1.25
-                            path.addLine(to: CGPoint(x: x, y: baseY + wave))
-                        }
-                    } else {
-                        let baseX = size.width * CGFloat(index + 1) / CGFloat(lineCount + 1)
-                        path.move(to: CGPoint(x: baseX, y: 0))
-                        for step in 1...22 {
-                            let y = size.height * CGFloat(step) / 22
-                            let wave = sin(CGFloat(step + index * 4) * 0.61) * 1.15
-                            path.addLine(to: CGPoint(x: baseX + wave, y: y))
-                        }
-                    }
-                    context.stroke(path, with: .color(.black.opacity(index.isMultiple(of: 3) ? 0.18 : 0.09)), lineWidth: 0.7)
-                }
+        GeometryReader { proxy in
+            ZStack {
+                Image(axis == .horizontal ? "WalnutHorizontal" : "WalnutVertical")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
 
-                // A few deterministic growth rings make the surface read as
-                // timber without introducing a large raster texture asset.
-                let knotCount = axis == .horizontal ? 3 : 2
-                for index in 0..<knotCount {
-                    let center = CGPoint(
-                        x: size.width * CGFloat(index * 3 + 2) / CGFloat(knotCount * 3 + 1),
-                        y: size.height * CGFloat(index + 1) / CGFloat(knotCount + 1)
-                    )
-                    for ring in 0..<3 {
-                        let radius = CGFloat(3 + ring * 3)
-                        let rect = CGRect(
-                            x: center.x - radius * 1.8,
-                            y: center.y - radius * 0.48,
-                            width: radius * 3.6,
-                            height: radius * 0.96
-                        )
-                        context.stroke(
-                            Path(ellipseIn: rect),
-                            with: .color(.black.opacity(0.08 + Double(ring) * 0.025)),
-                            lineWidth: 0.65
-                        )
-                    }
-                }
+                LinearGradient(
+                    colors: colors.map { $0.opacity(0.48) },
+                    startPoint: axis == .horizontal ? .top : .leading,
+                    endPoint: axis == .horizontal ? .bottom : .trailing
+                )
+                .blendMode(.multiply)
+
+                LinearGradient(
+                    colors: [.white.opacity(0.14), .clear, .black.opacity(0.28)],
+                    startPoint: axis == .horizontal ? .top : .leading,
+                    endPoint: axis == .horizontal ? .bottom : .trailing
+                )
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
+    }
+}
+
+private struct BrassStud: View {
+    var body: some View {
+        Circle()
+            .fill(
+                RadialGradient(
+                    colors: [Color(hex: "F4D69A"), Color(hex: "9A632C"), Color(hex: "3D2412")],
+                    center: .topLeading,
+                    startRadius: 0,
+                    endRadius: 6
+                )
+            )
+            .frame(width: 7, height: 7)
+            .overlay(Circle().stroke(.black.opacity(0.55), lineWidth: 0.6))
+            .shadow(color: .black.opacity(0.45), radius: 1, y: 1)
     }
 }
 
@@ -809,6 +936,27 @@ private struct WoodenShelf: View {
         .overlay(alignment: .top) { Rectangle().fill(.white.opacity(0.24)).frame(height: 1) }
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.38)).frame(height: 2) }
         .shadow(color: .black.opacity(0.46), radius: 6, y: 5)
+    }
+}
+
+private struct ShelfPageIndicator: View {
+    let pageCount: Int
+    let selection: Int
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<pageCount, id: \.self) { index in
+                Capsule()
+                    .fill(index == selection ? Color(hex: "D4AE72") : .white.opacity(0.28))
+                    .frame(width: index == selection ? 13 : 5, height: 4)
+                    .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.22), in: Capsule())
+        .allowsHitTesting(false)
+        .accessibilityLabel("书架第 \(selection + 1) 页，共 \(pageCount) 页")
     }
 }
 
