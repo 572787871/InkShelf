@@ -1,20 +1,113 @@
 import SwiftUI
 import UIKit
 
+struct BookTransitionVisualState: Equatable {
+    let progress: CGFloat
+    let bookFrame: CGRect
+    let expansion: CGFloat
+    let coverOpening: CGFloat
+    let physicalOpacity: CGFloat
+    let pageFaceOpacity: CGFloat
+    let readerOpacity: CGFloat
+    let readerCornerRadius: CGFloat
+    let bookCornerRadius: CGFloat
+    let pageDepth: CGFloat
+    let coverDepth: CGFloat
+    let coverAngle: CGFloat
+    let bookShadowOpacity: CGFloat
+    let readerShadowOpacity: CGFloat
+    let coverShadowOpacity: CGFloat
+    let coverShadowRadius: CGFloat
+    let coverShadowOffset: CGSize
+    let spineOpacity: CGFloat
+    let coverHighlightOpacity: CGFloat
+    let coverTextOpacity: CGFloat
+}
+
+/// The single interpolation and timing authority for both opening and closing.
+/// `progress == 0` is the closed shelf book and `progress == 1` is the fully
+/// opened, full-screen reader. Closing only drives this value in reverse.
+enum BookTransitionAnimator {
+    static let duration: TimeInterval = 0.58
+
+    static func animation(duration: TimeInterval = duration) -> Animation {
+        .timingCurve(0.42, 0, 0.58, 1, duration: duration)
+    }
+
+    static func remainingDuration(from current: CGFloat, to target: CGFloat) -> TimeInterval {
+        max(0.01, duration * Double(abs(clamp(target) - clamp(current))))
+    }
+
+    static func state(
+        progress rawProgress: CGFloat,
+        sourceFrame: CGRect,
+        destinationFrame: CGRect
+    ) -> BookTransitionVisualState {
+        let progress = clamp(rawProgress)
+        let expansion = smoothstep(0.02, 0.9, progress)
+        let coverOpening = smoothstep(0.025, 0.88, progress)
+        let physicalOpacity = 1 - smoothstep(0.88, 1, progress)
+        let pageFaceOpacity = 1 - smoothstep(0.08, 0.46, progress)
+        let bookFrame = interpolate(from: sourceFrame, to: destinationFrame, amount: expansion)
+        let closedGeometry = 1 - expansion
+        let shadowWave = sin(coverOpening * .pi)
+
+        return BookTransitionVisualState(
+            progress: progress,
+            bookFrame: bookFrame,
+            expansion: expansion,
+            coverOpening: coverOpening,
+            physicalOpacity: physicalOpacity,
+            pageFaceOpacity: pageFaceOpacity,
+            readerOpacity: smoothstep(0.06, 0.38, progress),
+            readerCornerRadius: 7 * closedGeometry,
+            bookCornerRadius: max(0, 6 * closedGeometry),
+            pageDepth: max(2, 7 - expansion * 3.5),
+            coverDepth: max(1.5, 3.2 - expansion * 1.2),
+            coverAngle: -coverOpening * (.pi * 0.86),
+            bookShadowOpacity: 0.3 * physicalOpacity,
+            readerShadowOpacity: 0.22 * closedGeometry,
+            coverShadowOpacity: shadowWave * 0.46 * physicalOpacity,
+            coverShadowRadius: 12 + 12 * shadowWave,
+            coverShadowOffset: CGSize(width: 5 + 16 * shadowWave, height: 5),
+            spineOpacity: physicalOpacity * (0.58 + 0.42 * shadowWave),
+            coverHighlightOpacity: 0.72 + 0.28 * cos(coverOpening * .pi),
+            coverTextOpacity: 1 - smoothstep(0.7, 0.96, progress)
+        )
+    }
+
+    private static func interpolate(from: CGRect, to: CGRect, amount: CGFloat) -> CGRect {
+        CGRect(
+            x: from.minX + (to.minX - from.minX) * amount,
+            y: from.minY + (to.minY - from.minY) * amount,
+            width: from.width + (to.width - from.width) * amount,
+            height: from.height + (to.height - from.height) * amount
+        )
+    }
+
+    private static func clamp(_ value: CGFloat) -> CGFloat {
+        min(1, max(0, value))
+    }
+
+    private static func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
+        let x = clamp((value - edge0) / max(edge1 - edge0, 0.001))
+        return x * x * (3 - 2 * x)
+    }
+}
+
 /// GPU-composited physical-book layer used above the already prepared reader.
-/// `closedProgress` is the only source of animation state: 1 is the shelf book
-/// and 0 is the fully opened reader. Driving both directions with the same value
-/// makes opening and closing exact visual mirrors.
+/// `progress` is the only source of animation state: 0 is the shelf book and 1
+/// is the fully opened reader. Closing drives the same value from 1 back to 0.
 struct BookOpeningTransitionView: UIViewRepresentable, Animatable {
     let book: NovelBook
     let targetFrame: CGRect
     let containerSize: CGSize
     let paperColor: UIColor
-    var closedProgress: CGFloat
+    var progress: CGFloat
 
     var animatableData: CGFloat {
-        get { closedProgress }
-        set { closedProgress = newValue }
+        get { progress }
+        set { progress = newValue }
     }
 
     func makeUIView(context: Context) -> BookTransitionCanvasView {
@@ -27,7 +120,7 @@ struct BookOpeningTransitionView: UIViewRepresentable, Animatable {
     func updateUIView(_ view: BookTransitionCanvasView, context: Context) {
         view.configure(book: book, paperColor: paperColor)
         view.update(
-            closedProgress: closedProgress,
+            progress: progress,
             targetFrame: targetFrame,
             containerSize: containerSize
         )
@@ -79,7 +172,7 @@ final class BookTransitionCanvasView: UIView {
 
     // Internal diagnostics used by endpoint tests. They also make it easy to
     // verify that repeated open/close cycles do not accumulate transforms.
-    private(set) var renderedClosedProgress: CGFloat = 1
+    private(set) var renderedProgress: CGFloat = 0
     private(set) var renderedBookFrame: CGRect = .zero
     private(set) var renderedCoverAngle: CGFloat = 0
     var coverHingeAnchorPoint: CGPoint { cover.anchorPoint }
@@ -263,19 +356,14 @@ final class BookTransitionCanvasView: UIView {
         pageBottomEdge.colors = [paperHighlight.cgColor, paperShade.cgColor]
     }
 
-    func update(closedProgress: CGFloat, targetFrame: CGRect, containerSize: CGSize) {
-        let closed = clamp(closedProgress)
-        let opening = 1 - closed
-        let expansion = smoothstep(0.02, 0.9, opening)
-        let coverOpening = smoothstep(0.025, 0.88, opening)
-        let physicalFade = 1 - smoothstep(0.88, 1, opening)
-        let paperFaceFade = 1 - smoothstep(0.08, 0.46, opening)
+    func update(progress: CGFloat, targetFrame: CGRect, containerSize: CGSize) {
         let fullFrame = CGRect(origin: .zero, size: containerSize)
-        let bookFrame = interpolate(from: targetFrame, to: fullFrame, amount: expansion)
-        let cornerRadius = max(0, 6 * (1 - expansion))
-        let pageDepth = max(2, 7 - expansion * 3.5)
-        let coverDepth = max(1.5, 3.2 - expansion * 1.2)
-        let coverAngle = -coverOpening * (.pi * 0.86)
+        let state = BookTransitionAnimator.state(
+            progress: progress,
+            sourceFrame: targetFrame,
+            destinationFrame: fullFrame
+        )
+        let bookFrame = state.bookFrame
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -286,20 +374,23 @@ final class BookTransitionCanvasView: UIView {
         perspective.m34 = -1 / max(780, containerSize.width * 2.35)
         perspectiveLayer.sublayerTransform = perspective
 
-        renderedClosedProgress = closed
+        renderedProgress = state.progress
         renderedBookFrame = bookFrame
-        renderedCoverAngle = coverAngle
+        renderedCoverAngle = state.coverAngle
 
         bookShadow.frame = bookFrame
-        bookShadow.cornerRadius = cornerRadius
-        bookShadow.shadowPath = UIBezierPath(roundedRect: bookShadow.bounds, cornerRadius: cornerRadius).cgPath
-        bookShadow.shadowOpacity = Float(0.3 * physicalFade)
-        bookShadow.opacity = Float(physicalFade)
+        bookShadow.cornerRadius = state.bookCornerRadius
+        bookShadow.shadowPath = UIBezierPath(
+            roundedRect: bookShadow.bounds,
+            cornerRadius: state.bookCornerRadius
+        ).cgPath
+        bookShadow.shadowOpacity = Float(state.bookShadowOpacity)
+        bookShadow.opacity = Float(state.physicalOpacity)
 
         pageBlock.frame = bookFrame
-        pageBlock.cornerRadius = cornerRadius
-        pageBlock.opacity = Float(paperFaceFade)
-        layoutPageLayers(in: pageBlock.bounds, depth: pageDepth)
+        pageBlock.cornerRadius = state.bookCornerRadius
+        pageBlock.opacity = Float(state.pageFaceOpacity)
+        layoutPageLayers(in: pageBlock.bounds, depth: state.pageDepth)
 
         let spineWidth = max(2.5, min(12, bookFrame.width * 0.055))
         fixedSpine.frame = CGRect(
@@ -308,32 +399,36 @@ final class BookTransitionCanvasView: UIView {
             width: spineWidth,
             height: bookFrame.height
         )
-        fixedSpine.cornerRadius = min(cornerRadius, spineWidth / 2)
-        fixedSpine.opacity = Float(physicalFade * (0.58 + 0.42 * sin(coverOpening * .pi)))
+        fixedSpine.cornerRadius = min(state.bookCornerRadius, spineWidth / 2)
+        fixedSpine.opacity = Float(state.spineOpacity)
 
         cover.bounds = CGRect(origin: .zero, size: bookFrame.size)
         cover.position = CGPoint(x: bookFrame.minX, y: bookFrame.midY)
-        cover.opacity = Float(physicalFade)
+        cover.opacity = Float(state.physicalOpacity)
         var coverTransform = CATransform3DIdentity
-        coverTransform = CATransform3DTranslate(coverTransform, 0, 0, pageDepth * 0.55 + 1)
-        coverTransform = CATransform3DRotate(coverTransform, coverAngle, 0, 1, 0)
+        coverTransform = CATransform3DTranslate(coverTransform, 0, 0, state.pageDepth * 0.55 + 1)
+        coverTransform = CATransform3DRotate(coverTransform, state.coverAngle, 0, 1, 0)
         cover.transform = coverTransform
 
         coverShadow.bounds = cover.bounds
         coverShadow.position = cover.position
-        coverShadow.cornerRadius = cornerRadius
-        coverShadow.opacity = Float(physicalFade)
-        coverShadow.shadowOpacity = Float(sin(coverOpening * .pi) * 0.46 * physicalFade)
-        coverShadow.shadowRadius = 12 + 12 * sin(coverOpening * .pi)
-        coverShadow.shadowOffset = CGSize(width: 5 + 16 * sin(coverOpening * .pi), height: 5)
-        coverShadow.shadowPath = UIBezierPath(roundedRect: cover.bounds, cornerRadius: cornerRadius).cgPath
+        coverShadow.cornerRadius = state.bookCornerRadius
+        coverShadow.opacity = Float(state.physicalOpacity)
+        coverShadow.shadowOpacity = Float(state.coverShadowOpacity)
+        coverShadow.shadowRadius = state.coverShadowRadius
+        coverShadow.shadowOffset = state.coverShadowOffset
+        coverShadow.shadowPath = UIBezierPath(
+            roundedRect: cover.bounds,
+            cornerRadius: state.bookCornerRadius
+        ).cgPath
         coverShadow.transform = coverTransform
 
         layoutCoverLayers(
             in: cover.bounds,
-            cornerRadius: cornerRadius,
-            depth: coverDepth,
-            opening: coverOpening,
+            cornerRadius: state.bookCornerRadius,
+            depth: state.coverDepth,
+            highlightOpacity: state.coverHighlightOpacity,
+            textOpacity: state.coverTextOpacity,
             targetWidth: targetFrame.width,
             currentWidth: bookFrame.width
         )
@@ -355,7 +450,8 @@ final class BookTransitionCanvasView: UIView {
         in bounds: CGRect,
         cornerRadius: CGFloat,
         depth: CGFloat,
-        opening: CGFloat,
+        highlightOpacity: CGFloat,
+        textOpacity: CGFloat,
         targetWidth: CGFloat,
         currentWidth: CGFloat
     ) {
@@ -386,7 +482,7 @@ final class BookTransitionCanvasView: UIView {
         coverBottomEdge.transform = CATransform3DMakeRotation(.pi / 2, 1, 0, 0)
 
         coverHighlight.frame = bounds
-        coverHighlight.opacity = Float(0.72 + 0.28 * cos(opening * .pi))
+        coverHighlight.opacity = Float(highlightOpacity)
         hingeHighlight.frame = CGRect(x: 0, y: 0, width: max(3, bounds.width * 0.075), height: bounds.height)
 
         let compactness = clamp(targetWidth / max(currentWidth, 1))
@@ -402,27 +498,14 @@ final class BookTransitionCanvasView: UIView {
         authorLayer.fontSize = max(8, currentWidth * 0.075)
         authorLayer.frame = CGRect(x: bounds.width * 0.12, y: bounds.height * 0.79, width: bounds.width * 0.76, height: bounds.height * 0.08)
         [brandLayer, titleLayer, authorLayer].forEach {
-            $0.opacity = Float((0.55 + compactness * 0.45) * (1 - smoothstep(0.7, 0.96, opening)))
+            $0.opacity = Float((0.55 + compactness * 0.45) * textOpacity)
         }
-    }
-
-    private func interpolate(from: CGRect, to: CGRect, amount: CGFloat) -> CGRect {
-        CGRect(
-            x: from.minX + (to.minX - from.minX) * amount,
-            y: from.minY + (to.minY - from.minY) * amount,
-            width: from.width + (to.width - from.width) * amount,
-            height: from.height + (to.height - from.height) * amount
-        )
     }
 
     private func clamp(_ value: CGFloat) -> CGFloat {
         min(1, max(0, value))
     }
 
-    private func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
-        let x = clamp((value - edge0) / max(edge1 - edge0, 0.001))
-        return x * x * (3 - 2 * x)
-    }
 
     private func recursiveLayerCount(in root: CALayer) -> Int {
         1 + (root.sublayers ?? []).reduce(0) { $0 + recursiveLayerCount(in: $1) }

@@ -13,8 +13,10 @@ struct BookshelfView: View {
     @State private var selectedBookID: UUID?
     @State private var selectedBookFrame: CGRect?
     @State private var selectedBookSourceHidden = false
-    @State private var readerTransitionProgress: CGFloat = 1
+    @State private var readerTransitionProgress: CGFloat = 0
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
+    @State private var bookshelfTransitionGeometry: ReaderTransitionGeometry?
+    @State private var selectedTransitionGeometry: ReaderTransitionGeometry?
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
     @State private var showingCoverPicker = false
@@ -42,6 +44,10 @@ struct BookshelfView: View {
     var body: some View {
         NavigationStack {
             GeometryReader { proxy in
+                let currentGeometry = ReaderTransitionGeometry(
+                    containerSize: proxy.size,
+                    safeAreaInsets: proxy.safeAreaInsets
+                )
                 ZStack {
                     Color(hex: "EEE9DF").ignoresSafeArea()
                     VStack(spacing: 0) {
@@ -55,14 +61,18 @@ struct BookshelfView: View {
                         readerTransitionLayer(
                             book: selectedBook,
                             targetFrame: selectedBookFrame ?? bookFrames[selectedBookID] ?? fallbackBookFrame(in: proxy.size),
-                            containerSize: proxy.size,
-                            safeAreaInsets: proxy.safeAreaInsets
+                            geometry: selectedTransitionGeometry ?? currentGeometry
                         )
                         .zIndex(10)
                     }
                 }
                 .coordinateSpace(name: "bookshelfRoot")
                 .onPreferenceChange(BookFramePreferenceKey.self) { bookFrames = $0 }
+                .onAppear { bookshelfTransitionGeometry = currentGeometry }
+                .onChange(of: currentGeometry) { _, geometry in
+                    guard selectedBookID == nil else { return }
+                    bookshelfTransitionGeometry = geometry
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingImporter) {
@@ -181,10 +191,11 @@ struct BookshelfView: View {
     private func readerTransitionLayer(
         book: NovelBook,
         targetFrame: CGRect,
-        containerSize: CGSize,
-        safeAreaInsets: EdgeInsets
+        geometry: ReaderTransitionGeometry
     ) -> some View {
         let phase = readerTransitionPhase
+        let containerSize = geometry.containerSize
+        let safeAreaInsets = geometry.safeAreaInsets
         let fullSize = CGSize(
             width: containerSize.width + safeAreaInsets.leading + safeAreaInsets.trailing,
             height: containerSize.height + safeAreaInsets.top + safeAreaInsets.bottom
@@ -228,10 +239,13 @@ struct BookshelfView: View {
         )
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
-        readerTransitionProgress = 1
+        readerTransitionProgress = 0
         readerTransitionPhase = .preparing
         selectedBookSourceHidden = false
-        selectedBookFrame = bookFrames[book.id]
+        selectedBookFrame = bookFrames[book.id] ?? fallbackBookFrame(
+            in: bookshelfTransitionGeometry?.containerSize ?? UIScreen.main.bounds.size
+        )
+        selectedTransitionGeometry = bookshelfTransitionGeometry
         selectedBookID = book.id
     }
 
@@ -242,12 +256,7 @@ struct BookshelfView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             guard selectedBookID == bookID, readerTransitionPhase == .preparing else { return }
             selectedBookSourceHidden = true
-            readerTransitionPhase = .opening
-            withAnimation(.easeInOut(duration: 0.56)) {
-                readerTransitionProgress = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.58) {
-                guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
+            driveReaderTransition(bookID: bookID, to: 1, phase: .opening) {
                 readerTransitionPhase = .open
             }
         }
@@ -256,11 +265,9 @@ struct BookshelfView: View {
     private func closeReader(bookID: UUID) {
         guard selectedBookID == bookID,
               readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
-        readerTransitionPhase = .closing
-        withAnimation(.easeInOut(duration: 0.56)) {
-            readerTransitionProgress = 1
+        driveReaderTransition(bookID: bookID, to: 0, phase: .closing) {
+            finishReaderDismissal(bookID: bookID)
         }
-        completeReaderDismissal(bookID: bookID, after: 0.58)
     }
 
     private func edgeDragChanged(_ translation: CGFloat, bookID: UUID, containerWidth: CGFloat) {
@@ -268,7 +275,7 @@ struct BookshelfView: View {
               !readerBlocksEdgeDismiss,
               readerTransitionPhase == .open || readerTransitionPhase == .edgeDragging else { return }
         readerTransitionPhase = .edgeDragging
-        readerTransitionProgress = min(1, max(0, translation / max(containerWidth, 1)))
+        readerTransitionProgress = 1 - min(1, max(0, translation / max(containerWidth, 1)))
     }
 
     private func edgeDragEnded(
@@ -285,27 +292,42 @@ struct BookshelfView: View {
         ) {
             closeReader(bookID: bookID)
         } else {
-            readerTransitionPhase = .opening
-            withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.88, blendDuration: 0.04)) {
-                readerTransitionProgress = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
-                guard selectedBookID == bookID, readerTransitionPhase == .opening else { return }
+            driveReaderTransition(bookID: bookID, to: 1, phase: .opening) {
                 readerTransitionPhase = .open
             }
         }
     }
 
-    private func completeReaderDismissal(bookID: UUID, after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            guard selectedBookID == bookID, readerTransitionPhase == .closing else { return }
-            selectedBookID = nil
-            selectedBookFrame = nil
-            selectedBookSourceHidden = false
-            readerTransitionProgress = 1
-            readerTransitionPhase = .idle
-            readerBlocksEdgeDismiss = false
+    private func driveReaderTransition(
+        bookID: UUID,
+        to target: CGFloat,
+        phase: ReaderTransitionPhase,
+        completion: @escaping () -> Void
+    ) {
+        guard selectedBookID == bookID else { return }
+        let duration = BookTransitionAnimator.remainingDuration(
+            from: readerTransitionProgress,
+            to: target
+        )
+        readerTransitionPhase = phase
+        withAnimation(BookTransitionAnimator.animation(duration: duration)) {
+            readerTransitionProgress = target
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
+            guard selectedBookID == bookID, readerTransitionPhase == phase else { return }
+            completion()
+        }
+    }
+
+    private func finishReaderDismissal(bookID: UUID) {
+        guard selectedBookID == bookID, readerTransitionPhase == .closing else { return }
+        selectedBookID = nil
+        selectedBookFrame = nil
+        selectedTransitionGeometry = nil
+        selectedBookSourceHidden = false
+        readerTransitionProgress = 0
+        readerTransitionPhase = .idle
+        readerBlocksEdgeDismiss = false
     }
 
     private func beginCoverSelection(_ book: NovelBook) {
@@ -575,15 +597,16 @@ private struct ReaderTransitionLayer: View {
         let boundedProgress = min(1, max(0, progress))
         let width = max(containerSize.width, 1)
         let height = max(containerSize.height, 1)
-        let opening = 1 - boundedProgress
         // Keep the reader's geometry locked to the UIKit book body. The live
         // reader is prepared once at full size, then only composited by the GPU;
         // its layout and pagination never change during the transition.
-        let expansion = smoothstep(0.02, 0.9, opening)
-        let closedGeometry = 1 - expansion
-        let scaleX = 1 + (targetFrame.width / width - 1) * closedGeometry
-        let scaleY = 1 + (targetFrame.height / height - 1) * closedGeometry
-        let readerOpacity = smoothstep(0.06, 0.38, opening)
+        let state = BookTransitionAnimator.state(
+            progress: boundedProgress,
+            sourceFrame: targetFrame,
+            destinationFrame: CGRect(origin: .zero, size: containerSize)
+        )
+        let scaleX = state.bookFrame.width / width
+        let scaleY = state.bookFrame.height / height
 
         ZStack(alignment: .topLeading) {
             ReaderView(
@@ -594,18 +617,18 @@ private struct ReaderTransitionLayer: View {
                 onBlockingStateChanged: onBlockingStateChanged
             )
             .frame(width: width, height: height)
-            .opacity(readerOpacity)
-            .clipShape(RoundedRectangle(cornerRadius: 7 * closedGeometry, style: .continuous))
+            .opacity(state.readerOpacity)
+            .clipShape(RoundedRectangle(cornerRadius: state.readerCornerRadius, style: .continuous))
             .scaleEffect(x: scaleX, y: scaleY, anchor: .topLeading)
-            .offset(x: targetFrame.minX * closedGeometry, y: targetFrame.minY * closedGeometry)
-            .shadow(color: .black.opacity(0.22 * closedGeometry), radius: 14, x: 3, y: 7)
+            .offset(x: state.bookFrame.minX, y: state.bookFrame.minY)
+            .shadow(color: .black.opacity(state.readerShadowOpacity), radius: 14, x: 3, y: 7)
 
             BookOpeningTransitionView(
                 book: book,
                 targetFrame: targetFrame,
                 containerSize: containerSize,
                 paperColor: paperColor,
-                closedProgress: boundedProgress
+                progress: boundedProgress
             )
             .frame(width: width, height: height)
                 .allowsHitTesting(false)
@@ -620,10 +643,30 @@ private struct ReaderTransitionLayer: View {
         .frame(width: width, height: height, alignment: .topLeading)
         .background(Color.clear.contentShape(Rectangle()))
     }
+}
 
-    private func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
-        let x = min(1, max(0, (value - edge0) / max(edge1 - edge0, 0.001)))
-        return x * x * (3 - 2 * x)
+private struct ReaderTransitionGeometry: Equatable {
+    let containerSize: CGSize
+    let topInset: CGFloat
+    let leadingInset: CGFloat
+    let bottomInset: CGFloat
+    let trailingInset: CGFloat
+
+    init(containerSize: CGSize, safeAreaInsets: EdgeInsets) {
+        self.containerSize = containerSize
+        topInset = safeAreaInsets.top
+        leadingInset = safeAreaInsets.leading
+        bottomInset = safeAreaInsets.bottom
+        trailingInset = safeAreaInsets.trailing
+    }
+
+    var safeAreaInsets: EdgeInsets {
+        EdgeInsets(
+            top: topInset,
+            leading: leadingInset,
+            bottom: bottomInset,
+            trailing: trailingInset
+        )
     }
 }
 

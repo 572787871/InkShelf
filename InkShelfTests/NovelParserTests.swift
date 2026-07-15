@@ -439,7 +439,7 @@ final class ReaderRuntimeTests: XCTestCase {
         let canvas = BookTransitionCanvasView()
         canvas.configure(book: book, paperColor: UIColor(ReaderTheme.paper.background))
         canvas.update(
-            closedProgress: 1,
+            progress: 0,
             targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
             containerSize: CGSize(width: 390, height: 760)
         )
@@ -448,7 +448,7 @@ final class ReaderRuntimeTests: XCTestCase {
         let initialLayerCount = canvas.physicalLayerCount
 
         canvas.update(
-            closedProgress: 0,
+            progress: 1,
             targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
             containerSize: CGSize(width: 390, height: 760)
         )
@@ -462,14 +462,47 @@ final class ReaderRuntimeTests: XCTestCase {
         XCTAssertLessThan(canvas.renderedCoverAngle, -.pi * 0.8)
         XCTAssertGreaterThanOrEqual(initialLayerCount, 20)
 
-        canvas.update(
-            closedProgress: 1,
-            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
-            containerSize: CGSize(width: 390, height: 760)
+        for _ in 0..<10 {
+            canvas.update(
+                progress: 0,
+                targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
+                containerSize: CGSize(width: 390, height: 760)
+            )
+            XCTAssertEqual(canvas.renderedBookFrame, closedFrame)
+            XCTAssertEqual(canvas.renderedCoverAngle, closedAngle, accuracy: 0.001)
+            XCTAssertEqual(canvas.physicalLayerCount, initialLayerCount, "重复开合不应残留或追加图层")
+            canvas.update(
+                progress: 1,
+                targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
+                containerSize: CGSize(width: 390, height: 760)
+            )
+        }
+    }
+
+    func testBookTransitionUsesTheSameMidpointAndTimingInBothDirections() {
+        let source = CGRect(x: 24, y: 160, width: 92, height: 135)
+        let destination = CGRect(x: 0, y: 0, width: 390, height: 760)
+        let openingMidpoint = BookTransitionAnimator.state(
+            progress: 0.5,
+            sourceFrame: source,
+            destinationFrame: destination
         )
-        XCTAssertEqual(canvas.renderedBookFrame, closedFrame)
-        XCTAssertEqual(canvas.renderedCoverAngle, closedAngle, accuracy: 0.001)
-        XCTAssertEqual(canvas.physicalLayerCount, initialLayerCount, "重复开合不应残留或追加图层")
+        let closingMidpoint = BookTransitionAnimator.state(
+            progress: 0.5,
+            sourceFrame: source,
+            destinationFrame: destination
+        )
+
+        XCTAssertEqual(openingMidpoint, closingMidpoint)
+        XCTAssertEqual(
+            BookTransitionAnimator.remainingDuration(from: 0, to: 1),
+            BookTransitionAnimator.remainingDuration(from: 1, to: 0),
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(openingMidpoint.bookFrame.midX, closingMidpoint.bookFrame.midX, accuracy: 0.001)
+        XCTAssertEqual(openingMidpoint.coverAngle, closingMidpoint.coverAngle, accuracy: 0.001)
+        XCTAssertEqual(openingMidpoint.readerOpacity, closingMidpoint.readerOpacity, accuracy: 0.001)
+        XCTAssertEqual(openingMidpoint.pageDepth, closingMidpoint.pageDepth, accuracy: 0.001)
     }
 
     func testCurlReaderCanOpenItsFirstPage() {
