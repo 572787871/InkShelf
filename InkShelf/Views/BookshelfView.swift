@@ -156,6 +156,8 @@ struct BookshelfView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     let pages = shelfPages
+                    let resolvedPage = min(shelfPage, max(pages.count - 1, 0))
+                    let pageBooks = pages[resolvedPage]
                     let rowContentHeight = BookcaseLayoutMetrics.rowContentHeight(
                         viewportHeight: layoutHeight,
                         rowCount: 3
@@ -165,33 +167,36 @@ struct BookshelfView: View {
                         rowCount: 3
                     )
                     WoodenBookcase {
-                        TabView(selection: $shelfPage) {
-                            ForEach(Array(pages.enumerated()), id: \.offset) { pageIndex, pageBooks in
-                                LazyVStack(spacing: 0) {
-                                    ForEach(Array(shelfRows(for: pageBooks).enumerated()), id: \.offset) { _, row in
-                                        ShelfRow(
-                                            books: row,
-                                            rowContentHeight: rowContentHeight,
-                                            selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
-                                            onOpen: openReader,
-                                            onChooseCover: beginCoverSelection
-                                        )
-                                    }
-                                }
-                                .tag(pageIndex)
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(shelfRows(for: pageBooks).enumerated()), id: \.offset) { _, row in
+                                ShelfRow(
+                                    books: row,
+                                    rowContentHeight: rowContentHeight,
+                                    selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
+                                    onOpen: openReader,
+                                    onChooseCover: beginCoverSelection
+                                )
+                                .id("\(resolvedPage)-\(row.count)-\(row.first?.id.uuidString ?? "empty")")
                             }
                         }
-                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .id(resolvedPage)
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.18), value: resolvedPage)
                     }
-                    // The cabinet is a fixed viewport. Large libraries move only
-                    // by horizontal pages, so vertical drags can never stretch the
-                    // frame or expose empty space below it.
+                    // This is a fixed viewport with no full-size scroll or page
+                    // recognizer. Only the small explicit controls below can
+                    // change pages; book taps and long presses remain direct.
                     .frame(height: bookcaseHeight)
                     .padding(.horizontal, 12)
                     .overlay(alignment: .bottom) {
                         if pages.count > 1 {
-                            ShelfPageIndicator(pageCount: pages.count, selection: shelfPage)
-                                .padding(.bottom, 6)
+                            ShelfPageControls(
+                                pageCount: pages.count,
+                                selection: resolvedPage,
+                                onPrevious: { shelfPage = max(0, resolvedPage - 1) },
+                                onNext: { shelfPage = min(pages.count - 1, resolvedPage + 1) }
+                            )
+                            .padding(.bottom, 2)
                         }
                     }
                 }
@@ -803,17 +808,21 @@ private struct WoodenBookcase<Content: View>: View {
                     lineWidth: 3.5
                 )
                 .padding(2)
+                .allowsHitTesting(false)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 23, style: .continuous)
                 .strokeBorder(.black.opacity(0.54), lineWidth: 1)
                 .padding(7)
+                .allowsHitTesting(false)
         }
         .overlay(alignment: .leading) {
             CabinetPost(isLeading: true)
+                .allowsHitTesting(false)
         }
         .overlay(alignment: .trailing) {
             CabinetPost(isLeading: false)
+                .allowsHitTesting(false)
         }
         .overlay(alignment: .top) {
             WoodSurface(axis: .horizontal, colors: [Color(hex: "9A6745"), Color(hex: "5D3824"), Color(hex: "24130C")])
@@ -824,12 +833,14 @@ private struct WoodenBookcase<Content: View>: View {
                         .frame(height: 9)
                 }
                 .overlay(alignment: .bottom) { Rectangle().fill(Color(hex: "B78A62").opacity(0.34)).frame(height: 1).padding(.bottom, 8) }
+                .allowsHitTesting(false)
         }
         .overlay(alignment: .bottom) {
             WoodSurface(axis: .horizontal, colors: [Color(hex: "24120C"), Color(hex: "684027"), Color(hex: "986747"), Color(hex: "2D180F")])
                 .frame(height: BookcaseLayoutMetrics.bottomInset)
                 .overlay(alignment: .top) { Rectangle().fill(.black.opacity(0.68)).frame(height: 4) }
                 .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.2)).frame(height: 1).padding(.bottom, 3) }
+                .allowsHitTesting(false)
         }
         .overlay {
             VStack {
@@ -939,23 +950,39 @@ private struct WoodenShelf: View {
     }
 }
 
-private struct ShelfPageIndicator: View {
+private struct ShelfPageControls: View {
     let pageCount: Int
     let selection: Int
+    let onPrevious: () -> Void
+    let onNext: () -> Void
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<pageCount, id: \.self) { index in
-                Capsule()
-                    .fill(index == selection ? Color(hex: "D4AE72") : .white.opacity(0.28))
-                    .frame(width: index == selection ? 13 : 5, height: 4)
-                    .shadow(color: .black.opacity(0.4), radius: 1, y: 1)
+        HStack(spacing: 9) {
+            Button(action: onPrevious) {
+                Image(systemName: "chevron.left")
+                    .frame(width: 28, height: 24)
             }
+            .disabled(selection == 0)
+
+            HStack(spacing: 5) {
+                ForEach(0..<pageCount, id: \.self) { index in
+                    Capsule()
+                        .fill(index == selection ? Color(hex: "D4AE72") : .white.opacity(0.28))
+                        .frame(width: index == selection ? 13 : 5, height: 4)
+                }
+            }
+
+            Button(action: onNext) {
+                Image(systemName: "chevron.right")
+                    .frame(width: 28, height: 24)
+            }
+            .disabled(selection == pageCount - 1)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(.black.opacity(0.22), in: Capsule())
-        .allowsHitTesting(false)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(Color(hex: "E8CCA0"))
+        .padding(.horizontal, 5)
+        .background(.black.opacity(0.32), in: Capsule())
+        .buttonStyle(.plain)
         .accessibilityLabel("书架第 \(selection + 1) 页，共 \(pageCount) 页")
     }
 }
