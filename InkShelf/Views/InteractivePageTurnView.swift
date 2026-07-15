@@ -210,6 +210,7 @@ private final class ReaderPageBackgroundView: UIView {
     private let imageView = UIImageView()
     private let blurView = UIVisualEffectView()
     private let readabilityOverlay = UIView()
+    private var blurAnimator: UIViewPropertyAnimator?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -228,6 +229,10 @@ private final class ReaderPageBackgroundView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        blurAnimator?.stopAnimation(true)
+    }
+
     func configure(
         style: ReaderBackgroundStyle,
         backgroundColor: UIColor,
@@ -237,11 +242,17 @@ private final class ReaderPageBackgroundView: UIView {
     ) {
         imageView.image = backgroundImage
         imageView.isHidden = backgroundImage == nil || style == .plain
+        blurAnimator?.stopAnimation(true)
+        blurAnimator = nil
+        blurView.effect = nil
         if style == .custom, let effectStyle = blur.effectStyle(isDark: backgroundColor.isDark) {
-            blurView.effect = UIBlurEffect(style: effectStyle)
             blurView.isHidden = false
+            let animator = UIViewPropertyAnimator(duration: 1, curve: .linear) { [weak blurView = blurView] in
+                blurView?.effect = UIBlurEffect(style: effectStyle)
+            }
+            animator.fractionComplete = blur.effectIntensity
+            blurAnimator = animator
         } else {
-            blurView.effect = nil
             blurView.isHidden = true
         }
         readabilityOverlay.backgroundColor = backgroundColor.withAlphaComponent(overlayOpacity)
@@ -284,13 +295,13 @@ private final class ReaderPageContentView: UIView {
         addSubview(backgroundDecoration)
 
         titleLabel.text = page.chapterTitle
-        titleLabel.font = .systemFont(ofSize: 10)
-        titleLabel.textColor = appearance.textColor.withAlphaComponent(0.52)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        titleLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
         titleLabel.lineBreakMode = .byTruncatingTail
 
         brandLabel.text = appearance.bookTitle
-        brandLabel.font = .systemFont(ofSize: 10)
-        brandLabel.textColor = appearance.textColor.withAlphaComponent(0.52)
+        brandLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        brandLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
         brandLabel.textAlignment = .right
 
         textView.isEditable = false
@@ -306,13 +317,14 @@ private final class ReaderPageContentView: UIView {
         pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         for label in [pageLabel, clockLabel] {
-            label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-            label.textColor = appearance.textColor.withAlphaComponent(0.5)
+            label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            label.textColor = appearance.textColor.withAlphaComponent(0.6)
         }
         clockLabel.textAlignment = .right
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
-        batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.5)
+        batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.6)
         batteryImageView.contentMode = .scaleAspectFit
+        batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
@@ -328,12 +340,12 @@ private final class ReaderPageContentView: UIView {
         let headerY = max(16, safeAreaInsets.top + 12)
         let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
         backgroundDecoration.frame = bounds
-        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 16)
-        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 16)
-        textView.frame = CGRect(x: margin, y: headerY + 38, width: width, height: max(0, footerY - headerY - 58))
-        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 16)
-        batteryImageView.frame = CGRect(x: margin + width - 18, y: footerY + 1, width: 18, height: 13)
-        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 24, height: 16)
+        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 18)
+        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 18)
+        textView.frame = CGRect(x: margin, y: headerY + 42, width: width, height: max(0, footerY - headerY - 64))
+        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 18)
+        batteryImageView.frame = CGRect(x: margin + width - 23, y: footerY + 1, width: 23, height: 15)
+        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 29, height: 18)
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
     }
@@ -457,12 +469,12 @@ private final class ReaderPageBackContentView: UIView {
         let ghostColor = appearance.textColor.withAlphaComponent(0.15)
 
         titleLabel.text = page.chapterTitle
-        titleLabel.font = .systemFont(ofSize: 10)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = ghostColor
         titleLabel.lineBreakMode = .byTruncatingTail
 
         brandLabel.text = appearance.bookTitle
-        brandLabel.font = .systemFont(ofSize: 10)
+        brandLabel.font = .systemFont(ofSize: 12, weight: .medium)
         brandLabel.textColor = ghostColor
         brandLabel.textAlignment = .right
 
@@ -479,13 +491,14 @@ private final class ReaderPageBackContentView: UIView {
         pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         for label in [pageLabel, clockLabel] {
-            label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             label.textColor = ghostColor
         }
         clockLabel.textAlignment = .right
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
         batteryImageView.tintColor = ghostColor
         batteryImageView.contentMode = .scaleAspectFit
+        batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(ghostInkView.addSubview)
         addSubview(ghostInkView)
@@ -508,12 +521,12 @@ private final class ReaderPageBackContentView: UIView {
         let width = max(0, bounds.width - margin * 2)
         let headerY = max(16, safeAreaInsets.top + 12)
         let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
-        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 16)
-        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 16)
-        textView.frame = CGRect(x: margin, y: headerY + 38, width: width, height: max(0, footerY - headerY - 58))
-        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 16)
-        batteryImageView.frame = CGRect(x: margin + width - 18, y: footerY + 1, width: 18, height: 13)
-        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 24, height: 16)
+        titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 18)
+        brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 18)
+        textView.frame = CGRect(x: margin, y: headerY + 42, width: width, height: max(0, footerY - headerY - 64))
+        pageLabel.frame = CGRect(x: margin, y: footerY, width: width * 0.5, height: 18)
+        batteryImageView.frame = CGRect(x: margin + width - 23, y: footerY + 1, width: 23, height: 15)
+        clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 29, height: 18)
     }
 
     private func attributedGhostText(_ text: String, color: UIColor) -> NSAttributedString {

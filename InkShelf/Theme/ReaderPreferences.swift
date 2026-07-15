@@ -125,22 +125,24 @@ enum ReaderCustomBackgroundBlur: String, CaseIterable, Identifiable {
     var previewRadius: CGFloat {
         switch self {
         case .none: return 0
-        case .low: return 2.5
-        case .medium: return 6
-        case .high: return 12
+        case .low: return 0.7
+        case .medium: return 3.2
+        case .high: return 7.5
+        }
+    }
+
+    var effectIntensity: CGFloat {
+        switch self {
+        case .none: return 0
+        case .low: return 0.1
+        case .medium: return 0.34
+        case .high: return 0.68
         }
     }
 
     func effectStyle(isDark: Bool) -> UIBlurEffect.Style? {
-        switch (self, isDark) {
-        case (.none, _): return nil
-        case (.low, false): return .systemUltraThinMaterialLight
-        case (.medium, false): return .systemThinMaterialLight
-        case (.high, false): return .systemMaterialLight
-        case (.low, true): return .systemUltraThinMaterialDark
-        case (.medium, true): return .systemThinMaterialDark
-        case (.high, true): return .systemMaterialDark
-        }
+        guard self != .none else { return nil }
+        return isDark ? .systemMaterialDark : .systemMaterialLight
     }
 }
 

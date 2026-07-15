@@ -425,6 +425,9 @@ final class ReaderThemeTests: XCTestCase {
         XCTAssertEqual(ReaderCustomBackgroundBlur.allCases.map(\.rawValue), ["无", "低", "中", "高"])
         XCTAssertNil(ReaderCustomBackgroundBlur.none.effectStyle(isDark: false))
         XCTAssertNotNil(ReaderCustomBackgroundBlur.high.effectStyle(isDark: true))
+        XCTAssertLessThan(ReaderCustomBackgroundBlur.low.previewRadius, 1)
+        XCTAssertLessThan(ReaderCustomBackgroundBlur.low.effectIntensity, ReaderCustomBackgroundBlur.medium.effectIntensity)
+        XCTAssertLessThan(ReaderCustomBackgroundBlur.medium.effectIntensity, ReaderCustomBackgroundBlur.high.effectIntensity)
     }
 }
 
