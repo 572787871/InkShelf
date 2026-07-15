@@ -325,6 +325,35 @@ final class BookProgressTests: XCTestCase {
         XCTAssertEqual(reading.chapterProgressDescription, "2章 / 3章")
         XCTAssertEqual(finished.chapterProgressDescription, "3章 / 3章")
     }
+
+    func testBookshelfUsesEveryCurrentChapterTitleInsteadOfArrayOffsets() {
+        let ordinaryChapters = (1...34).map { "第\($0)章 正文\n这是第\($0)章的内容。" }
+        let content = (ordinaryChapters + [
+            "第43章 继续\n当前阅读内容。",
+            "第468章 结局\n最后的内容。"
+        ]).joined(separator: "\n")
+        let parsedBook = NovelBook(title: "非连续章号", content: content)
+
+        XCTAssertEqual(parsedBook.chapters.count, 36)
+        XCTAssertEqual(parsedBook.displayChapterCount, 468)
+        for (arrayIndex, expectedChapter) in [(0, 1), (11, 12), (33, 34), (34, 43), (35, 468)] {
+            let reading = NovelBook(
+                title: "非连续章号",
+                content: content,
+                lastReadAt: Date(),
+                currentChapter: arrayIndex
+            )
+            XCTAssertEqual(reading.readChapterCount, expectedChapter)
+            XCTAssertEqual(reading.chapterProgressDescription, "\(expectedChapter)章 / 468章")
+        }
+    }
+
+    func testChineseAndFullwidthChapterNumbersAreParsed() {
+        XCTAssertEqual(NovelParser.chapterNumber(from: "第四十三章 夜归"), 43)
+        XCTAssertEqual(NovelParser.chapterNumber(from: "第４６８回 终章"), 468)
+        XCTAssertEqual(NovelParser.chapterNumber(from: "Chapter 120 Finale"), 120)
+        XCTAssertNil(NovelParser.chapterNumber(from: "序章"))
+    }
 }
 
 final class ReaderThemeTests: XCTestCase {

@@ -15,6 +15,7 @@ struct NovelBook: Identifiable, Equatable, Sendable {
     var bookmarks: [ReaderBookmark]
     var notes: [ReaderNote]
     let chapters: [NovelChapter]
+    let displayChapterCount: Int
 
     init(
         id: UUID = UUID(),
@@ -44,16 +45,20 @@ struct NovelBook: Identifiable, Equatable, Sendable {
         self.currentPage = currentPage
         self.bookmarks = bookmarks
         self.notes = notes
-        self.chapters = NovelParser.chapters(from: content)
+        let parsedChapters = NovelParser.chapters(from: content)
+        self.chapters = parsedChapters
+        self.displayChapterCount = NovelParser.displayChapterCount(for: parsedChapters)
     }
 
     var readChapterCount: Int {
         guard lastReadAt != nil else { return 0 }
-        return min(chapters.count, max(1, currentChapter + 1))
+        guard !chapters.isEmpty else { return 0 }
+        let safeIndex = min(max(currentChapter, 0), chapters.count - 1)
+        return chapters[safeIndex].chapterNumber ?? min(displayChapterCount, safeIndex + 1)
     }
 
     var chapterProgressDescription: String {
-        "\(readChapterCount)章 / \(chapters.count)章"
+        "\(readChapterCount)章 / \(displayChapterCount)章"
     }
 }
 
@@ -67,6 +72,14 @@ struct NovelChapter: Identifiable, Equatable, Sendable {
     let index: Int
     let title: String
     let content: String
+    let chapterNumber: Int?
+
+    init(index: Int, title: String, content: String) {
+        self.index = index
+        self.title = title
+        self.content = content
+        self.chapterNumber = NovelParser.chapterNumber(from: title)
+    }
 
     var id: Int { index }
 }
@@ -90,6 +103,80 @@ struct ReaderNote: Identifiable, Codable, Equatable, Sendable {
 
 enum NovelParser {
     private static let headingPattern = #"(?m)^\s*((?:第[0-9０-９一二三四五六七八九十百千万零〇两]+[章回卷节部篇]|Chapter\s+\d+)[^\n]*)$"#
+    private static let chapterNumberPattern = #"(?:第\s*([0-9０-９一二三四五六七八九十百千万零〇两壹贰叁肆伍陆柒捌玖拾佰仟廿卅卌]+)\s*[章回节部篇话集]|Chapter\s*([0-9０-９]+))"#
+    private static let chapterNumberExpression = try? NSRegularExpression(
+        pattern: chapterNumberPattern,
+        options: [.caseInsensitive]
+    )
+
+    static func chapterNumber(from title: String) -> Int? {
+        guard let expression = chapterNumberExpression else { return nil }
+        let searchRange = NSRange(title.startIndex..., in: title)
+        guard let match = expression.firstMatch(in: title, range: searchRange) else { return nil }
+        for captureIndex in 1..<match.numberOfRanges where match.range(at: captureIndex).location != NSNotFound {
+            guard let range = Range(match.range(at: captureIndex), in: title) else { continue }
+            return parsedChapterNumber(String(title[range]))
+        }
+        return nil
+    }
+
+    static func displayChapterCount(for chapters: [NovelChapter]) -> Int {
+        let numberedChapters = chapters.compactMap(\.chapterNumber)
+        guard !numberedChapters.isEmpty,
+              numberedChapters.count * 2 >= chapters.count,
+              zip(numberedChapters, numberedChapters.dropFirst()).allSatisfy({ pair in pair.0 <= pair.1 }),
+              let finalChapterNumber = numberedChapters.last else {
+            return chapters.count
+        }
+        return max(finalChapterNumber, numberedChapters.count)
+    }
+
+    private static func parsedChapterNumber(_ source: String) -> Int? {
+        let fullwidthDigits = Array("０１２３４５６７８９")
+        let normalized = String(source.map { character in
+            guard let index = fullwidthDigits.firstIndex(of: character) else { return character }
+            return Character(String(index))
+        })
+        if let arabic = Int(normalized), arabic > 0 { return arabic }
+
+        let digitValues: [Character: Int] = [
+            "零": 0, "〇": 0, "一": 1, "壹": 1, "二": 2, "两": 2, "贰": 2,
+            "三": 3, "叁": 3, "四": 4, "肆": 4, "五": 5, "伍": 5,
+            "六": 6, "陆": 6, "七": 7, "柒": 7, "八": 8, "捌": 8,
+            "九": 9, "玖": 9
+        ]
+        let unitValues: [Character: Int] = ["十": 10, "拾": 10, "百": 100, "佰": 100, "千": 1_000, "仟": 1_000]
+        let shorthandValues: [Character: Int] = ["廿": 20, "卅": 30, "卌": 40]
+        var total = 0
+        var section = 0
+        var pendingDigit: Int?
+        var recognized = false
+
+        for character in normalized {
+            if let value = digitValues[character] {
+                pendingDigit = (pendingDigit ?? 0) * 10 + value
+                recognized = true
+            } else if let value = shorthandValues[character] {
+                section += value
+                pendingDigit = nil
+                recognized = true
+            } else if let unit = unitValues[character] {
+                section += max(1, pendingDigit ?? 0) * unit
+                pendingDigit = nil
+                recognized = true
+            } else if character == "万" {
+                section += pendingDigit ?? 0
+                total += max(1, section) * 10_000
+                section = 0
+                pendingDigit = nil
+                recognized = true
+            } else {
+                return nil
+            }
+        }
+        let result = total + section + (pendingDigit ?? 0)
+        return recognized && result > 0 ? result : nil
+    }
 
     static func chapters(from text: String) -> [NovelChapter] {
         let clean = text.replacingOccurrences(of: "\r\n", with: "\n")
