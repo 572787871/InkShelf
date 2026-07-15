@@ -5,6 +5,18 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
+    func testNativeBookshelfControlForwardsTouchUpInside() {
+        let control = NativeBookTapControl()
+        var tapCount = 0
+        control.onTap = { tapCount += 1 }
+
+        control.sendActions(for: .touchUpInside)
+
+        XCTAssertEqual(tapCount, 1)
+        XCTAssertTrue(control.isAccessibilityElement)
+        XCTAssertTrue(control.accessibilityTraits.contains(.button))
+    }
+
     func testReaderOpeningDoesNotUnlockBeforeBothAnimationAndContentAreReady() {
         XCTAssertFalse(
             ReaderOpeningGate.canEnableInteraction(

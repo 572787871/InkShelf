@@ -455,31 +455,35 @@ private struct ShelfRow: View {
         VStack(spacing: 0) {
             HStack(alignment: .bottom, spacing: 17) {
                 ForEach(books) { book in
-                    Button { onOpen(book) } label: {
-                        VStack(spacing: 9) {
-                            BookCoverView(book: book, compact: true)
-                                .frame(maxWidth: 92)
-                                .background {
-                                    GeometryReader { proxy in
-                                        Color.clear.preference(
-                                            key: BookFramePreferenceKey.self,
-                                            value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
-                                        )
-                                    }
+                    VStack(spacing: 9) {
+                        BookCoverView(book: book, compact: true)
+                            .frame(maxWidth: 92)
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear.preference(
+                                        key: BookFramePreferenceKey.self,
+                                        value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
+                                    )
                                 }
-                            VStack(spacing: 2) {
-                                Text(book.title)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .lineLimit(1)
-                                Text(book.chapterProgressDescription)
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.white.opacity(0.62))
                             }
+                        VStack(spacing: 2) {
+                            Text(book.title)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .lineLimit(1)
+                            Text(book.chapterProgressDescription)
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.62))
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .overlay {
+                        NativeBookTapSurface(
+                            accessibilityLabel: "打开《\(book.title)》",
+                            onTap: { onOpen(book) }
+                        )
+                    }
                     .opacity(selectedBookID == book.id ? 0 : 1)
                     .contextMenu {
                         Button { onChooseCover(book) } label: {
@@ -502,6 +506,49 @@ private struct ShelfRow: View {
         }
     }
 
+}
+
+struct NativeBookTapSurface: UIViewRepresentable {
+    let accessibilityLabel: String
+    let onTap: () -> Void
+
+    func makeUIView(context: Context) -> NativeBookTapControl {
+        let control = NativeBookTapControl()
+        control.backgroundColor = .clear
+        return control
+    }
+
+    func updateUIView(_ control: NativeBookTapControl, context: Context) {
+        control.onTap = onTap
+        control.accessibilityLabel = accessibilityLabel
+    }
+}
+
+final class NativeBookTapControl: UIControl {
+    var onTap: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        addTarget(self, action: #selector(didTap), for: .touchUpInside)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        addTarget(self, action: #selector(didTap), for: .touchUpInside)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        onTap?()
+        return true
+    }
+
+    @objc private func didTap() {
+        onTap?()
+    }
 }
 
 private struct NovelDocumentPicker: UIViewControllerRepresentable {
