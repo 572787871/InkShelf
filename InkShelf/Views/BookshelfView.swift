@@ -428,10 +428,15 @@ private struct ReaderTransitionLayer: View {
         let boundedProgress = min(1, max(0, progress))
         let width = max(containerSize.width, 1)
         let height = max(containerSize.height, 1)
-        let scaleX = 1 + (targetFrame.width / width - 1) * boundedProgress
-        let scaleY = 1 + (targetFrame.height / height - 1) * boundedProgress
         let opening = 1 - boundedProgress
-        let readerOpacity = smoothstep(0.2, 0.72, opening)
+        // Keep the reader's geometry locked to the UIKit book body. The live
+        // reader is prepared once at full size, then only composited by the GPU;
+        // its layout and pagination never change during the transition.
+        let expansion = smoothstep(0.02, 0.9, opening)
+        let closedGeometry = 1 - expansion
+        let scaleX = 1 + (targetFrame.width / width - 1) * closedGeometry
+        let scaleY = 1 + (targetFrame.height / height - 1) * closedGeometry
+        let readerOpacity = smoothstep(0.06, 0.38, opening)
 
         ZStack(alignment: .topLeading) {
             ReaderView(
@@ -443,10 +448,10 @@ private struct ReaderTransitionLayer: View {
             )
             .frame(width: width, height: height)
             .opacity(readerOpacity)
-            .clipShape(RoundedRectangle(cornerRadius: 7 * boundedProgress, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 7 * closedGeometry, style: .continuous))
             .scaleEffect(x: scaleX, y: scaleY, anchor: .topLeading)
-            .offset(x: targetFrame.minX * boundedProgress, y: targetFrame.minY * boundedProgress)
-            .shadow(color: .black.opacity(0.22 * boundedProgress), radius: 14, x: 3, y: 7)
+            .offset(x: targetFrame.minX * closedGeometry, y: targetFrame.minY * closedGeometry)
+            .shadow(color: .black.opacity(0.22 * closedGeometry), radius: 14, x: 3, y: 7)
 
             BookOpeningTransitionView(
                 book: book,

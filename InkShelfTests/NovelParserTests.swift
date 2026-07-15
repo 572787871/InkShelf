@@ -384,13 +384,33 @@ final class ReaderRuntimeTests: XCTestCase {
             targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
             containerSize: CGSize(width: 390, height: 760)
         )
+        let closedFrame = canvas.renderedBookFrame
+        let closedAngle = canvas.renderedCoverAngle
+        let initialLayerCount = canvas.physicalLayerCount
+
         canvas.update(
             closedProgress: 0,
             targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
             containerSize: CGSize(width: 390, height: 760)
         )
 
-        XCTAssertGreaterThanOrEqual(canvas.layer.sublayers?.count ?? 0, 3)
+        XCTAssertEqual(canvas.coverHingeAnchorPoint.x, 0, accuracy: 0.001)
+        XCTAssertEqual(canvas.coverHingeAnchorPoint.y, 0.5, accuracy: 0.001)
+        XCTAssertLessThan(canvas.perspectiveM34, 0)
+        XCTAssertEqual(closedFrame, CGRect(x: 24, y: 160, width: 92, height: 135))
+        XCTAssertEqual(closedAngle, 0, accuracy: 0.001)
+        XCTAssertEqual(canvas.renderedBookFrame, CGRect(x: 0, y: 0, width: 390, height: 760))
+        XCTAssertLessThan(canvas.renderedCoverAngle, -.pi * 0.8)
+        XCTAssertGreaterThanOrEqual(initialLayerCount, 20)
+
+        canvas.update(
+            closedProgress: 1,
+            targetFrame: CGRect(x: 24, y: 160, width: 92, height: 135),
+            containerSize: CGSize(width: 390, height: 760)
+        )
+        XCTAssertEqual(canvas.renderedBookFrame, closedFrame)
+        XCTAssertEqual(canvas.renderedCoverAngle, closedAngle, accuracy: 0.001)
+        XCTAssertEqual(canvas.physicalLayerCount, initialLayerCount, "重复开合不应残留或追加图层")
     }
 
     func testCurlReaderCanOpenItsFirstPage() {
