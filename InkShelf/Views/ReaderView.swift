@@ -17,6 +17,8 @@ struct ReaderView: View {
     @State private var showingAppearance = false
     @State private var showingNote = false
     @State private var showingVoiceInfo = false
+    @State private var scrubbedPageIndex: Double?
+    @State private var isScrubbingChapterProgress = false
     @State private var brightness = Double(UIScreen.main.brightness)
     @State private var originalBrightness = UIScreen.main.brightness
 
@@ -66,7 +68,9 @@ struct ReaderView: View {
                                 location: location,
                                 appearance: pageAppearance(bookTitle: book.title),
                                 mode: pageTurnMode,
-                                isInteractionEnabled: !showingAppearance && !interactionDisabled,
+                                isInteractionEnabled: !showingAppearance
+                                    && !isScrubbingChapterProgress
+                                    && !interactionDisabled,
                                 onCommit: commit,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
@@ -103,6 +107,7 @@ struct ReaderView: View {
         .onChange(of: showingIndex) { _, _ in reportBlockingState() }
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
         .onChange(of: showingVoiceInfo) { _, _ in reportBlockingState() }
+        .onChange(of: isScrubbingChapterProgress) { _, _ in reportBlockingState() }
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -222,7 +227,13 @@ struct ReaderView: View {
     }
 
     private func reportBlockingState() {
-        onBlockingStateChanged(showingAppearance || showingIndex || showingNote || showingVoiceInfo)
+        onBlockingStateChanged(
+            showingAppearance
+                || showingIndex
+                || showingNote
+                || showingVoiceInfo
+                || isScrubbingChapterProgress
+        )
     }
 
     @ViewBuilder
@@ -279,14 +290,7 @@ struct ReaderView: View {
             Spacer()
             VStack(spacing: 14) {
                 if turnStyle != .vertical {
-                    HStack(spacing: 12) {
-                        Text("\((currentPage?.pageInChapter ?? 1))").font(.caption.monospacedDigit())
-                        Slider(value: Binding(
-                            get: { Double(currentPage?.location.pageIndex ?? 0) },
-                            set: { jump(to: ReaderPageLocation(chapterIndex: location.chapterIndex, pageIndex: Int($0.rounded()))) }
-                        ), in: 0...Double(max((currentPage?.pageCountInChapter ?? 1) - 1, 1)), step: 1)
-                        Text("\(currentPage?.pageCountInChapter ?? 1)").font(.caption.monospacedDigit())
-                    }
+                    chapterProgressControl(book: book, currentPage: currentPage)
                 }
                 if !showingAppearance {
                     HStack {
@@ -316,6 +320,74 @@ struct ReaderView: View {
         }
         .foregroundStyle(Color.primary)
         .transition(.opacity)
+    }
+
+    private func chapterProgressControl(book: NovelBook, currentPage: ReaderPage?) -> some View {
+        let pageCount = currentPage?.pageCountInChapter ?? 1
+        let maximumPageIndex = max(pageCount - 1, 1)
+        let previewPage = Int((scrubbedPageIndex ?? Double(currentPage?.location.pageIndex ?? 0)).rounded())
+
+        return HStack(spacing: 12) {
+            Button {
+                moveToChapter(location.chapterIndex - 1, in: book)
+            } label: {
+                Text("上一章")
+                    .frame(width: 52, alignment: .leading)
+            }
+            .disabled(location.chapterIndex == 0 || isScrubbingChapterProgress || showingAppearance)
+
+            Slider(
+                value: Binding(
+                    get: { scrubbedPageIndex ?? Double(currentPage?.location.pageIndex ?? 0) },
+                    set: { scrubbedPageIndex = $0 }
+                ),
+                in: 0...Double(maximumPageIndex),
+                step: 1,
+                onEditingChanged: { editing in
+                    handleChapterProgressEditing(editing, currentPage: currentPage)
+                }
+            )
+            .disabled(pageCount <= 1 || showingAppearance)
+            .tint(theme.foreground.opacity(0.72))
+            .accessibilityLabel("本章阅读进度")
+            .accessibilityValue("第 \(min(previewPage + 1, pageCount)) 页，共 \(pageCount) 页")
+
+            Button {
+                moveToChapter(location.chapterIndex + 1, in: book)
+            } label: {
+                Text("下一章")
+                    .frame(width: 52, alignment: .trailing)
+            }
+            .disabled(
+                location.chapterIndex + 1 >= book.chapters.count
+                    || isScrubbingChapterProgress
+                    || showingAppearance
+            )
+        }
+        .font(.caption.weight(.medium))
+        .buttonStyle(.plain)
+    }
+
+    private func handleChapterProgressEditing(_ editing: Bool, currentPage: ReaderPage?) {
+        if editing {
+            if scrubbedPageIndex == nil {
+                scrubbedPageIndex = Double(currentPage?.location.pageIndex ?? 0)
+            }
+            isScrubbingChapterProgress = true
+            return
+        }
+
+        let targetPage = Int((scrubbedPageIndex ?? Double(currentPage?.location.pageIndex ?? 0)).rounded())
+        scrubbedPageIndex = nil
+        isScrubbingChapterProgress = false
+        jump(to: ReaderPageLocation(chapterIndex: location.chapterIndex, pageIndex: targetPage))
+    }
+
+    private func moveToChapter(_ chapterIndex: Int, in book: NovelBook) {
+        guard book.chapters.indices.contains(chapterIndex) else { return }
+        scrubbedPageIndex = nil
+        isScrubbingChapterProgress = false
+        jump(to: ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: 0))
     }
 
     private var statusBarTopInset: CGFloat {
