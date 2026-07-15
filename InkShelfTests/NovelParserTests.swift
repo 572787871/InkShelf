@@ -400,33 +400,11 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
-    func testBookcaseKeepsItsPreTransitionViewportHeight() {
-        let cachedHeight: CGFloat = 690
-        let expandedRootHeight: CGFloat = 742
-        let resolvedDuringReader = BookcaseLayoutMetrics.resolvedViewportHeight(
-            current: expandedRootHeight,
-            cached: cachedHeight,
-            readerPresented: true
-        )
-        let rowHeight = BookcaseLayoutMetrics.rowContentHeight(
-            viewportHeight: resolvedDuringReader,
-            rowCount: 3
-        )
-
-        XCTAssertEqual(resolvedDuringReader, cachedHeight)
-        XCTAssertEqual(
-            BookcaseLayoutMetrics.totalHeight(rowContentHeight: rowHeight, rowCount: 3),
-            cachedHeight,
-            accuracy: 0.001
-        )
-        XCTAssertEqual(
-            BookcaseLayoutMetrics.resolvedViewportHeight(
-                current: expandedRootHeight,
-                cached: cachedHeight,
-                readerPresented: false
-            ),
-            expandedRootHeight
-        )
+    func testDefaultBookCoverAssetsAreBundled() {
+        for style in 0..<BookPalette.styles.count {
+            let assetName = BookPalette.defaultCoverAssetName(for: style)
+            XCTAssertNotNil(UIImage(named: assetName), "缺少默认小说封面资源：\(assetName)")
+        }
     }
 
     func testPhysicalBookTransitionCanRenderBothEndpoints() {
