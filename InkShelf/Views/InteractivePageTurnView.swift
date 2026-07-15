@@ -14,6 +14,7 @@ struct ReaderPageAppearance: Equatable {
     let backsideColor: UIColor
     let textColor: UIColor
     let backgroundStyle: ReaderBackgroundStyle
+    let backgroundImage: UIImage?
     let fontName: String?
     let fontSize: CGFloat
     let lineSpacing: CGFloat
@@ -202,118 +203,39 @@ extension ReaderPageContentController: CurlPageSide {
 }
 
 private final class ReaderPageBackgroundView: UIView {
-    private let washLayer = CAGradientLayer()
-    private let strokeLayer = CAShapeLayer()
-    private let fillLayer = CAShapeLayer()
-    private var style = ReaderBackgroundStyle.plain
-    private var inkColor = UIColor.clear
+    private let imageView = UIImageView()
+    private let readabilityOverlay = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = false
         backgroundColor = .clear
-        layer.addSublayer(washLayer)
-        layer.addSublayer(strokeLayer)
-        layer.addSublayer(fillLayer)
-        strokeLayer.fillColor = UIColor.clear.cgColor
-        strokeLayer.lineCap = .round
-        strokeLayer.lineJoin = .round
+        clipsToBounds = true
+        imageView.contentMode = .scaleAspectFill
+        imageView.isUserInteractionEnabled = false
+        readabilityOverlay.isUserInteractionEnabled = false
+        addSubview(imageView)
+        addSubview(readabilityOverlay)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(style: ReaderBackgroundStyle, backgroundColor: UIColor, textColor: UIColor) {
-        self.style = style
-        inkColor = textColor
-        if style == .warmGlow {
-            washLayer.type = .radial
-            washLayer.startPoint = CGPoint(x: 0.82, y: 0.02)
-            washLayer.endPoint = CGPoint(x: 0.2, y: 0.82)
-            washLayer.colors = [
-                UIColor(red: 0.96, green: 0.72, blue: 0.31, alpha: backgroundColor.isDark ? 0.07 : 0.19).cgColor,
-                UIColor.clear.cgColor
-            ]
-        } else {
-            washLayer.type = .axial
-            washLayer.colors = [UIColor.clear.cgColor, UIColor.clear.cgColor]
-        }
+    func configure(
+        style: ReaderBackgroundStyle,
+        backgroundColor: UIColor,
+        backgroundImage: UIImage?
+    ) {
+        imageView.image = backgroundImage
+        imageView.isHidden = backgroundImage == nil || style == .plain
+        readabilityOverlay.backgroundColor = backgroundColor.withAlphaComponent(style.readabilityOverlayOpacity)
         setNeedsLayout()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        washLayer.frame = bounds
-        strokeLayer.frame = bounds
-        fillLayer.frame = bounds
-        let strokes = UIBezierPath()
-        let fills = UIBezierPath()
-
-        switch style {
-        case .plain, .warmGlow:
-            break
-        case .ricePaper:
-            for index in 0..<24 {
-                let y = bounds.height * CGFloat(index + 1) / 25
-                strokes.move(to: CGPoint(x: 0, y: y))
-                for step in 1...14 {
-                    let x = bounds.width * CGFloat(step) / 14
-                    strokes.addLine(to: CGPoint(
-                        x: x,
-                        y: y + sin(CGFloat(index + step * 3) * 0.61) * 0.8
-                    ))
-                }
-            }
-        case .bamboo:
-            for stalk in 0..<3 {
-                let x = bounds.width * (0.73 + CGFloat(stalk) * 0.105)
-                strokes.move(to: CGPoint(x: x, y: -8))
-                strokes.addCurve(
-                    to: CGPoint(x: x - bounds.width * 0.09, y: bounds.height * 0.52),
-                    controlPoint1: CGPoint(x: x + 8, y: bounds.height * 0.16),
-                    controlPoint2: CGPoint(x: x - 12, y: bounds.height * 0.34)
-                )
-                for leaf in 0..<4 {
-                    let y = bounds.height * (0.1 + CGFloat(leaf) * 0.09 + CGFloat(stalk) * 0.025)
-                    fills.append(UIBezierPath(ovalIn: CGRect(
-                        x: x - 30 - CGFloat(leaf % 2) * 9,
-                        y: y,
-                        width: 38,
-                        height: 9
-                    )))
-                }
-            }
-        case .mist:
-            for ridge in 0..<4 {
-                let y = bounds.height * (0.73 + CGFloat(ridge) * 0.075)
-                strokes.move(to: CGPoint(x: -20, y: y))
-                strokes.addCurve(
-                    to: CGPoint(x: bounds.width + 20, y: y - 4),
-                    controlPoint1: CGPoint(x: bounds.width * 0.23, y: y - 58 + CGFloat(ridge) * 7),
-                    controlPoint2: CGPoint(x: bounds.width * 0.65, y: y + 24 - CGFloat(ridge) * 5)
-                )
-            }
-        }
-
-        strokeLayer.path = strokes.cgPath
-        fillLayer.path = fills.cgPath
-        switch style {
-        case .ricePaper:
-            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.025).cgColor
-            strokeLayer.lineWidth = 0.45
-            fillLayer.fillColor = UIColor.clear.cgColor
-        case .bamboo:
-            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.065).cgColor
-            strokeLayer.lineWidth = 2.2
-            fillLayer.fillColor = inkColor.withAlphaComponent(0.04).cgColor
-        case .mist:
-            strokeLayer.strokeColor = inkColor.withAlphaComponent(0.055).cgColor
-            strokeLayer.lineWidth = 1.1
-            fillLayer.fillColor = UIColor.clear.cgColor
-        case .plain, .warmGlow:
-            strokeLayer.strokeColor = UIColor.clear.cgColor
-            fillLayer.fillColor = UIColor.clear.cgColor
-        }
+        imageView.frame = bounds
+        readabilityOverlay.frame = bounds
     }
 }
 
@@ -338,7 +260,7 @@ private final class ReaderPageContentView: UIView {
         backgroundDecoration.configure(
             style: appearance.backgroundStyle,
             backgroundColor: appearance.backgroundColor,
-            textColor: appearance.textColor
+            backgroundImage: appearance.backgroundImage
         )
         addSubview(backgroundDecoration)
 
@@ -403,7 +325,7 @@ private final class ReaderPageContentView: UIView {
         backgroundDecoration.configure(
             style: appearance.backgroundStyle,
             backgroundColor: appearance.backgroundColor,
-            textColor: appearance.textColor
+            backgroundImage: appearance.backgroundImage
         )
         textView.attributedText = attributedBody(page.displayText)
     }

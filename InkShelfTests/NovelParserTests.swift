@@ -400,13 +400,24 @@ final class ReaderThemeTests: XCTestCase {
 
     func testReaderBackgroundChoicesHaveStableUniqueKeys() {
         let styles = ReaderBackgroundStyle.allCases
-        XCTAssertEqual(styles.count, 5)
+        XCTAssertEqual(styles.count, 7)
         XCTAssertEqual(Set(styles.map(\.rawValue)).count, styles.count)
         XCTAssertTrue(styles.contains(.plain))
-        XCTAssertTrue(styles.contains(.ricePaper))
-        XCTAssertTrue(styles.contains(.bamboo))
-        XCTAssertTrue(styles.contains(.mist))
-        XCTAssertTrue(styles.contains(.warmGlow))
+        XCTAssertTrue(styles.contains(.bambooWhite))
+        XCTAssertTrue(styles.contains(.bambooRice))
+        XCTAssertTrue(styles.contains(.bambooGreen))
+        XCTAssertTrue(styles.contains(.bambooTea))
+        XCTAssertTrue(styles.contains(.bambooNight))
+        XCTAssertTrue(styles.contains(.custom))
+    }
+
+    func testBundledReaderFontsCanBeRegisteredByPostScriptName() {
+        for font in ReaderFont.allCases where font != .system {
+            guard let name = font.name else {
+                return XCTFail("\(font.rawValue) 缺少 PostScript 名称")
+            }
+            XCTAssertNotNil(UIFont(name: name, size: 19), "\(font.rawValue) 没有正确注册")
+        }
     }
 }
 
@@ -437,6 +448,7 @@ final class ReaderRuntimeTests: XCTestCase {
                 backsideColor: UIColor(ReaderTheme.paper.pageBack),
                 textColor: UIColor(ReaderTheme.paper.foreground),
                 backgroundStyle: .plain,
+                backgroundImage: nil,
                 fontName: nil,
                 fontSize: 19,
                 lineSpacing: 9,

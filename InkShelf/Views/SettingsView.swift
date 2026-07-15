@@ -11,8 +11,8 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("阅读偏好") {
-                    Picker("默认主题", selection: $theme) { ForEach(ReaderTheme.allCases) { Text($0.rawValue).tag($0.rawValue) } }
-                    Picker("默认字体", selection: $font) { ForEach(ReaderFont.allCases) { Text($0.rawValue).tag($0.rawValue) } }
+                    Picker("默认主题", selection: $theme) { ForEach(ReaderTheme.allCases) { Text($0.displayName).tag($0.rawValue) } }
+                    Picker("默认字体", selection: $font) { ForEach(ReaderFont.allCases) { Text($0.displayName).tag($0.rawValue) } }
                     Picker("翻页方式", selection: $pageTurn) { ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) } }
                     Toggle("阅读时屏幕常亮", isOn: $keepAwake)
                 }

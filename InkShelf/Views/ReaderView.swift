@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 struct ReaderView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -21,10 +22,15 @@ struct ReaderView: View {
     @State private var isScrubbingWholeBookProgress = false
     @State private var brightness = Double(UIScreen.main.brightness)
     @State private var originalBrightness = UIScreen.main.brightness
+    @State private var showingBackgroundPicker = false
+    @State private var selectedBackgroundPhoto: PhotosPickerItem?
+    @State private var customBackgroundImage = ReaderCustomBackgroundStore.load().flatMap(UIImage.init(data:))
+    @State private var backgroundImportError: String?
 
     @AppStorage("readerTheme") private var themeRaw = ReaderTheme.paper.rawValue
     @AppStorage("readerDayTheme") private var dayThemeRaw = ReaderTheme.paper.rawValue
     @AppStorage("readerBackground") private var backgroundRaw = ReaderBackgroundStyle.plain.rawValue
+    @AppStorage("readerBackgroundRevision") private var backgroundRevision = 0
     @AppStorage("readerFont") private var fontRaw = ReaderFont.system.rawValue
     @AppStorage("pageTurnStyle") private var turnRaw = PageTurnStyle.curl.rawValue
     @AppStorage("readerFontSize") private var fontSize = 19.0
@@ -62,7 +68,11 @@ struct ReaderView: View {
                     let capacity = charactersPerPage(in: proxy.size)
                     let layout = paginationLayout(for: book, size: proxy.size)
                     ZStack {
-                        ReaderBackgroundSurface(theme: theme, style: backgroundStyle)
+                        ReaderBackgroundSurface(
+                            theme: theme,
+                            style: backgroundStyle,
+                            customImage: customBackgroundImage
+                        )
                             .ignoresSafeArea()
                             .allowsHitTesting(false)
                         if turnStyle == .vertical {
@@ -115,6 +125,14 @@ struct ReaderView: View {
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
         .onChange(of: showingVoiceInfo) { _, _ in reportBlockingState() }
         .onChange(of: isScrubbingWholeBookProgress) { _, _ in reportBlockingState() }
+        .onChange(of: selectedBackgroundPhoto) { _, item in
+            importSelectedBackground(item)
+        }
+        .photosPicker(
+            isPresented: $showingBackgroundPicker,
+            selection: $selectedBackgroundPhoto,
+            matching: .images
+        )
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -137,6 +155,17 @@ struct ReaderView: View {
             Button("知道了", role: .cancel) { }
         } message: {
             Text("配音服务尚未接入。播放状态、章节预处理、句子定位和断点续播接口已准备好。")
+        }
+        .alert(
+            "背景导入失败",
+            isPresented: Binding(
+                get: { backgroundImportError != nil },
+                set: { if !$0 { backgroundImportError = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) { backgroundImportError = nil }
+        } message: {
+            Text(backgroundImportError ?? "无法读取图片")
         }
     }
 
@@ -167,12 +196,13 @@ struct ReaderView: View {
 
     private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
         ReaderPageAppearance(
-            themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)",
+            themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)",
             bookTitle: bookTitle,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
             backgroundStyle: backgroundStyle,
+            backgroundImage: backgroundImage(for: backgroundStyle),
             fontName: readerFont.name,
             fontSize: fontSize,
             lineSpacing: lineSpacing,
@@ -189,7 +219,8 @@ struct ReaderView: View {
             height: Int(size.height.rounded()),
             fontSize: Int((fontSize * 10).rounded()),
             lineSpacing: Int((lineSpacing * 10).rounded()),
-            margin: Int((margin * 10).rounded())
+            margin: Int((margin * 10).rounded()),
+            fontName: readerFont.name ?? "system"
         )
     }
 
@@ -314,7 +345,7 @@ struct ReaderView: View {
                     ChromeAction(icon: "waveform", label: "朗读") { showingVoiceInfo = true }
                     ChromeAction(
                         icon: showingAppearance ? "chevron.down.circle.fill" : "paintpalette",
-                        label: showingAppearance ? "收起" : "背景"
+                        label: showingAppearance ? "收起" : "设置"
                     ) {
                         withAnimation(.easeOut(duration: 0.18)) {
                             showingAppearance.toggle()
@@ -490,31 +521,53 @@ struct ReaderView: View {
                 Spacer()
             }
 
-            HStack(spacing: 9) {
+            HStack(alignment: .top, spacing: 9) {
                 Text("背景")
                     .foregroundStyle(.secondary)
                     .frame(width: 32, alignment: .leading)
-                ForEach(ReaderBackgroundStyle.allCases) { style in
-                    Button { backgroundRaw = style.rawValue } label: {
-                        ReaderBackgroundSurface(theme: theme, style: style)
-                            .frame(width: 48, height: 32)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .stroke(
-                                        backgroundStyle == style ? theme.foreground.opacity(0.82) : .gray.opacity(0.24),
-                                        lineWidth: backgroundStyle == style ? 2 : 1
+                    .padding(.top, 10)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(ReaderBackgroundStyle.allCases) { style in
+                            Button {
+                                selectBackground(style)
+                            } label: {
+                                VStack(spacing: 5) {
+                                    ReaderBackgroundSurface(
+                                        theme: style.recommendedTheme ?? theme,
+                                        style: style,
+                                        customImage: customBackgroundImage
                                     )
+                                    .frame(width: 50, height: 38)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(
+                                                backgroundStyle == style
+                                                    ? theme.foreground.opacity(0.82)
+                                                    : .gray.opacity(0.24),
+                                                lineWidth: backgroundStyle == style ? 2 : 1
+                                            )
+                                    }
+                                    .overlay {
+                                        if style == .custom {
+                                            Image(systemName: style.symbolName)
+                                                .font(.system(size: 12, weight: .semibold))
+                                                .foregroundStyle(theme.foreground.opacity(0.7))
+                                                .frame(width: 24, height: 24)
+                                                .background(.ultraThinMaterial, in: Circle())
+                                        }
+                                    }
+                                    Text(style.rawValue)
+                                        .font(.system(size: 9))
+                                        .lineLimit(1)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            .overlay {
-                                Image(systemName: style.symbolName)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(theme.foreground.opacity(0.56))
-                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
-                Spacer(minLength: 0)
             }
 
             Divider().opacity(0.5)
@@ -530,7 +583,7 @@ struct ReaderView: View {
                 Text("\(Int(fontSize))").font(.caption.monospacedDigit()).frame(width: 25)
                 Button("A+") { fontSize = min(32, fontSize + 1) }.buttonStyle(.bordered)
                 Picker("字体", selection: $fontRaw) {
-                    ForEach(ReaderFont.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    ForEach(ReaderFont.allCases) { Text($0.displayName).tag($0.rawValue) }
                 }
                 .labelsHidden()
                 Spacer()
@@ -559,6 +612,45 @@ struct ReaderView: View {
                 dayThemeRaw = theme.rawValue
                 themeRaw = ReaderTheme.night.rawValue
             }
+        }
+    }
+
+    private func selectBackground(_ style: ReaderBackgroundStyle) {
+        if style == .custom {
+            showingBackgroundPicker = true
+            return
+        }
+        backgroundRaw = style.rawValue
+        if let recommendedTheme = style.recommendedTheme {
+            themeRaw = recommendedTheme.rawValue
+            if recommendedTheme != .night {
+                dayThemeRaw = recommendedTheme.rawValue
+            }
+        }
+    }
+
+    private func backgroundImage(for style: ReaderBackgroundStyle) -> UIImage? {
+        if style == .custom { return customBackgroundImage }
+        return style.usesBundledArtwork ? UIImage(named: "ReaderInkWash") : nil
+    }
+
+    private func importSelectedBackground(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            do {
+                guard let sourceData = try await item.loadTransferable(type: Data.self) else {
+                    throw ReaderCustomBackgroundError.unreadableImage
+                }
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    try ReaderCustomBackgroundStore.save(sourceData: sourceData)
+                }.value
+                customBackgroundImage = UIImage(data: prepared)
+                backgroundRevision += 1
+                backgroundRaw = ReaderBackgroundStyle.custom.rawValue
+            } catch {
+                backgroundImportError = error.localizedDescription
+            }
+            selectedBackgroundPhoto = nil
         }
     }
 
@@ -593,6 +685,7 @@ private struct PaginationLayout: Hashable {
     let fontSize: Int
     let lineSpacing: Int
     let margin: Int
+    let fontName: String
 }
 
 private struct ChromeAction: View {
@@ -614,83 +707,24 @@ private struct ChromeAction: View {
 private struct ReaderBackgroundSurface: View {
     let theme: ReaderTheme
     let style: ReaderBackgroundStyle
+    let customImage: UIImage?
 
     var body: some View {
         ZStack {
             theme.background
-            switch style {
-            case .plain:
-                Color.clear
-            case .warmGlow:
-                RadialGradient(
-                    colors: [Color(hex: "F5C879").opacity(theme == .night ? 0.08 : 0.2), .clear],
-                    center: .topTrailing,
-                    startRadius: 8,
-                    endRadius: 310
-                )
-            case .ricePaper, .bamboo, .mist:
-                ReaderBackgroundPattern(theme: theme, style: style)
+            if let image = artworkImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                theme.background.opacity(style.readabilityOverlayOpacity)
             }
         }
         .clipped()
     }
-}
 
-private struct ReaderBackgroundPattern: View {
-    let theme: ReaderTheme
-    let style: ReaderBackgroundStyle
-
-    var body: some View {
-        Canvas(rendersAsynchronously: true) { context, size in
-            let ink = theme.foreground
-            switch style {
-            case .ricePaper:
-                for index in 0..<22 {
-                    let y = size.height * CGFloat(index + 1) / 23
-                    var fiber = Path()
-                    fiber.move(to: CGPoint(x: 0, y: y))
-                    for step in 1...12 {
-                        let x = size.width * CGFloat(step) / 12
-                        fiber.addLine(to: CGPoint(
-                            x: x,
-                            y: y + sin(CGFloat(step * 3 + index) * 0.61) * 0.8
-                        ))
-                    }
-                    context.stroke(fiber, with: .color(ink.opacity(index.isMultiple(of: 4) ? 0.04 : 0.018)), lineWidth: 0.45)
-                }
-            case .bamboo:
-                for stalk in 0..<3 {
-                    let x = size.width * (0.72 + CGFloat(stalk) * 0.105)
-                    var stem = Path()
-                    stem.move(to: CGPoint(x: x, y: -8))
-                    stem.addCurve(
-                        to: CGPoint(x: x - size.width * 0.09, y: size.height * 0.52),
-                        control1: CGPoint(x: x + 8, y: size.height * 0.16),
-                        control2: CGPoint(x: x - 12, y: size.height * 0.34)
-                    )
-                    context.stroke(stem, with: .color(ink.opacity(0.07)), lineWidth: 2.2)
-                    for leaf in 0..<4 {
-                        let leafY = size.height * (0.1 + CGFloat(leaf) * 0.09 + CGFloat(stalk) * 0.025)
-                        let leafRect = CGRect(x: x - 30 - CGFloat(leaf % 2) * 9, y: leafY, width: 38, height: 9)
-                        context.fill(Path(ellipseIn: leafRect), with: .color(ink.opacity(0.045)))
-                    }
-                }
-            case .mist:
-                for ridge in 0..<4 {
-                    let y = size.height * (0.73 + CGFloat(ridge) * 0.075)
-                    var mountain = Path()
-                    mountain.move(to: CGPoint(x: -20, y: y))
-                    mountain.addCurve(
-                        to: CGPoint(x: size.width + 20, y: y - 4),
-                        control1: CGPoint(x: size.width * 0.23, y: y - 58 + CGFloat(ridge) * 7),
-                        control2: CGPoint(x: size.width * 0.65, y: y + 24 - CGFloat(ridge) * 5)
-                    )
-                    context.stroke(mountain, with: .color(ink.opacity(0.025 + Double(ridge) * 0.012)), lineWidth: 1.1)
-                }
-            case .plain, .warmGlow:
-                break
-            }
-        }
+    private var artworkImage: UIImage? {
+        if style == .custom { return customImage }
+        return style.usesBundledArtwork ? UIImage(named: "ReaderInkWash") : nil
     }
 }
 
