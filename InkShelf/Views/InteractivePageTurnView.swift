@@ -15,6 +15,8 @@ struct ReaderPageAppearance: Equatable {
     let textColor: UIColor
     let backgroundStyle: ReaderBackgroundStyle
     let backgroundImage: UIImage?
+    let backgroundOverlayOpacity: CGFloat
+    let backgroundBlur: ReaderCustomBackgroundBlur
     let fontName: String?
     let fontSize: CGFloat
     let lineSpacing: CGFloat
@@ -29,6 +31,8 @@ struct ReaderPageAppearance: Equatable {
         lhs.backsideColor.isEqual(rhs.backsideColor) &&
         lhs.textColor.isEqual(rhs.textColor) &&
         lhs.backgroundStyle == rhs.backgroundStyle &&
+        lhs.backgroundOverlayOpacity == rhs.backgroundOverlayOpacity &&
+        lhs.backgroundBlur == rhs.backgroundBlur &&
         lhs.fontName == rhs.fontName &&
         lhs.fontSize == rhs.fontSize &&
         lhs.lineSpacing == rhs.lineSpacing &&
@@ -204,6 +208,7 @@ extension ReaderPageContentController: CurlPageSide {
 
 private final class ReaderPageBackgroundView: UIView {
     private let imageView = UIImageView()
+    private let blurView = UIVisualEffectView()
     private let readabilityOverlay = UIView()
 
     override init(frame: CGRect) {
@@ -213,8 +218,10 @@ private final class ReaderPageBackgroundView: UIView {
         clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
         imageView.isUserInteractionEnabled = false
+        blurView.isUserInteractionEnabled = false
         readabilityOverlay.isUserInteractionEnabled = false
         addSubview(imageView)
+        addSubview(blurView)
         addSubview(readabilityOverlay)
     }
 
@@ -224,17 +231,27 @@ private final class ReaderPageBackgroundView: UIView {
     func configure(
         style: ReaderBackgroundStyle,
         backgroundColor: UIColor,
-        backgroundImage: UIImage?
+        backgroundImage: UIImage?,
+        overlayOpacity: CGFloat,
+        blur: ReaderCustomBackgroundBlur
     ) {
         imageView.image = backgroundImage
         imageView.isHidden = backgroundImage == nil || style == .plain
-        readabilityOverlay.backgroundColor = backgroundColor.withAlphaComponent(style.readabilityOverlayOpacity)
+        if style == .custom, let effectStyle = blur.effectStyle(isDark: backgroundColor.isDark) {
+            blurView.effect = UIBlurEffect(style: effectStyle)
+            blurView.isHidden = false
+        } else {
+            blurView.effect = nil
+            blurView.isHidden = true
+        }
+        readabilityOverlay.backgroundColor = backgroundColor.withAlphaComponent(overlayOpacity)
         setNeedsLayout()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         imageView.frame = bounds
+        blurView.frame = bounds
         readabilityOverlay.frame = bounds
     }
 }
@@ -260,7 +277,9 @@ private final class ReaderPageContentView: UIView {
         backgroundDecoration.configure(
             style: appearance.backgroundStyle,
             backgroundColor: appearance.backgroundColor,
-            backgroundImage: appearance.backgroundImage
+            backgroundImage: appearance.backgroundImage,
+            overlayOpacity: appearance.backgroundOverlayOpacity,
+            blur: appearance.backgroundBlur
         )
         addSubview(backgroundDecoration)
 
@@ -325,7 +344,9 @@ private final class ReaderPageContentView: UIView {
         backgroundDecoration.configure(
             style: appearance.backgroundStyle,
             backgroundColor: appearance.backgroundColor,
-            backgroundImage: appearance.backgroundImage
+            backgroundImage: appearance.backgroundImage,
+            overlayOpacity: appearance.backgroundOverlayOpacity,
+            blur: appearance.backgroundBlur
         )
         textView.attributedText = attributedBody(page.displayText)
     }

@@ -419,6 +419,13 @@ final class ReaderThemeTests: XCTestCase {
             XCTAssertNotNil(UIFont(name: name, size: 19), "\(font.rawValue) 没有正确注册")
         }
     }
+
+    func testCustomBackgroundControlsHaveStableChoices() {
+        XCTAssertEqual(ReaderCustomBackgroundTone.allCases.map(\.rawValue), ["白", "黑"])
+        XCTAssertEqual(ReaderCustomBackgroundBlur.allCases.map(\.rawValue), ["无", "低", "中", "高"])
+        XCTAssertNil(ReaderCustomBackgroundBlur.none.effectStyle(isDark: false))
+        XCTAssertNotNil(ReaderCustomBackgroundBlur.high.effectStyle(isDark: true))
+    }
 }
 
 final class ReaderRuntimeTests: XCTestCase {
@@ -449,6 +456,8 @@ final class ReaderRuntimeTests: XCTestCase {
                 textColor: UIColor(ReaderTheme.paper.foreground),
                 backgroundStyle: .plain,
                 backgroundImage: nil,
+                backgroundOverlayOpacity: 0,
+                backgroundBlur: .none,
                 fontName: nil,
                 fontSize: 19,
                 lineSpacing: 9,

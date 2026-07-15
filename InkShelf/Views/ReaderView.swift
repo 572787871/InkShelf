@@ -26,11 +26,18 @@ struct ReaderView: View {
     @State private var selectedBackgroundPhoto: PhotosPickerItem?
     @State private var customBackgroundImage = ReaderCustomBackgroundStore.load().flatMap(UIImage.init(data:))
     @State private var backgroundImportError: String?
+    @State private var showingCustomBackgroundEditor = false
+    @State private var draftCustomToneRaw = ReaderCustomBackgroundTone.light.rawValue
+    @State private var draftCustomBlurRaw = ReaderCustomBackgroundBlur.none.rawValue
+    @State private var draftCustomTransparency = 0.34
 
     @AppStorage("readerTheme") private var themeRaw = ReaderTheme.paper.rawValue
     @AppStorage("readerDayTheme") private var dayThemeRaw = ReaderTheme.paper.rawValue
     @AppStorage("readerBackground") private var backgroundRaw = ReaderBackgroundStyle.plain.rawValue
     @AppStorage("readerBackgroundRevision") private var backgroundRevision = 0
+    @AppStorage("readerCustomBackgroundTone") private var customToneRaw = ReaderCustomBackgroundTone.light.rawValue
+    @AppStorage("readerCustomBackgroundBlur") private var customBlurRaw = ReaderCustomBackgroundBlur.none.rawValue
+    @AppStorage("readerCustomBackgroundTransparency") private var customTransparency = 0.34
     @AppStorage("readerFont") private var fontRaw = ReaderFont.system.rawValue
     @AppStorage("pageTurnStyle") private var turnRaw = PageTurnStyle.curl.rawValue
     @AppStorage("readerFontSize") private var fontSize = 19.0
@@ -39,9 +46,27 @@ struct ReaderView: View {
     @AppStorage("keepScreenAwake") private var keepScreenAwake = true
 
     private var book: NovelBook? { library.book(id: bookID) }
-    private var theme: ReaderTheme { ReaderTheme(rawValue: themeRaw) ?? .paper }
     private var backgroundStyle: ReaderBackgroundStyle {
         ReaderBackgroundStyle(rawValue: backgroundRaw) ?? .plain
+    }
+    private var customTone: ReaderCustomBackgroundTone {
+        ReaderCustomBackgroundTone(rawValue: customToneRaw) ?? .light
+    }
+    private var customBlur: ReaderCustomBackgroundBlur {
+        ReaderCustomBackgroundBlur(rawValue: customBlurRaw) ?? .none
+    }
+    private var theme: ReaderTheme {
+        if backgroundStyle == .custom { return customTone.theme }
+        return ReaderTheme(rawValue: themeRaw) ?? .paper
+    }
+    private var backgroundOverlayOpacity: CGFloat {
+        if backgroundStyle == .custom {
+            return CGFloat(min(0.85, max(0.25, 1 - customTransparency)))
+        }
+        return backgroundStyle.readabilityOverlayOpacity
+    }
+    private var activeBackgroundBlur: ReaderCustomBackgroundBlur {
+        backgroundStyle == .custom ? customBlur : .none
     }
     private var turnStyle: PageTurnStyle { PageTurnStyle(rawValue: turnRaw) ?? .curl }
     private var readerFont: ReaderFont { ReaderFont(rawValue: fontRaw) ?? .system }
@@ -71,7 +96,9 @@ struct ReaderView: View {
                         ReaderBackgroundSurface(
                             theme: theme,
                             style: backgroundStyle,
-                            customImage: customBackgroundImage
+                            customImage: customBackgroundImage,
+                            overlayOpacity: backgroundOverlayOpacity,
+                            blur: activeBackgroundBlur
                         )
                             .ignoresSafeArea()
                             .allowsHitTesting(false)
@@ -125,6 +152,7 @@ struct ReaderView: View {
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
         .onChange(of: showingVoiceInfo) { _, _ in reportBlockingState() }
         .onChange(of: isScrubbingWholeBookProgress) { _, _ in reportBlockingState() }
+        .onChange(of: showingCustomBackgroundEditor) { _, _ in reportBlockingState() }
         .onChange(of: selectedBackgroundPhoto) { _, item in
             importSelectedBackground(item)
         }
@@ -133,6 +161,20 @@ struct ReaderView: View {
             selection: $selectedBackgroundPhoto,
             matching: .images
         )
+        .fullScreenCover(isPresented: $showingCustomBackgroundEditor) {
+            CustomBackgroundEditor(
+                image: $customBackgroundImage,
+                toneRaw: $draftCustomToneRaw,
+                blurRaw: $draftCustomBlurRaw,
+                transparency: $draftCustomTransparency,
+                chapterTitle: book.map { safeChapter(in: $0).title } ?? "第一章",
+                excerpt: book.map { currentExcerpt(book: $0) } ?? "预览正文",
+                onImageChanged: { backgroundRevision += 1 },
+                onCancel: { showingCustomBackgroundEditor = false },
+                onConfirm: applyCustomBackground
+            )
+            .preferredColorScheme(.dark)
+        }
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -196,13 +238,15 @@ struct ReaderView: View {
 
     private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
         ReaderPageAppearance(
-            themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)",
+            themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)|\(customToneRaw)|\(customBlurRaw)|\(customTransparency)",
             bookTitle: bookTitle,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
             backgroundStyle: backgroundStyle,
             backgroundImage: backgroundImage(for: backgroundStyle),
+            backgroundOverlayOpacity: backgroundOverlayOpacity,
+            backgroundBlur: activeBackgroundBlur,
             fontName: readerFont.name,
             fontSize: fontSize,
             lineSpacing: lineSpacing,
@@ -274,6 +318,7 @@ struct ReaderView: View {
                 || showingIndex
                 || showingNote
                 || showingVoiceInfo
+                || showingCustomBackgroundEditor
                 || isScrubbingWholeBookProgress
         )
     }
@@ -536,7 +581,11 @@ struct ReaderView: View {
                                     ReaderBackgroundSurface(
                                         theme: style.recommendedTheme ?? theme,
                                         style: style,
-                                        customImage: customBackgroundImage
+                                        customImage: customBackgroundImage,
+                                        overlayOpacity: style == .custom
+                                            ? CGFloat(1 - customTransparency)
+                                            : style.readabilityOverlayOpacity,
+                                        blur: style == .custom ? customBlur : .none
                                     )
                                     .frame(width: 50, height: 38)
                                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -605,6 +654,14 @@ struct ReaderView: View {
 
     private func toggleNightMode() {
         withAnimation(.easeOut(duration: 0.2)) {
+            if backgroundStyle == .custom {
+                let nextTone: ReaderCustomBackgroundTone = customTone == .dark ? .light : .dark
+                customToneRaw = nextTone.rawValue
+                themeRaw = nextTone.theme.rawValue
+                if nextTone == .light { dayThemeRaw = nextTone.theme.rawValue }
+                backgroundRevision += 1
+                return
+            }
             if theme == .night {
                 let restored = ReaderTheme(rawValue: dayThemeRaw) ?? .paper
                 themeRaw = restored == .night ? ReaderTheme.paper.rawValue : restored.rawValue
@@ -617,7 +674,11 @@ struct ReaderView: View {
 
     private func selectBackground(_ style: ReaderBackgroundStyle) {
         if style == .custom {
-            showingBackgroundPicker = true
+            if customBackgroundImage == nil {
+                showingBackgroundPicker = true
+            } else {
+                prepareCustomBackgroundEditor()
+            }
             return
         }
         backgroundRaw = style.rawValue
@@ -646,12 +707,34 @@ struct ReaderView: View {
                 }.value
                 customBackgroundImage = UIImage(data: prepared)
                 backgroundRevision += 1
-                backgroundRaw = ReaderBackgroundStyle.custom.rawValue
+                selectedBackgroundPhoto = nil
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                prepareCustomBackgroundEditor()
             } catch {
                 backgroundImportError = error.localizedDescription
+                selectedBackgroundPhoto = nil
             }
-            selectedBackgroundPhoto = nil
         }
+    }
+
+    private func prepareCustomBackgroundEditor() {
+        draftCustomToneRaw = customToneRaw
+        draftCustomBlurRaw = customBlurRaw
+        draftCustomTransparency = customTransparency
+        showingCustomBackgroundEditor = true
+    }
+
+    private func applyCustomBackground() {
+        let tone = ReaderCustomBackgroundTone(rawValue: draftCustomToneRaw) ?? .light
+        customToneRaw = tone.rawValue
+        customBlurRaw = ReaderCustomBackgroundBlur(rawValue: draftCustomBlurRaw)?.rawValue
+            ?? ReaderCustomBackgroundBlur.none.rawValue
+        customTransparency = min(0.75, max(0.15, draftCustomTransparency))
+        themeRaw = tone.theme.rawValue
+        if tone == .light { dayThemeRaw = tone.theme.rawValue }
+        backgroundRaw = ReaderBackgroundStyle.custom.rawValue
+        backgroundRevision += 1
+        showingCustomBackgroundEditor = false
     }
 
     private func readerSwiftUIFont(size: Double) -> Font {
@@ -708,23 +791,215 @@ private struct ReaderBackgroundSurface: View {
     let theme: ReaderTheme
     let style: ReaderBackgroundStyle
     let customImage: UIImage?
+    let overlayOpacity: CGFloat
+    let blur: ReaderCustomBackgroundBlur
 
     var body: some View {
-        ZStack {
-            theme.background
-            if let image = artworkImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                theme.background.opacity(style.readabilityOverlayOpacity)
+        GeometryReader { proxy in
+            ZStack {
+                theme.background
+                if let image = artworkImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .scaleEffect(blur == .none ? 1 : 1.04)
+                        .blur(radius: blur.previewRadius, opaque: true)
+                    theme.background.opacity(overlayOpacity)
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
-        .clipped()
     }
 
     private var artworkImage: UIImage? {
         if style == .custom { return customImage }
         return style.usesBundledArtwork ? UIImage(named: "ReaderInkWash") : nil
+    }
+}
+
+private struct CustomBackgroundEditor: View {
+    @Binding var image: UIImage?
+    @Binding var toneRaw: String
+    @Binding var blurRaw: String
+    @Binding var transparency: Double
+    let chapterTitle: String
+    let excerpt: String
+    let onImageChanged: () -> Void
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    @State private var replacementPhoto: PhotosPickerItem?
+    @State private var importError: String?
+
+    private var tone: ReaderCustomBackgroundTone {
+        ReaderCustomBackgroundTone(rawValue: toneRaw) ?? .light
+    }
+
+    private var blur: ReaderCustomBackgroundBlur {
+        ReaderCustomBackgroundBlur(rawValue: blurRaw) ?? .none
+    }
+
+    private var paperOpacity: Double {
+        min(0.85, max(0.25, 1 - transparency))
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                preview
+                    .padding(.horizontal, 14)
+                    .padding(.top, 58)
+                    .padding(.bottom, 18)
+                Color.clear.frame(height: 292)
+            }
+
+            controls
+        }
+        .onChange(of: replacementPhoto) { _, item in
+            importReplacement(item)
+        }
+        .alert(
+            "背景导入失败",
+            isPresented: Binding(
+                get: { importError != nil },
+                set: { if !$0 { importError = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) { importError = nil }
+        } message: {
+            Text(importError ?? "无法读取图片")
+        }
+    }
+
+    private var preview: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .scaleEffect(blur == .none ? 1 : 1.05)
+                        .blur(radius: blur.previewRadius, opaque: true)
+                } else {
+                    Color(hex: "2A2A2A")
+                }
+
+                tone.overlayColor
+                    .opacity(paperOpacity)
+                    .frame(width: min(316, proxy.size.width * 0.58))
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(chapterTitle)
+                        .font(.system(size: 16, weight: .semibold, design: .serif))
+                    Text(excerpt)
+                        .font(.system(size: 15, design: .serif))
+                        .lineSpacing(8)
+                        .lineLimit(10)
+                }
+                .foregroundStyle(tone.previewTextColor)
+                .frame(width: min(260, proxy.size.width * 0.47), alignment: .leading)
+                .padding(.vertical, 28)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 15) {
+            HStack {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 19, weight: .medium))
+                        .frame(width: 40, height: 40)
+                }
+                Spacer()
+                Text("自定义背景")
+                    .font(.headline)
+                Spacer()
+                Button("确定", action: onConfirm)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 40, height: 40)
+            }
+
+            editorRow(title: "颜色") {
+                Picker("颜色", selection: $toneRaw) {
+                    ForEach(ReaderCustomBackgroundTone.allCases) { item in
+                        Text(item.rawValue).tag(item.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            editorRow(title: "模糊") {
+                Picker("模糊", selection: $blurRaw) {
+                    ForEach(ReaderCustomBackgroundBlur.allCases) { item in
+                        Text(item.rawValue).tag(item.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            editorRow(title: "透明") {
+                Slider(value: $transparency, in: 0.15...0.75)
+                    .tint(Color(hex: "8A795D"))
+            }
+
+            PhotosPicker(selection: $replacementPhoto, matching: .images) {
+                Label("更换图片", systemImage: "photo.on.rectangle")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 38)
+                    .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundStyle(Color(hex: "1F1F1F"))
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity)
+        .background(
+            Color(hex: "F7F6F3"),
+            in: UnevenRoundedRectangle(topLeadingRadius: 22, topTrailingRadius: 22)
+        )
+        .environment(\.colorScheme, .light)
+    }
+
+    private func editorRow<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.subheadline)
+                .frame(width: 45, alignment: .leading)
+            content()
+        }
+    }
+
+    private func importReplacement(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            do {
+                guard let sourceData = try await item.loadTransferable(type: Data.self) else {
+                    throw ReaderCustomBackgroundError.unreadableImage
+                }
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    try ReaderCustomBackgroundStore.save(sourceData: sourceData)
+                }.value
+                image = UIImage(data: prepared)
+                onImageChanged()
+            } catch {
+                importError = error.localizedDescription
+            }
+            replacementPhoto = nil
+        }
     }
 }
 

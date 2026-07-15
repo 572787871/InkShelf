@@ -104,6 +104,46 @@ enum ReaderBackgroundStyle: String, CaseIterable, Identifiable {
     }
 }
 
+enum ReaderCustomBackgroundTone: String, CaseIterable, Identifiable {
+    case light = "白"
+    case dark = "黑"
+
+    var id: String { rawValue }
+    var theme: ReaderTheme { self == .light ? .white : .night }
+    var overlayColor: Color { self == .light ? .white : Color(hex: "10151C") }
+    var previewTextColor: Color { self == .light ? Color(hex: "25231F") : Color(hex: "D3D0C8") }
+}
+
+enum ReaderCustomBackgroundBlur: String, CaseIterable, Identifiable {
+    case none = "无"
+    case low = "低"
+    case medium = "中"
+    case high = "高"
+
+    var id: String { rawValue }
+
+    var previewRadius: CGFloat {
+        switch self {
+        case .none: return 0
+        case .low: return 2.5
+        case .medium: return 6
+        case .high: return 12
+        }
+    }
+
+    func effectStyle(isDark: Bool) -> UIBlurEffect.Style? {
+        switch (self, isDark) {
+        case (.none, _): return nil
+        case (.low, false): return .systemUltraThinMaterialLight
+        case (.medium, false): return .systemThinMaterialLight
+        case (.high, false): return .systemMaterialLight
+        case (.low, true): return .systemUltraThinMaterialDark
+        case (.medium, true): return .systemThinMaterialDark
+        case (.high, true): return .systemMaterialDark
+        }
+    }
+}
+
 enum PageTurnStyle: String, CaseIterable, Identifiable {
     case curl = "仿真"
     case slide = "覆盖"
