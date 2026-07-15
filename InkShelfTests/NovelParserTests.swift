@@ -5,6 +5,15 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
+    func testBookGridCoverSizeKeepsAStablePortraitRatio() {
+        XCTAssertEqual(BookGridLayout.coverWidth, 96)
+        XCTAssertEqual(
+            BookGridLayout.coverWidth / BookGridLayout.coverHeight,
+            0.68,
+            accuracy: 0.001
+        )
+    }
+
     func testSelectedCoverIsDownsampledBeforeItIsStored() throws {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1

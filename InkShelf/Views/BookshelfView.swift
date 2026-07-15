@@ -357,7 +357,11 @@ private struct BookGridItem: View {
             Button { onOpen(book) } label: {
                 VStack(alignment: .leading, spacing: 8) {
                     BookCoverView(book: book, compact: true)
-                        .frame(maxWidth: 108)
+                        .frame(
+                            width: BookGridLayout.coverWidth,
+                            height: BookGridLayout.coverHeight
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                         .background {
                             GeometryReader { proxy in
                                 Color.clear.preference(
@@ -422,65 +426,92 @@ private struct AddBookGridItem: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Color(hex: "F9EDE3"), Color(hex: "EACFBC")],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    HStack(spacing: 0) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(
                         LinearGradient(
-                            colors: [.black.opacity(0.16), .white.opacity(0.28), .clear],
-                            startPoint: .leading,
-                            endPoint: .trailing
+                            colors: [Color(hex: "F7E9DE"), Color(hex: "E7C8B4")],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
-                        .frame(width: 12)
-                        Spacer(minLength: 0)
+                    )
+
+                LinearGradient(
+                    colors: [.white.opacity(0.28), .clear, .black.opacity(0.08)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                HStack(spacing: 0) {
+                    LinearGradient(
+                        colors: [.black.opacity(0.2), .white.opacity(0.22), .black.opacity(0.08), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 11)
+                    .overlay(alignment: .trailing) {
+                        Rectangle().fill(.white.opacity(0.28)).frame(width: 0.7)
                     }
+                    Spacer(minLength: 0)
+                }
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 15)
                     Circle()
                         .fill(.white.opacity(0.94))
-                        .frame(width: 43, height: 43)
+                        .frame(width: 40, height: 40)
                         .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
-                    Image(systemName: "plus")
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundStyle(Color(hex: "8A6048"))
+                        .overlay {
+                            Image(systemName: "plus")
+                                .font(.system(size: 18, weight: .medium))
+                                .foregroundStyle(Color(hex: "825842"))
+                        }
+                    Spacer(minLength: 12)
+                    Text("导入本地书")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(hex: "674638"))
+                        .lineLimit(1)
+                    Text("添加一本小说")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Color(hex: "8E7465"))
+                        .lineLimit(1)
+                        .padding(.top, 3)
+                    Spacer(minLength: 13)
                 }
-                .aspectRatio(0.68, contentMode: .fit)
-                .frame(maxWidth: 108)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(
-                            LinearGradient(
-                                colors: [.white.opacity(0.42), Color(hex: "CFAF99").opacity(0.5), .black.opacity(0.2)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.8
-                        )
-                }
-                .shadow(color: .black.opacity(0.28), radius: 5, x: 3, y: 5)
-
-                Text("导入本地书")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color(hex: "674B3B"))
-                    .lineLimit(1)
-
-                Text("TXT / EPUB")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(
+                width: BookGridLayout.coverWidth,
+                height: BookGridLayout.coverHeight
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [.white.opacity(0.5), Color(hex: "C9A68F").opacity(0.58), .black.opacity(0.22)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .stroke(.white.opacity(0.18), lineWidth: 0.6)
+                    .padding(5)
+            }
+            .shadow(color: .black.opacity(0.28), radius: 5, x: 3, y: 5)
+            .frame(maxWidth: .infinity, alignment: .center)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("导入本地书")
     }
+}
+
+enum BookGridLayout {
+    static let coverWidth: CGFloat = 96
+    static let coverHeight: CGFloat = coverWidth / 0.68
 }
 
 private struct NovelDocumentPicker: UIViewControllerRepresentable {
