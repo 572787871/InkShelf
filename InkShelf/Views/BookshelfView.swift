@@ -15,7 +15,6 @@ struct BookshelfView: View {
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
-    @State private var stableShelfViewportHeight: CGFloat?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
@@ -42,7 +41,7 @@ struct BookshelfView: View {
                     Color(hex: "EEE9DF").ignoresSafeArea()
                     VStack(spacing: 0) {
                         header
-                        if library.books.isEmpty { emptyState } else { shelfContent }
+                        shelfContent
                     }
                     if library.isImporting { importingOverlay }
 
@@ -121,83 +120,38 @@ struct BookshelfView: View {
     }
 
     private var shelfContent: some View {
-        GeometryReader { proxy in
-            let layoutHeight = BookcaseLayoutMetrics.resolvedViewportHeight(
-                current: proxy.size.height,
-                cached: stableShelfViewportHeight,
-                readerPresented: selectedBookID != nil
-            )
-            ScrollView {
-                if displayedBooks.isEmpty {
-                    ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
-                        .padding(.top, 80)
-                } else {
-                    let rows = shelfRows
-                    let rowContentHeight = BookcaseLayoutMetrics.rowContentHeight(
-                        viewportHeight: layoutHeight,
-                        rowCount: rows.count
-                    )
-                    let bookcaseHeight = BookcaseLayoutMetrics.totalHeight(
-                        rowContentHeight: rowContentHeight,
-                        rowCount: rows.count
-                    )
-                    WoodenBookcase {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                                ShelfRow(
-                                    books: row,
-                                    rowContentHeight: rowContentHeight,
-                                    selectedBookID: selectedBookSourceHidden ? selectedBookID : nil,
-                                    onOpen: openReader
-                                )
-                            }
-                        }
+        ScrollView {
+            if displayedBooks.isEmpty, !searchText.isEmpty {
+                ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
+                    .padding(.top, 80)
+            } else {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(minimum: 84, maximum: 120), spacing: 18, alignment: .top),
+                        count: 3
+                    ),
+                    alignment: .leading,
+                    spacing: 24
+                ) {
+                    ForEach(displayedBooks) { book in
+                        BookGridItem(
+                            book: book,
+                            isHidden: selectedBookSourceHidden && selectedBookID == book.id,
+                            onOpen: openReader
+                        )
                     }
-                    // ReaderView hides the status bar while it is being
-                    // presented, which changes this GeometryReader's proposed
-                    // height. Keep the shelf at its pre-transition height so
-                    // the bottom plinth cannot stretch behind the animation.
-                    .frame(height: bookcaseHeight)
-                    .padding(.horizontal, 12)
+
+                    AddBookGridItem {
+                        showingImporter = true
+                    }
+                    .disabled(library.isImporting)
                 }
-            }
-            .scrollIndicators(.hidden)
-            .onAppear {
-                if stableShelfViewportHeight == nil {
-                    stableShelfViewportHeight = proxy.size.height
-                }
-            }
-            .onChange(of: proxy.size.height) { _, newHeight in
-                if selectedBookID == nil {
-                    stableShelfViewportHeight = newHeight
-                }
-            }
-            .onChange(of: selectedBookID) { _, newBookID in
-                if newBookID == nil {
-                    stableShelfViewportHeight = proxy.size.height
-                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 36)
             }
         }
-    }
-
-    private var shelfRows: [[NovelBook]] {
-        var rows = displayedBooks.chunked(into: 3)
-        while rows.count < 3 { rows.append([]) }
-        return rows
-    }
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("书架还是空的", systemImage: "books.vertical")
-        } description: {
-            Text("支持 TXT、Markdown 与 EPUB 文件")
-        } actions: {
-            Button("导入第一本书") { showingImporter = true }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "75533A"))
-                .disabled(library.isImporting)
-        }
-        .frame(maxHeight: .infinity)
+        .scrollIndicators(.hidden)
     }
 
     private var importingOverlay: some View {
@@ -345,55 +299,107 @@ struct BookshelfView: View {
     }
 }
 
-private struct ShelfRow: View {
+private struct BookGridItem: View {
     @EnvironmentObject private var library: LibraryStore
-    let books: [NovelBook]
-    let rowContentHeight: CGFloat
-    let selectedBookID: UUID?
+    let book: NovelBook
+    let isHidden: Bool
     let onOpen: (NovelBook) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 17) {
-                ForEach(books) { book in
-                    Button { onOpen(book) } label: {
-                        VStack(spacing: 9) {
-                            BookCoverView(book: book, compact: true)
-                                .frame(maxWidth: 92)
-                                .background {
-                                    GeometryReader { proxy in
-                                        Color.clear.preference(
-                                            key: BookFramePreferenceKey.self,
-                                            value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
-                                        )
-                                    }
-                                }
-                            VStack(spacing: 2) {
-                                Text(book.title)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .lineLimit(1)
-                                Text(book.chapterProgressDescription)
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.white.opacity(0.62))
-                            }
+        Button { onOpen(book) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                BookCoverView(book: book, compact: true)
+                    .frame(maxWidth: 108)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: BookFramePreferenceKey.self,
+                                value: [book.id: proxy.frame(in: .named("bookshelfRoot"))]
+                            )
                         }
                     }
-                    .buttonStyle(.plain)
-                    .opacity(selectedBookID == book.id ? 0 : 1)
-                    .contextMenu {
-                        NavigationLink { BookInfoView(bookID: book.id) } label: { Label("书籍信息", systemImage: "info.circle") }
-                        Button(role: .destructive) { library.delete(bookID: book.id) } label: { Label("移出书架", systemImage: "trash") }
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                ForEach(0..<(3 - books.count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity).aspectRatio(0.62, contentMode: .fit) }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                Text(book.title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(book.chapterProgressDescription)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 23).frame(height: rowContentHeight, alignment: .bottom)
-            WoodenShelf()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(isHidden ? 0 : 1)
+        .contextMenu {
+            NavigationLink { BookInfoView(bookID: book.id) } label: {
+                Label("书籍信息", systemImage: "info.circle")
+            }
+            Button(role: .destructive) { library.delete(bookID: book.id) } label: {
+                Label("移出书架", systemImage: "trash")
+            }
         }
     }
+}
 
+private struct AddBookGridItem: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: "F9EDE3"), Color(hex: "EACFBC")],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    HStack(spacing: 0) {
+                        LinearGradient(
+                            colors: [.black.opacity(0.16), .white.opacity(0.28), .clear],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        .frame(width: 12)
+                        Spacer(minLength: 0)
+                    }
+                    Circle()
+                        .fill(.white.opacity(0.94))
+                        .frame(width: 43, height: 43)
+                        .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(Color(hex: "8A6048"))
+                }
+                .aspectRatio(0.68, contentMode: .fit)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color(hex: "CFAF99").opacity(0.48), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.1), radius: 5, x: 2, y: 4)
+
+                Text("导入本地书")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color(hex: "674B3B"))
+                    .lineLimit(1)
+
+                Text("TXT / EPUB")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("导入本地书")
+    }
 }
 
 private struct NovelDocumentPicker: UIViewControllerRepresentable {
