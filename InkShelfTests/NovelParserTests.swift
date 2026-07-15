@@ -38,7 +38,7 @@ final class NovelParserTests: XCTestCase {
     func testReaderCatalogStartsEveryChapterWithItsTitle() {
         let book = NovelBook(
             title: "章节标题测试",
-            content: "第一章 开始\n第一章正文。\n第二章 继续\n第二章正文。"
+            content: "第一章 开始\n这是开篇正文。\n第二章 继续\n这是后续正文。"
         )
         let catalog = ReaderPageCatalog(book: book, charactersPerPage: 5)
         let firstChapterPage = catalog.pages.first { $0.location.chapterIndex == 0 }
