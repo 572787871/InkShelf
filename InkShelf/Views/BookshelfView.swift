@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -58,22 +59,17 @@ struct BookshelfView: View {
                 .onPreferenceChange(BookFramePreferenceKey.self) { bookFrames = $0 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .fileImporter(
-                isPresented: $showingImporter,
-                allowedContentTypes: NovelImporter.supportedTypes,
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case let .success(urls):
-                    ImportLog.logger.info("文件选择器返回成功：\(urls.count, privacy: .public) 个 URL")
+            .sheet(isPresented: $showingImporter) {
+                NovelDocumentPicker(contentTypes: NovelImporter.supportedTypes) { urls in
+                    showingImporter = false
                     guard let url = urls.first else {
                         library.reportEmptyFileSelection()
                         return
                     }
-                    ImportLog.logger.info("文件 URL：\(url.path, privacy: .public)，扩展名：\(url.pathExtension, privacy: .public)")
+                    ImportLog.logger.info("原生文件选择器返回：\(url.lastPathComponent, privacy: .public)，扩展名：\(url.pathExtension, privacy: .public)")
                     library.importNovel(from: url)
-                case let .failure(error):
-                    library.reportFilePickerFailure(error)
+                } onCancel: {
+                    showingImporter = false
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
@@ -360,6 +356,49 @@ private struct ShelfRow: View {
         }
     }
 
+}
+
+private struct NovelDocumentPicker: UIViewControllerRepresentable {
+    let contentTypes: [UTType]
+    let onPick: ([URL]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var parent: NovelDocumentPicker
+        private var hasCompleted = false
+
+        init(parent: NovelDocumentPicker) {
+            self.parent = parent
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            parent.onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            guard !hasCompleted else { return }
+            hasCompleted = true
+            parent.onCancel()
+        }
+    }
 }
 
 private struct ReaderTransitionLayer: View {
