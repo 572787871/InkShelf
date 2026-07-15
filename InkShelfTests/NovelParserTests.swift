@@ -35,6 +35,35 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(pages.joined(), source)
     }
 
+    func testReaderCatalogStartsEveryChapterWithItsTitle() {
+        let book = NovelBook(
+            title: "章节标题测试",
+            content: "第一章 开始\n第一章正文。\n第二章 继续\n第二章正文。"
+        )
+        let catalog = ReaderPageCatalog(book: book, charactersPerPage: 5)
+        let firstChapterPage = catalog.pages.first { $0.location.chapterIndex == 0 }
+        let secondChapterPage = catalog.pages.first { $0.location.chapterIndex == 1 }
+
+        XCTAssertTrue(firstChapterPage?.displayText.hasPrefix("第一章 开始\n\n") == true)
+        XCTAssertTrue(secondChapterPage?.displayText.hasPrefix("第二章 继续\n\n") == true)
+        XCTAssertFalse(firstChapterPage?.text.contains("第一章 开始") == true)
+        XCTAssertFalse(secondChapterPage?.text.contains("第二章 继续") == true)
+        XCTAssertEqual(
+            catalog.pages
+                .filter { $0.location.chapterIndex == 0 }
+                .map(\.text)
+                .joined(),
+            book.chapters[0].content
+        )
+        XCTAssertEqual(
+            catalog.pages
+                .filter { $0.location.chapterIndex == 1 }
+                .map(\.text)
+                .joined(),
+            book.chapters[1].content
+        )
+    }
+
     func testGB18030TextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
         let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
@@ -151,8 +180,9 @@ final class NovelParserTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let storage = root.appendingPathComponent("书架 数据", isDirectory: true)
         let sourceURL = root.appendingPathComponent("中文小说 （完整版）.txt")
+        let source = "第一章 开始\n导入后应该立即出现在书架。\n第二章 继续\n跨章后书架进度应该立即刷新。"
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try Data("第一章 开始\n导入后应该立即出现在书架。".utf8).write(to: sourceURL)
+        try Data(source.utf8).write(to: sourceURL)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = LibraryStore(storageDirectory: storage, seedSampleBook: false)
@@ -162,12 +192,18 @@ final class NovelParserTests: XCTestCase {
         XCTAssertFalse(store.isImporting)
         XCTAssertEqual(store.books.count, 1)
         XCTAssertEqual(store.books.first?.title, "中文小说 （完整版）")
-        XCTAssertEqual(store.books.first?.chapters.count, 1)
+        XCTAssertEqual(store.books.first?.chapters.count, 2)
         XCTAssertTrue(store.alertMessage?.contains("成功导入") == true)
+
+        let importedBookID = try XCTUnwrap(store.books.first?.id)
+        store.updateProgress(bookID: importedBookID, chapter: 1, page: 0)
+        XCTAssertEqual(store.books.first?.chapterProgressDescription, "2章 / 2章")
 
         let reloadedStore = LibraryStore(storageDirectory: storage, seedSampleBook: false)
         XCTAssertEqual(reloadedStore.books.count, 1)
-        XCTAssertEqual(reloadedStore.books.first?.content, "第一章 开始\n导入后应该立即出现在书架。")
+        XCTAssertEqual(reloadedStore.books.first?.content, source)
+        XCTAssertEqual(reloadedStore.books.first?.currentChapter, 1)
+        XCTAssertEqual(reloadedStore.books.first?.chapterProgressDescription, "2章 / 2章")
     }
 }
 

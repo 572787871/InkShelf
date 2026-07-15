@@ -19,6 +19,12 @@ struct ReaderPage: Identifiable, Equatable, Sendable {
         guard overallCount > 0 else { return 0 }
         return min(1, Double(overallIndex + 1) / Double(overallCount))
     }
+
+    var chapterHeadingPrefix: String {
+        pageInChapter == 1 && chapterTitle != "正文" ? "\(chapterTitle)\n\n" : ""
+    }
+
+    var displayText: String { chapterHeadingPrefix + text }
 }
 
 struct ReaderPageCatalog: Equatable, Sendable {
@@ -35,12 +41,23 @@ struct ReaderPageCatalog: Equatable, Sendable {
     init(book: NovelBook, charactersPerPage: Int) {
         var drafts: [(ReaderPageLocation, String, String, Int, Int)] = []
         for chapter in book.chapters {
-            let chapterPages = NovelParser.pages(for: chapter, charactersPerPage: charactersPerPage)
+            let chapterPages = NovelParser.pages(
+                for: chapter,
+                charactersPerPage: charactersPerPage,
+                includesChapterTitle: true
+            )
             for (pageIndex, text) in chapterPages.enumerated() {
+                let headingPrefix = chapter.title == "正文" ? "" : "\(chapter.title)\n\n"
+                let bodyText: String
+                if pageIndex == 0, !headingPrefix.isEmpty, text.hasPrefix(headingPrefix) {
+                    bodyText = String(text.dropFirst(headingPrefix.count))
+                } else {
+                    bodyText = text
+                }
                 drafts.append((
                     ReaderPageLocation(chapterIndex: chapter.index, pageIndex: pageIndex),
                     chapter.title,
-                    text,
+                    bodyText,
                     pageIndex + 1,
                     chapterPages.count
                 ))

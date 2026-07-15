@@ -112,9 +112,11 @@ final class LibraryStore: ObservableObject {
 
     func updateProgress(bookID: UUID, chapter: Int, page: Int) {
         guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
-        books[index].currentChapter = chapter
-        books[index].currentPage = page
-        books[index].lastReadAt = .now
+        var updatedBook = books[index]
+        updatedBook.currentChapter = min(max(chapter, 0), max(updatedBook.chapters.count - 1, 0))
+        updatedBook.currentPage = max(page, 0)
+        updatedBook.lastReadAt = .now
+        books[index] = updatedBook
         save()
     }
 

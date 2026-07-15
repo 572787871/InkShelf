@@ -125,12 +125,32 @@ enum NovelParser {
         return chapters.isEmpty ? [NovelChapter(index: 0, title: "正文", content: clean)] : chapters
     }
 
-    static func pages(for chapter: NovelChapter, charactersPerPage: Int) -> [String] {
-        let text = chapter.content.isEmpty ? "本章暂无正文" : chapter.content
+    static func pages(
+        for chapter: NovelChapter,
+        charactersPerPage: Int,
+        includesChapterTitle: Bool = false
+    ) -> [String] {
+        let body = chapter.content.isEmpty ? "本章暂无正文" : chapter.content
+        let text: String
+        let headingPrefix: String
+        if includesChapterTitle, chapter.title != "正文" {
+            headingPrefix = "\(chapter.title)\n\n"
+            text = headingPrefix + body
+        } else {
+            headingPrefix = ""
+            text = body
+        }
+        let standardCapacity = max(1, charactersPerPage)
+        // Never split the synthetic heading across multiple ReaderPage values.
+        // The body remains independently addressable for narration/highlights.
+        let firstPageCapacity = headingPrefix.isEmpty
+            ? standardCapacity
+            : max(standardCapacity, headingPrefix.count + 1)
         var pages: [String] = []
         var cursor = text.startIndex
         while cursor < text.endIndex {
-            let proposed = text.index(cursor, offsetBy: charactersPerPage, limitedBy: text.endIndex) ?? text.endIndex
+            let capacity = pages.isEmpty ? firstPageCapacity : standardCapacity
+            let proposed = text.index(cursor, offsetBy: capacity, limitedBy: text.endIndex) ?? text.endIndex
             var end = proposed
             if proposed < text.endIndex {
                 let slice = text[cursor..<proposed]

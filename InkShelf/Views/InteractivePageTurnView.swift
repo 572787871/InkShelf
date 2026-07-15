@@ -234,7 +234,7 @@ private final class ReaderPageContentView: UIView {
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
         textView.textContainer.lineBreakMode = .byWordWrapping
-        textView.attributedText = attributedBody(page.text)
+        textView.attributedText = attributedBody(page.displayText)
 
         pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
@@ -272,7 +272,7 @@ private final class ReaderPageContentView: UIView {
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
         self.appearance = appearance
-        textView.attributedText = attributedBody(page.text)
+        textView.attributedText = attributedBody(page.displayText)
     }
 
     private func attributedBody(_ text: String) -> NSAttributedString {
@@ -292,13 +292,33 @@ private final class ReaderPageContentView: UIView {
         if appearance.highlightedLocation == page.location,
            let range = appearance.highlightedRange,
            range.location >= 0,
-           NSMaxRange(range) <= attributed.length {
+           NSMaxRange(range) <= page.text.utf16.count {
+            let displayRange = NSRange(
+                location: range.location + page.chapterHeadingPrefix.utf16.count,
+                length: range.length
+            )
             attributed.addAttributes([
                 .backgroundColor: UIColor.systemYellow.withAlphaComponent(0.24),
                 .foregroundColor: appearance.textColor
-            ], range: range)
+            ], range: displayRange)
         }
+        styleChapterTitle(in: attributed)
         return attributed
+    }
+
+    private func styleChapterTitle(in attributed: NSMutableAttributedString) {
+        guard !page.chapterHeadingPrefix.isEmpty,
+              page.displayText.hasPrefix(page.chapterTitle) else { return }
+        let titleRange = NSRange(location: 0, length: (page.chapterTitle as NSString).length)
+        let titleFont = appearance.fontName.flatMap { UIFont(name: $0, size: appearance.fontSize + 6) }
+            ?? UIFont.systemFont(ofSize: appearance.fontSize + 6, weight: .semibold)
+        let titleParagraph = NSMutableParagraphStyle()
+        titleParagraph.lineSpacing = appearance.lineSpacing
+        titleParagraph.paragraphSpacing = appearance.lineSpacing + 8
+        attributed.addAttributes([
+            .font: titleFont,
+            .paragraphStyle: titleParagraph
+        ], range: titleRange)
     }
 
 }
@@ -378,7 +398,7 @@ private final class ReaderPageBackContentView: UIView {
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
         textView.textContainer.lineBreakMode = .byWordWrapping
-        textView.attributedText = attributedGhostText(page.text, color: ghostColor)
+        textView.attributedText = attributedGhostText(page.displayText, color: ghostColor)
 
         pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
@@ -426,7 +446,7 @@ private final class ReaderPageBackContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = appearance.lineSpacing
         paragraph.alignment = .natural
-        return NSAttributedString(
+        let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
                 .font: font,
@@ -434,6 +454,19 @@ private final class ReaderPageBackContentView: UIView {
                 .paragraphStyle: paragraph
             ]
         )
+        if let page,
+           page.pageInChapter == 1,
+           page.chapterTitle != "正文",
+           text.hasPrefix(page.chapterTitle) {
+            let titleFont = appearance.fontName.flatMap { UIFont(name: $0, size: appearance.fontSize + 6) }
+                ?? UIFont.systemFont(ofSize: appearance.fontSize + 6, weight: .semibold)
+            attributed.addAttribute(
+                .font,
+                value: titleFont,
+                range: NSRange(location: 0, length: (page.chapterTitle as NSString).length)
+            )
+        }
+        return attributed
     }
 }
 

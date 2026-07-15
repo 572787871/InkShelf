@@ -15,6 +15,7 @@ struct BookshelfView: View {
     @State private var readerTransitionPhase = ReaderTransitionPhase.idle
     @State private var readerBlocksEdgeDismiss = false
     @State private var frozenBookOrder: [UUID]?
+    @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("readerTheme") private var readerThemeRaw = ReaderTheme.paper.rawValue
 
@@ -109,6 +110,7 @@ struct BookshelfView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索书名或作者", text: $searchText)
                     .textInputAutocapitalization(.never)
+                    .focused($searchFieldFocused)
                 if !searchText.isEmpty { Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) } }
             }
             .padding(.horizontal, 13).frame(height: 42)
@@ -220,6 +222,13 @@ struct BookshelfView: View {
 
     private func openReader(_ book: NovelBook) {
         guard selectedBookID == nil, readerTransitionPhase == .idle else { return }
+        searchFieldFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
         readerTransitionProgress = 1
