@@ -415,6 +415,12 @@ final class BookProgressTests: XCTestCase {
 }
 
 final class ReaderThemeTests: XCTestCase {
+    func testLibraryLayoutsHaveStableStoredValuesAndSymbols() {
+        XCTAssertEqual(LibraryLayout.allCases.map(\.rawValue), ["网格", "列表"])
+        XCTAssertEqual(LibraryLayout.grid.symbolName, "square.grid.2x2")
+        XCTAssertEqual(LibraryLayout.list.symbolName, "list.bullet")
+    }
+
     func testEmailLoginInputValidationAndNormalization() {
         let valid = EmailLoginInput(email: "  Reader@Example.COM ", password: "123456")
         XCTAssertNil(valid.validationMessage)

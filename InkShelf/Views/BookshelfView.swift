@@ -7,7 +7,9 @@ import ImageIO
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var readAloud: ReadAloudService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingImporter = false
+    @State private var showingImportInformation = false
     @State private var showingSettings = false
     @State private var searchText = ""
     @State private var selectedBookID: UUID?
@@ -16,8 +18,14 @@ struct BookshelfView: View {
     @State private var showingCoverPicker = false
     @State private var coverPickerBookID: UUID?
     @State private var selectedCoverPhoto: PhotosPickerItem?
+    @State private var bookCoverFrames: [UUID: CGRect] = [:]
+    @State private var readerSourceFrame: CGRect?
+    @State private var readerShellExpanded = false
+    @State private var readerContentVisible = false
+    @State private var readerTransitionInFlight = false
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
+    @AppStorage("libraryLayout") private var layoutRaw = LibraryLayout.grid.rawValue
 
     private var displayedBooks: [NovelBook] {
         let filtered = searchText.isEmpty ? library.books : library.books.filter {
@@ -32,48 +40,71 @@ struct BookshelfView: View {
         }
     }
 
+    private var libraryLayout: LibraryLayout {
+        LibraryLayout(rawValue: layoutRaw) ?? .grid
+    }
+
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color(hex: "EEE9DF").ignoresSafeArea()
-                VStack(spacing: 0) {
-                    header
-                    shelfContent
-                }
-
-                if library.isImporting { importingOverlay }
-
-                if selectedBookID == nil,
-                   !showingImporter,
-                   !showingSettings,
-                   !showingCoverPicker {
-                    PersistentReadAloudOverlay(readAloud: readAloud)
-                }
-
-                if let selectedBookID,
-                   library.book(id: selectedBookID) != nil {
-                    ReaderView(
-                        bookID: selectedBookID,
-                        onRequestClose: { closeReader(bookID: selectedBookID) },
-                        onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 }
-                    )
-                    .ignoresSafeArea()
-                    .overlay(alignment: .leading) {
-                        DirectReaderEdgeDismissGesture(
-                            isEnabled: !readerBlocksEdgeDismiss,
-                            onEnded: { translation, predictedTranslation, width in
-                                if ReaderDismissGestureDecision.shouldFinish(
-                                    translation: translation,
-                                    predictedTranslation: predictedTranslation,
-                                    width: width
-                                ) {
-                                    closeReader(bookID: selectedBookID)
-                                }
-                            }
-                        )
-                        .frame(width: 28)
+            GeometryReader { rootProxy in
+                ZStack {
+                    Color(hex: "EEE9DF").ignoresSafeArea()
+                    VStack(spacing: 0) {
+                        header
+                        shelfContent
                     }
-                    .zIndex(10)
+
+                    if library.isImporting { importingOverlay }
+
+                    if selectedBookID == nil,
+                       !showingImporter,
+                       !showingSettings,
+                       !showingCoverPicker {
+                        PersistentReadAloudOverlay(readAloud: readAloud)
+                    }
+
+                    if let selectedBookID,
+                       let selectedBook = library.book(id: selectedBookID) {
+                        ReaderTransitionBackdrop(
+                            book: selectedBook,
+                            sourceFrame: readerSourceFrame,
+                            isExpanded: readerShellExpanded,
+                            containerSize: rootProxy.size
+                        )
+                        .zIndex(9)
+
+                        ReaderView(
+                            bookID: selectedBookID,
+                            onRequestClose: { closeReader(bookID: selectedBookID) },
+                            onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 }
+                        )
+                        .ignoresSafeArea()
+                        .opacity(readerContentVisible ? 1 : 0)
+                        .scaleEffect(readerContentVisible ? 1 : 0.985)
+                        .allowsHitTesting(readerContentVisible && !readerTransitionInFlight)
+                        .overlay(alignment: .leading) {
+                            DirectReaderEdgeDismissGesture(
+                                isEnabled: readerContentVisible
+                                    && !readerTransitionInFlight
+                                    && !readerBlocksEdgeDismiss,
+                                onEnded: { translation, predictedTranslation, width in
+                                    if ReaderDismissGestureDecision.shouldFinish(
+                                        translation: translation,
+                                        predictedTranslation: predictedTranslation,
+                                        width: width
+                                    ) {
+                                        closeReader(bookID: selectedBookID)
+                                    }
+                                }
+                            )
+                            .frame(width: 28)
+                        }
+                        .zIndex(10)
+                    }
+                }
+                .coordinateSpace(name: BookshelfCoordinateSpace.name)
+                .onPreferenceChange(BookCoverFramePreferenceKey.self) { frames in
+                    bookCoverFrames = frames
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -91,6 +122,12 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .alert("导入本地书籍", isPresented: $showingImportInformation) {
+                Button("取消", role: .cancel) { }
+                Button("选择文件") { presentDocumentPickerAfterPrompt() }
+            } message: {
+                Text("支持 TXT、Markdown（.md）和 EPUB。TXT 可识别 UTF-8、UTF-16、GBK 与 GB18030 编码；文件会复制到本机书库后再解析。")
+            }
             .photosPicker(
                 isPresented: $showingCoverPicker,
                 selection: $selectedCoverPhoto,
@@ -121,11 +158,24 @@ struct BookshelfView: View {
                 }
                 Spacer()
                 Menu {
-                    Picker("排序", selection: $sortRaw) {
-                        ForEach(LibrarySort.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                    Section("显示方式") {
+                        Picker("显示方式", selection: $layoutRaw) {
+                            ForEach(LibraryLayout.allCases) { layout in
+                                Label(layout.rawValue, systemImage: layout.symbolName)
+                                    .tag(layout.rawValue)
+                            }
+                        }
                     }
-                } label: { HeaderButton(systemName: "arrow.up.arrow.down") }
-                Button { showingImporter = true } label: { HeaderButton(systemName: "plus") }
+                    Section("排序") {
+                        Picker("排序", selection: $sortRaw) {
+                            ForEach(LibrarySort.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                        }
+                    }
+                } label: {
+                    HeaderButton(systemName: libraryLayout.symbolName)
+                }
+                .accessibilityLabel("书架显示和排序")
+                Button { showingImportInformation = true } label: { HeaderButton(systemName: "plus") }
                     .accessibilityLabel("导入小说")
                     .disabled(library.isImporting)
                 Button { showingSettings = true } label: { HeaderButton(systemName: "person.crop.circle") }
@@ -144,12 +194,17 @@ struct BookshelfView: View {
         .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 4)
     }
 
+    @ViewBuilder
     private var shelfContent: some View {
         ScrollView {
-            if displayedBooks.isEmpty, !searchText.isEmpty {
-                ContentUnavailableView("没有找到这本书", systemImage: "books.vertical", description: Text("换个关键词试试"))
+            if displayedBooks.isEmpty {
+                ContentUnavailableView(
+                    searchText.isEmpty ? "书架还是空的" : "没有找到这本书",
+                    systemImage: "books.vertical",
+                    description: Text(searchText.isEmpty ? "点击右上角 + 导入一本小说" : "换个关键词试试")
+                )
                     .padding(.top, 80)
-            } else {
+            } else if libraryLayout == .grid {
                 LazyVGrid(
                     columns: Array(
                         repeating: GridItem(.flexible(minimum: 84, maximum: 120), spacing: 18, alignment: .top),
@@ -165,14 +220,25 @@ struct BookshelfView: View {
                             onChooseCover: beginCoverSelection
                         )
                     }
-
-                    AddBookGridItem {
-                        showingImporter = true
-                    }
-                    .disabled(library.isImporting)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 18)
+                .padding(.bottom, 36)
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(displayedBooks) { book in
+                        BookListItem(
+                            book: book,
+                            onOpen: openReader,
+                            onChooseCover: beginCoverSelection
+                        )
+                        if book.id != displayedBooks.last?.id {
+                            Divider().padding(.leading, 96)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
                 .padding(.bottom, 36)
             }
         }
@@ -194,14 +260,35 @@ struct BookshelfView: View {
     }
 
     private func openReader(_ book: NovelBook) {
-        guard selectedBookID == nil else { return }
+        guard selectedBookID == nil, !readerTransitionInFlight else { return }
         dismissSearchKeyboard()
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            selectedBookID = book.id
+        readerTransitionInFlight = true
+        readerSourceFrame = bookCoverFrames[book.id]
+        readerShellExpanded = false
+        readerContentVisible = false
+        selectedBookID = book.id
+
+        if reduceMotion {
+            readerShellExpanded = true
+            readerContentVisible = true
+            readerTransitionInFlight = false
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard selectedBookID == book.id else { return }
+            withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
+                readerShellExpanded = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                guard selectedBookID == book.id else { return }
+                withAnimation(.easeOut(duration: 0.24)) {
+                    readerContentVisible = true
+                }
+                readerTransitionInFlight = false
+            }
         }
     }
 
@@ -217,13 +304,39 @@ struct BookshelfView: View {
     }
 
     private func closeReader(bookID: UUID) {
-        guard selectedBookID == bookID else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
+        guard selectedBookID == bookID, !readerTransitionInFlight else { return }
+        if reduceMotion {
             selectedBookID = nil
+            readerSourceFrame = nil
+            readerBlocksEdgeDismiss = false
+            readerShellExpanded = false
+            readerContentVisible = false
+            return
         }
-        readerBlocksEdgeDismiss = false
+        readerTransitionInFlight = true
+        withAnimation(.easeIn(duration: 0.16)) {
+            readerContentVisible = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard selectedBookID == bookID else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.9)) {
+                readerShellExpanded = false
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard selectedBookID == bookID else { return }
+            selectedBookID = nil
+            readerSourceFrame = nil
+            readerBlocksEdgeDismiss = false
+            readerTransitionInFlight = false
+        }
+    }
+
+    private func presentDocumentPickerAfterPrompt() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            guard !library.isImporting else { return }
+            showingImporter = true
+        }
     }
 
     private func beginCoverSelection(_ book: NovelBook) {
@@ -275,6 +388,9 @@ private struct BookGridItem: View {
                             height: BookGridLayout.coverHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .background {
+                            BookCoverFrameReporter(bookID: book.id)
+                        }
                         .frame(maxWidth: .infinity, alignment: .center)
 
                     Text(book.title)
@@ -325,91 +441,145 @@ private struct BookGridItem: View {
     }
 }
 
-private struct AddBookGridItem: View {
-    let action: () -> Void
+private struct BookListItem: View {
+    @EnvironmentObject private var library: LibraryStore
+    let book: NovelBook
+    let onOpen: (NovelBook) -> Void
+    let onChooseCover: (NovelBook) -> Void
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(hex: "F7E9DE"), Color(hex: "E7C8B4")],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                LinearGradient(
-                    colors: [.white.opacity(0.28), .clear, .black.opacity(0.08)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-
-                HStack(spacing: 0) {
-                    LinearGradient(
-                        colors: [.black.opacity(0.2), .white.opacity(0.22), .black.opacity(0.08), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                    .frame(width: 11)
-                    .overlay(alignment: .trailing) {
-                        Rectangle().fill(.white.opacity(0.28)).frame(width: 0.7)
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 15)
-                    Circle()
-                        .fill(.white.opacity(0.94))
-                        .frame(width: 40, height: 40)
-                        .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
-                        .overlay {
-                            Image(systemName: "plus")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(Color(hex: "825842"))
+        HStack(alignment: .top, spacing: 15) {
+            Button { onOpen(book) } label: {
+                HStack(alignment: .top, spacing: 15) {
+                    BookCoverView(book: book, compact: true)
+                        .frame(width: 68, height: 100)
+                        .background {
+                            BookCoverFrameReporter(bookID: book.id)
                         }
-                    Spacer(minLength: 12)
-                    Text("导入本地书")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color(hex: "674638"))
-                        .lineLimit(1)
-                    Text("添加一本小说")
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(Color(hex: "8E7465"))
-                        .lineLimit(1)
-                        .padding(.top, 3)
-                    Spacer(minLength: 13)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(book.title)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(book.author)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Text(book.chapterProgressDescription)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(hex: "806A59"))
+                        Text(currentChapterTitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
                 }
+                .contentShape(Rectangle())
             }
-            .frame(
-                width: BookGridLayout.coverWidth,
-                height: BookGridLayout.coverHeight
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [.white.opacity(0.5), Color(hex: "C9A68F").opacity(0.58), .black.opacity(0.22)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
+            .buttonStyle(.plain)
+
+            Menu {
+                Button { onChooseCover(book) } label: {
+                    Label("从相册设置封面", systemImage: "photo.on.rectangle")
+                }
+                if book.coverData != nil {
+                    Button { library.updateCover(bookID: book.id, coverData: nil) } label: {
+                        Label("恢复默认封面", systemImage: "arrow.uturn.backward")
+                    }
+                }
+                NavigationLink { BookInfoView(bookID: book.id) } label: {
+                    Label("书籍信息", systemImage: "info.circle")
+                }
+                Divider()
+                Button(role: .destructive) { library.delete(bookID: book.id) } label: {
+                    Label("移出书架", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 34)
+                    .contentShape(Rectangle())
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(.white.opacity(0.18), lineWidth: 0.6)
-                    .padding(5)
-            }
-            .shadow(color: .black.opacity(0.28), radius: 5, x: 3, y: 5)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .contentShape(Rectangle())
+            .accessibilityLabel("《\(book.title)》更多操作")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("导入本地书")
+        .padding(.vertical, 12)
+    }
+
+    private var currentChapterTitle: String {
+        guard book.chapters.indices.contains(book.currentChapter) else { return "尚未开始阅读" }
+        return book.lastReadAt == nil ? "尚未开始阅读" : book.chapters[book.currentChapter].title
+    }
+}
+
+private struct ReaderTransitionBackdrop: View {
+    let book: NovelBook
+    let sourceFrame: CGRect?
+    let isExpanded: Bool
+    let containerSize: CGSize
+
+    var body: some View {
+        let fallback = CGRect(
+            x: containerSize.width / 2 - 48,
+            y: containerSize.height / 2 - 70,
+            width: 96,
+            height: 141
+        )
+        let source = sourceFrame ?? fallback
+        let expandedWidth = min(220, containerSize.width * 0.54)
+        let coverWidth = isExpanded ? expandedWidth : source.width
+        let coverHeight = coverWidth / 0.68
+        let position = isExpanded
+            ? CGPoint(x: containerSize.width / 2, y: containerSize.height / 2)
+            : CGPoint(x: source.midX, y: source.midY)
+
+        ZStack {
+            Color(hex: "EEE9DF")
+                .opacity(isExpanded ? 1 : 0)
+                .ignoresSafeArea()
+            RadialGradient(
+                colors: [Color.white.opacity(0.45), Color(hex: "DDD4C7").opacity(0.25), .clear],
+                center: .center,
+                startRadius: 20,
+                endRadius: max(containerSize.width, containerSize.height) * 0.58
+            )
+            .opacity(isExpanded ? 1 : 0)
+            .ignoresSafeArea()
+            BookCoverView(book: book)
+                .frame(width: coverWidth, height: coverHeight)
+                .drawingGroup()
+                .position(position)
+                .shadow(color: .black.opacity(isExpanded ? 0.32 : 0.12), radius: isExpanded ? 22 : 6, y: isExpanded ? 12 : 4)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct BookCoverFrameReporter: View {
+    let bookID: UUID
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: BookCoverFramePreferenceKey.self,
+                value: [bookID: proxy.frame(in: .named(BookshelfCoordinateSpace.name))]
+            )
+        }
+    }
+}
+
+private enum BookshelfCoordinateSpace {
+    static let name = "BookshelfRoot"
+}
+
+private struct BookCoverFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 
@@ -546,6 +716,19 @@ private struct HeaderButton: View {
     var body: some View {
         Image(systemName: systemName).font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(hex: "3D332B"))
             .frame(width: 39, height: 39).background(.white.opacity(0.75), in: Circle())
+    }
+}
+
+enum LibraryLayout: String, CaseIterable, Identifiable {
+    case grid = "网格"
+    case list = "列表"
+
+    var id: String { rawValue }
+    var symbolName: String {
+        switch self {
+        case .grid: return "square.grid.2x2"
+        case .list: return "list.bullet"
+        }
     }
 }
 

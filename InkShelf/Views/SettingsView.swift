@@ -51,11 +51,6 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("导入与存储") {
-                    Label("TXT / Markdown / EPUB", systemImage: "doc.badge.plus")
-                    Text("书籍只保存在本机 App 沙盒内，不会上传。删除 App 会同时删除书架内容。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
                 Section("AI 朗读") {
                     HStack { Label("配音引擎", systemImage: "waveform"); Spacer(); Text("等待接入").foregroundStyle(.secondary) }
                     Text("工程已定义章节预处理、播放、暂停、句子定位与状态同步接口，可直接接入后续 AI 语音服务。")
