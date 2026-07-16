@@ -514,10 +514,16 @@ struct ReaderView: View {
     }
 
     private func readAloudFloater(book: NovelBook) -> some View {
-        ReaderReadAloudFloater(
+        let defaultCoverName = BookPalette.defaultCoverAssetName(for: book.coverStyle)
+        let customCoverImage = book.coverData.flatMap { UIImage(data: $0) }
+        let coverImage = customCoverImage ?? UIImage(named: defaultCoverName)
+        let coverSignature = book.coverData.map { "custom-\($0.hashValue)" } ?? "asset-\(defaultCoverName)"
+        return ReaderReadAloudFloater(
             readAloud: readAloud,
             bookID: book.id,
-            coverData: book.coverData,
+            bookTitle: book.title,
+            coverImage: coverImage,
+            coverSignature: coverSignature,
             onPlayPause: {
                 if readAloud.isPlaying { readAloud.pause() } else { readAloud.play() }
             },
@@ -910,7 +916,9 @@ struct ReaderView: View {
 private struct ReaderReadAloudFloater: View {
     @ObservedObject var readAloud: ReadAloudService
     let bookID: UUID
-    let coverData: Data?
+    let bookTitle: String
+    let coverImage: UIImage?
+    let coverSignature: String
     let onPlayPause: () -> Void
     let onClose: () -> Void
 
@@ -918,17 +926,22 @@ private struct ReaderReadAloudFloater: View {
     @GestureState private var dragOffset = CGSize.zero
 
     private var palette: ReaderFloaterPalette {
-        ReaderFloaterPalette.cached(bookID: bookID, coverData: coverData)
+        ReaderFloaterPalette.cached(
+            bookID: bookID,
+            coverSignature: coverSignature,
+            coverImage: coverImage
+        )
     }
 
     var body: some View {
         HStack(spacing: 8) {
             Group {
-                if let coverData, let image = UIImage(data: coverData) {
+                if let image = coverImage {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
-                    Image(systemName: "book.closed.fill")
-                        .foregroundStyle(.white.opacity(0.8))
+                    Text(String(bookTitle.prefix(1)))
+                        .font(.system(size: 17, weight: .semibold, design: .serif))
+                        .foregroundStyle(.white.opacity(0.9))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color(uiColor: palette.secondary))
                 }
@@ -992,18 +1005,21 @@ private struct ReaderFloaterPalette {
     private static let cache = NSCache<NSString, ReaderFloaterPaletteBox>()
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
-    static func cached(bookID: UUID, coverData: Data?) -> ReaderFloaterPalette {
-        let key = "\(bookID.uuidString)-\(coverData?.hashValue ?? 0)" as NSString
+    static func cached(
+        bookID: UUID,
+        coverSignature: String,
+        coverImage: UIImage?
+    ) -> ReaderFloaterPalette {
+        let key = "\(bookID.uuidString)-\(coverSignature)" as NSString
         if let cached = cache.object(forKey: key) { return cached.palette }
 
-        let palette = make(from: coverData)
+        let palette = make(from: coverImage)
         cache.setObject(ReaderFloaterPaletteBox(palette), forKey: key)
         return palette
     }
 
-    private static func make(from coverData: Data?) -> ReaderFloaterPalette {
-        guard let coverData,
-              let image = UIImage(data: coverData),
+    private static func make(from image: UIImage?) -> ReaderFloaterPalette {
+        guard let image,
               let inputImage = CIImage(image: image),
               let filter = CIFilter(name: "CIAreaAverage") else {
             return fallback
