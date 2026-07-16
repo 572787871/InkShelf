@@ -19,7 +19,6 @@ struct ReaderView: View {
     @State private var showingIndex = false
     @State private var showingAppearance = false
     @State private var showingNote = false
-    @State private var readAloudPlayerVisible = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
     @State private var originalReadAloudLocation: ReaderPageLocation?
@@ -131,7 +130,6 @@ struct ReaderView: View {
                         if chromeVisible { readerChrome(book: book) }
                         if chromeVisible,
                            !showingAppearance,
-                           readAloudPlayerVisible,
                            isCurrentReadAloudSession {
                             readAloudFloater(book: book)
                         } else if !chromeVisible, isCurrentReadAloudSession {
@@ -375,7 +373,6 @@ struct ReaderView: View {
             location: page.location,
             startAtUTF16Location: paragraphLocation ?? 0
         )
-        readAloudPlayerVisible = true
     }
 
     private func attachPageFinishHandler() {
@@ -389,7 +386,6 @@ struct ReaderView: View {
         guard readAloud.currentPageLocation == location else { return }
         guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
             readAloud.stop()
-            readAloudPlayerVisible = false
             originalReadAloudLocation = nil
             return
         }
@@ -402,7 +398,6 @@ struct ReaderView: View {
     private func returnToOriginalReadAloudProgress() {
         guard let originalReadAloudLocation else { return }
         readAloud.stop()
-        readAloudPlayerVisible = false
         automatedTurnTarget = nil
         self.originalReadAloudLocation = nil
         jump(to: originalReadAloudLocation)
@@ -500,10 +495,9 @@ struct ReaderView: View {
                     }
                     ChromeAction(icon: "waveform", label: "朗读") {
                         if isCurrentReadAloudSession {
-                            readAloudPlayerVisible.toggle()
+                            if !readAloud.isPlaying { readAloud.play() }
                         } else {
                             startReadingCurrentPage()
-                            readAloudPlayerVisible = true
                         }
                     }
                     ChromeAction(
@@ -550,7 +544,6 @@ struct ReaderView: View {
             onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()
-                readAloudPlayerVisible = false
                 originalReadAloudLocation = nil
             }
         )
