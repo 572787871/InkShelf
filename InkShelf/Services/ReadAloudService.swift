@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import Combine
+import MediaPlayer
+import UIKit
 
 enum ReadAloudState: Equatable {
     case unavailable
@@ -8,6 +10,13 @@ enum ReadAloudState: Equatable {
     case playing(sentence: Int)
     case paused(sentence: Int)
     case failed(message: String)
+}
+
+struct ReadAloudBookContext: Equatable {
+    let id: UUID
+    let title: String
+    let coverData: Data?
+    let coverStyle: Int
 }
 
 /// A stable UTF-16 text plan shared by speech, highlighting and paragraph buttons.
@@ -69,6 +78,9 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var currentSentenceIndex = 0
     @Published private(set) var currentSentenceRange: NSRange?
     @Published private(set) var currentPageLocation: ReaderPageLocation?
+    @Published private(set) var bookContext: ReadAloudBookContext?
+    @Published private(set) var visibleReaderBookID: UUID?
+    @Published private(set) var applicationIsActive = true
 
     var onPageFinished: (() -> Void)?
     var isPlaying: Bool {
@@ -76,15 +88,93 @@ final class ReadAloudService: NSObject, ObservableObject {
         return false
     }
     var hasSession: Bool { currentPageLocation != nil && !plan.sentences.isEmpty }
+    var shouldShowPersistentFloater: Bool {
+        hasSession && bookContext?.id != visibleReaderBookID
+    }
 
     private let synthesizer = AVSpeechSynthesizer()
     private var plan = ReadAloudTextPlan(text: "")
     private var queuedSentenceIndices: [ObjectIdentifier: Int] = [:]
     private var nextSentenceIndex = 0
+    private var sessionPages: [ReaderPage] = []
+    private var sessionPageIndex: Int?
+    private var interruptionObserver: NSObjectProtocol?
+    private var shouldResumeAfterInterruption = false
 
     override init() {
         super.init()
         synthesizer.delegate = self
+        configureRemoteCommands()
+        observeAudioInterruptions()
+    }
+
+    deinit {
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+    }
+
+    func readerDidAppear(bookID: UUID) {
+        visibleReaderBookID = bookID
+    }
+
+    func readerDidDisappear(bookID: UUID) {
+        guard visibleReaderBookID == bookID else { return }
+        visibleReaderBookID = nil
+        onPageFinished = nil
+    }
+
+    func applicationActivityChanged(isActive: Bool) {
+        applicationIsActive = isActive
+    }
+
+    func isSession(for bookID: UUID) -> Bool {
+        hasSession && bookContext?.id == bookID
+    }
+
+    func startSession(
+        book: NovelBook,
+        pages: [ReaderPage],
+        location: ReaderPageLocation,
+        startAtUTF16Location: Int = 0
+    ) {
+        guard let pageIndex = pages.firstIndex(where: { $0.location == location }) else {
+            state = .failed(message: "当前朗读页面不存在")
+            return
+        }
+        sessionPages = pages
+        sessionPageIndex = pageIndex
+        bookContext = ReadAloudBookContext(
+            id: book.id,
+            title: book.title,
+            coverData: book.coverData,
+            coverStyle: book.coverStyle
+        )
+        setPage(
+            text: pages[pageIndex].text,
+            location: pages[pageIndex].location,
+            startAtUTF16Location: startAtUTF16Location
+        )
+        play()
+    }
+
+    func moveSession(to location: ReaderPageLocation, continuePlaying: Bool) {
+        guard let pageIndex = sessionPages.firstIndex(where: { $0.location == location }) else { return }
+        sessionPageIndex = pageIndex
+        let page = sessionPages[pageIndex]
+        setPage(text: page.text, location: page.location)
+        if continuePlaying { play() }
+    }
+
+    func refreshSessionPages(_ pages: [ReaderPage], for bookID: UUID) {
+        guard bookContext?.id == bookID, let currentPageLocation else { return }
+        sessionPages = pages
+        sessionPageIndex = pages.firstIndex { $0.location == currentPageLocation }
+            ?? pages.lastIndex {
+                $0.location.chapterIndex == currentPageLocation.chapterIndex
+                    && $0.location.pageIndex <= currentPageLocation.pageIndex
+            }
+            ?? pages.firstIndex {
+                $0.location.chapterIndex == currentPageLocation.chapterIndex
+            }
     }
 
     func setPage(text: String, location: ReaderPageLocation, startAtUTF16Location: Int = 0) {
@@ -112,20 +202,24 @@ final class ReadAloudService: NSObject, ObservableObject {
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
             state = .playing(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
             return
         }
         guard !synthesizer.isSpeaking else {
             state = .playing(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
             return
         }
         enqueueSentence(at: nextSentenceIndex)
         state = .playing(sentence: currentSentenceIndex)
+        updateNowPlayingInfo()
     }
 
     func pause() {
         guard synthesizer.isSpeaking else { return }
         synthesizer.pauseSpeaking(at: .word)
         state = .paused(sentence: currentSentenceIndex)
+        updateNowPlayingInfo()
     }
 
     func stop() {
@@ -135,8 +229,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         currentSentenceIndex = 0
         currentSentenceRange = nil
         currentPageLocation = nil
+        bookContext = nil
         nextSentenceIndex = 0
+        sessionPages = []
+        sessionPageIndex = nil
+        onPageFinished = nil
+        shouldResumeAfterInterruption = false
         state = .unavailable
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -188,6 +288,90 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard let first = sentence.trimmingCharacters(in: .whitespacesAndNewlines).first else { return false }
         return "\"“「『".contains(first)
     }
+
+    private func advanceInBackground() {
+        guard let currentIndex = sessionPageIndex else {
+            stop()
+            return
+        }
+        let nextIndex = currentIndex + 1
+        guard sessionPages.indices.contains(nextIndex) else {
+            stop()
+            return
+        }
+        sessionPageIndex = nextIndex
+        let nextPage = sessionPages[nextIndex]
+        setPage(text: nextPage.text, location: nextPage.location)
+        play()
+    }
+
+    private func configureRemoteCommands() {
+        let commands = MPRemoteCommandCenter.shared()
+        commands.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.play() }
+            return .success
+        }
+        commands.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.pause() }
+            return .success
+        }
+        commands.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.isPlaying { self.pause() } else { self.play() }
+            }
+            return .success
+        }
+        commands.stopCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.stop() }
+            return .success
+        }
+        commands.nextTrackCommand.isEnabled = false
+        commands.previousTrackCommand.isEnabled = false
+    }
+
+    private func observeAudioInterruptions() {
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in self?.handleAudioInterruption(notification) }
+        }
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        switch type {
+        case .began:
+            shouldResumeAfterInterruption = isPlaying
+            if isPlaying { pause() }
+        case .ended:
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+            if shouldResumeAfterInterruption, options.contains(.shouldResume) { play() }
+            shouldResumeAfterInterruption = false
+        @unknown default:
+            break
+        }
+    }
+
+    private func updateNowPlayingInfo() {
+        guard let bookContext else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: bookContext.title,
+            MPMediaItemPropertyArtist: "墨架朗读",
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1 : 0,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
+        ]
+        let coverImage = bookContext.coverData.flatMap { UIImage(data: $0) }
+            ?? UIImage(named: BookPalette.defaultCoverAssetName(for: bookContext.coverStyle))
+        if let coverImage {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: coverImage.size) { _ in coverImage }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
 }
 
 extension ReadAloudService: AVSpeechSynthesizerDelegate {
@@ -202,6 +386,7 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
             currentSentenceRange = plan.sentences[index].range
             nextSentenceIndex = index
             state = .playing(sentence: index)
+            updateNowPlayingInfo()
         }
     }
 
@@ -222,7 +407,13 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
             currentSentenceRange = nil
             nextSentenceIndex = 0
             state = .ready
-            onPageFinished?()
+            if applicationIsActive,
+               bookContext?.id == visibleReaderBookID,
+               let onPageFinished {
+                onPageFinished()
+            } else {
+                advanceInBackground()
+            }
         }
     }
 
