@@ -22,6 +22,7 @@ struct ReaderView: View {
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
     @State private var isBrowsingAwayFromReadAloud = false
+    @State private var hasResolvedInitialLocation = false
     @State private var scrubbedWholeBookChapterIndex: Double?
     @State private var isScrubbingWholeBookProgress = false
     @State private var brightness = Double(UIScreen.main.brightness)
@@ -149,10 +150,13 @@ struct ReaderView: View {
         .onAppear {
             readAloud.readerDidAppear(bookID: bookID)
             if let book {
-                if readAloud.isSession(for: bookID), let playingLocation = readAloud.currentPageLocation {
+                if !hasResolvedInitialLocation,
+                   readAloud.isSession(for: bookID),
+                   let playingLocation = readAloud.currentPageLocation {
                     location = playingLocation
+                    isBrowsingAwayFromReadAloud = false
                     attachPageFinishHandler()
-                } else {
+                } else if !hasResolvedInitialLocation {
                     location = ReaderPageLocation(
                         chapterIndex: min(book.currentChapter, max(book.chapters.count - 1, 0)),
                         pageIndex: max(0, book.currentPage)
@@ -320,14 +324,26 @@ struct ReaderView: View {
             ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
         }.value
         guard !Task.isCancelled else { return }
-        guard let settledLocation = rebuilt.nearest(to: location) else { return }
-        catalog = rebuilt
-        readAloud.refreshSessionPages(rebuilt.pages, for: book.id)
-        onReady()
+        let openingNarrationLocation: ReaderPageLocation?
+        if !hasResolvedInitialLocation, isCurrentReadAloudSession {
+            openingNarrationLocation = readAloud.currentPageLocation
+        } else {
+            openingNarrationLocation = nil
+        }
+        let requestedLocation = openingNarrationLocation ?? location
+        guard let settledLocation = rebuilt.nearest(to: requestedLocation) else { return }
         if settledLocation != location {
             location = settledLocation
             persist(settledLocation)
         }
+        if openingNarrationLocation != nil {
+            isBrowsingAwayFromReadAloud = false
+            attachPageFinishHandler()
+        }
+        hasResolvedInitialLocation = true
+        catalog = rebuilt
+        readAloud.refreshSessionPages(rebuilt.pages, for: book.id)
+        onReady()
     }
 
     private func commit(_ settledLocation: ReaderPageLocation) {
