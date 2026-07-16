@@ -104,6 +104,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     override init() {
         super.init()
         synthesizer.delegate = self
+        UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
     }
@@ -265,8 +266,14 @@ final class ReadAloudService: NSObject, ObservableObject {
     private func configureAudioSession() -> Bool {
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try audioSession.setCategory(
+                .playback,
+                mode: .spokenAudio,
+                policy: .longFormAudio,
+                options: []
+            )
             try audioSession.setActive(true)
+            UIApplication.shared.beginReceivingRemoteControlEvents()
             return true
         } catch {
             state = .failed(message: "无法启动音频：\(error.localizedDescription)")
@@ -307,15 +314,22 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private func configureRemoteCommands() {
         let commands = MPRemoteCommandCenter.shared()
+        commands.playCommand.isEnabled = true
+        commands.pauseCommand.isEnabled = true
+        commands.togglePlayPauseCommand.isEnabled = true
+        commands.stopCommand.isEnabled = true
         commands.playCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
             Task { @MainActor in self?.play() }
             return .success
         }
         commands.pauseCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
             Task { @MainActor in self?.pause() }
             return .success
         }
         commands.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
             Task { @MainActor in
                 guard let self else { return }
                 if self.isPlaying { self.pause() } else { self.play() }
@@ -323,6 +337,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             return .success
         }
         commands.stopCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
             Task { @MainActor in self?.stop() }
             return .success
         }
@@ -362,7 +377,10 @@ final class ReadAloudService: NSObject, ObservableObject {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: bookContext.title,
             MPMediaItemPropertyArtist: "墨架朗读",
+            MPMediaItemPropertyAlbumTitle: bookContext.title,
+            MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1 : 0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
         ]
         let coverImage = bookContext.coverData.flatMap { UIImage(data: $0) }
