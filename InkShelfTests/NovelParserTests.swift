@@ -494,7 +494,9 @@ final class ReaderRuntimeTests: XCTestCase {
                 lineSpacing: 9,
                 horizontalMargin: 22,
                 highlightedLocation: nil,
-                highlightedRange: nil
+                highlightedRange: nil,
+                showsReadAloudControls: false,
+                isReadAloudPlaying: false
             )
             let host = ReaderPageTurnHostController()
             var bodyTapCount = 0

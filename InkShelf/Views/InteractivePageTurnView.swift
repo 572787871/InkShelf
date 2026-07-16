@@ -23,6 +23,8 @@ struct ReaderPageAppearance: Equatable {
     let horizontalMargin: CGFloat
     let highlightedLocation: ReaderPageLocation?
     let highlightedRange: NSRange?
+    let showsReadAloudControls: Bool
+    let isReadAloudPlaying: Bool
 
     static func == (lhs: ReaderPageAppearance, rhs: ReaderPageAppearance) -> Bool {
         lhs.themeID == rhs.themeID &&
@@ -38,7 +40,9 @@ struct ReaderPageAppearance: Equatable {
         lhs.lineSpacing == rhs.lineSpacing &&
         lhs.horizontalMargin == rhs.horizontalMargin &&
         lhs.highlightedLocation == rhs.highlightedLocation &&
-        lhs.highlightedRange == rhs.highlightedRange
+        lhs.highlightedRange == rhs.highlightedRange &&
+        lhs.showsReadAloudControls == rhs.showsReadAloudControls &&
+        lhs.isReadAloudPlaying == rhs.isReadAloudPlaying
     }
 
     func hasSameLayout(as other: ReaderPageAppearance) -> Bool {
@@ -421,7 +425,7 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = appearance.lineSpacing
         paragraph.alignment = .natural
-        paragraph.firstLineHeadIndent = paragraphRanges.isEmpty ? 0 : 31
+        paragraph.firstLineHeadIndent = appearance.showsReadAloudControls && !paragraphRanges.isEmpty ? 31 : 0
         let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -486,6 +490,10 @@ private final class ReaderPageContentView: UIView {
 
     private func layoutParagraphButtons() {
         guard !paragraphButtons.isEmpty, textView.bounds.width > 0 else { return }
+        guard appearance.showsReadAloudControls else {
+            paragraphButtons.forEach { $0.isHidden = true }
+            return
+        }
         textView.layoutManager.ensureLayout(for: textView.textContainer)
         let prefixLength = page.chapterHeadingPrefix.utf16.count
         for (index, button) in paragraphButtons.enumerated() {
@@ -512,7 +520,7 @@ private final class ReaderPageContentView: UIView {
             : nil
         for (index, button) in paragraphButtons.enumerated() {
             let isCurrent = highlightedRange.map { NSIntersectionRange($0, paragraphRanges[index]).length > 0 } ?? false
-            let symbol = isCurrent ? "pause.fill" : "play.fill"
+            let symbol = isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
             button.setImage(
                 UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)),
                 for: .normal
@@ -522,6 +530,7 @@ private final class ReaderPageContentView: UIView {
                 ? UIColor.systemYellow.withAlphaComponent(0.22)
                 : appearance.backgroundColor.withAlphaComponent(0.46)
             button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.46 : 0.24).cgColor
+            button.isHidden = !appearance.showsReadAloudControls
         }
     }
 

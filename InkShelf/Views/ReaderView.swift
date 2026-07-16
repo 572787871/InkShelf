@@ -129,7 +129,7 @@ struct ReaderView: View {
                         if chromeVisible { readerChrome(book: book) }
                         if chromeVisible, readAloudPlayerVisible, readAloud.hasSession {
                             readAloudFloater(book: book)
-                        } else if !chromeVisible {
+                        } else if !chromeVisible, readAloud.hasSession {
                             immersiveReadAloudBar
                         }
                     }
@@ -273,7 +273,9 @@ struct ReaderView: View {
             lineSpacing: lineSpacing,
             horizontalMargin: margin,
             highlightedLocation: readAloud.currentPageLocation,
-            highlightedRange: readAloud.currentSentenceRange
+            highlightedRange: readAloud.currentSentenceRange,
+            showsReadAloudControls: readAloud.hasSession,
+            isReadAloudPlaying: readAloud.isPlaying
         )
     }
 
@@ -360,8 +362,13 @@ struct ReaderView: View {
     }
 
     private func autoAdvanceReadAloud() {
-        guard readAloud.currentPageLocation == location,
-              let nextPage = catalog.adjacent(to: location, direction: .forward) else { return }
+        guard readAloud.currentPageLocation == location else { return }
+        guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
+            readAloud.stop()
+            readAloudPlayerVisible = false
+            originalReadAloudLocation = nil
+            return
+        }
         automatedTurnTarget = nextPage.location
         if turnStyle == .vertical {
             commit(nextPage.location)
@@ -562,7 +569,7 @@ struct ReaderView: View {
             .frame(height: 38)
             .background(Color(hex: "8A795D").opacity(0.9), in: Capsule())
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-            .padding(.bottom, 10)
+            .padding(.bottom, 38)
         }
         .allowsHitTesting(true)
         .transition(.opacity)
