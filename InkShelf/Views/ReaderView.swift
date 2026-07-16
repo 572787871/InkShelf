@@ -22,7 +22,6 @@ struct ReaderView: View {
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
     @State private var isBrowsingAwayFromReadAloud = false
-    @State private var originalReadAloudLocation: ReaderPageLocation?
     @State private var scrubbedWholeBookChapterIndex: Double?
     @State private var isScrubbingWholeBookProgress = false
     @State private var brightness = Double(UIScreen.main.brightness)
@@ -384,7 +383,6 @@ struct ReaderView: View {
     }
 
     private func beginReading(book: NovelBook, page: ReaderPage, paragraphLocation: Int?) {
-        if originalReadAloudLocation == nil { originalReadAloudLocation = location }
         isBrowsingAwayFromReadAloud = false
         attachPageFinishHandler()
         readAloud.startSession(
@@ -409,7 +407,6 @@ struct ReaderView: View {
         }
         guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
             readAloud.stop()
-            originalReadAloudLocation = nil
             return
         }
         automatedTurnTarget = nextPage.location
@@ -418,12 +415,15 @@ struct ReaderView: View {
         }
     }
 
-    private func returnToOriginalReadAloudProgress() {
-        guard let originalReadAloudLocation else { return }
-        readAloud.stop()
+    private func returnToCurrentReadAloudProgress() {
+        guard let playingLocation = readAloud.currentPageLocation else { return }
         automatedTurnTarget = nil
-        self.originalReadAloudLocation = nil
-        jump(to: originalReadAloudLocation)
+        isBrowsingAwayFromReadAloud = false
+        let settledLocation = catalog.nearest(to: playingLocation) ?? playingLocation
+        if settledLocation != location {
+            location = settledLocation
+            persist(settledLocation)
+        }
     }
 
     private func persist(_ settledLocation: ReaderPageLocation) {
@@ -578,7 +578,6 @@ struct ReaderView: View {
             onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()
-                originalReadAloudLocation = nil
             }
         )
         .padding(.leading, 24)
@@ -591,10 +590,9 @@ struct ReaderView: View {
         VStack {
             Spacer()
             HStack(spacing: 9) {
-                Button(action: returnToOriginalReadAloudProgress) {
+                Button(action: returnToCurrentReadAloudProgress) {
                     Label("原进度", systemImage: "arrow.uturn.backward")
                 }
-                .disabled(originalReadAloudLocation == nil)
 
                 Rectangle()
                     .fill(immersiveBarForeground.opacity(0.32))
