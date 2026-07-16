@@ -57,7 +57,13 @@ struct BookshelfView: View {
                        !showingImporter,
                        !showingSettings,
                        !showingCoverPicker {
-                        PersistentReadAloudOverlay(readAloud: readAloud)
+                        PersistentReadAloudOverlay(
+                            readAloud: readAloud,
+                            onOpenBook: { bookID in
+                                guard let book = library.book(id: bookID) else { return }
+                                openReader(book)
+                            }
+                        )
                     }
 
                     if let selectedBookID,

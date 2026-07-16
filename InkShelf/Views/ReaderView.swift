@@ -575,6 +575,7 @@ struct ReaderView: View {
             bookTitle: book.title,
             coverImage: coverImage,
             coverSignature: coverSignature,
+            onCoverTap: nil,
             onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()
@@ -1005,10 +1006,13 @@ struct ReaderReadAloudFloater: View {
     let bookTitle: String
     let coverImage: UIImage?
     let coverSignature: String
+    let onCoverTap: (() -> Void)?
     let onPlayPause: () -> Void
     let onClose: () -> Void
 
     @State private var settledOffset = CGSize.zero
+    @State private var settledCoverRotation = 0.0
+    @State private var coverRotationStartedAt: Date?
     @GestureState private var dragOffset = CGSize.zero
 
     private var palette: ReaderFloaterPalette {
@@ -1021,20 +1025,22 @@ struct ReaderReadAloudFloater: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Group {
-                if let image = coverImage {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else {
-                    Text(String(bookTitle.prefix(1)))
-                        .font(.system(size: 17, weight: .semibold, design: .serif))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(uiColor: palette.secondary))
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !readAloud.isPlaying)) { timeline in
+                Group {
+                    if let onCoverTap {
+                        Button(action: onCoverTap) {
+                            rotatingCover(at: timeline.date)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                        .accessibilityLabel("打开正在朗读的《\(bookTitle)》")
+                    } else {
+                        rotatingCover(at: timeline.date)
+                    }
                 }
             }
-            .frame(width: 42, height: 42)
-            .clipShape(Circle())
-            .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 0.7))
+            .frame(width: 44, height: 44)
 
             Button(action: onPlayPause) {
                 Image(systemName: readAloud.isPlaying ? "pause.fill" : "play.fill")
@@ -1073,20 +1079,57 @@ struct ReaderReadAloudFloater: View {
             y: settledOffset.height + dragOffset.height
         )
         .highPriorityGesture(
-            DragGesture(minimumDistance: 8)
+            DragGesture(minimumDistance: 12)
                 .updating($dragOffset) { value, state, _ in state = value.translation }
                 .onEnded { value in
                     settledOffset.width += value.translation.width
                     settledOffset.height += value.translation.height
                 }
         )
+        .onAppear { updateCoverRotation(isPlaying: readAloud.isPlaying) }
+        .onChange(of: readAloud.isPlaying) { _, isPlaying in
+            updateCoverRotation(isPlaying: isPlaying)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("朗读悬浮控制")
+    }
+
+    private func rotatingCover(at date: Date) -> some View {
+        Group {
+            if let image = coverImage {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Text(String(bookTitle.prefix(1)))
+                    .font(.system(size: 17, weight: .semibold, design: .serif))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: palette.secondary))
+            }
+        }
+        .frame(width: 42, height: 42)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 0.7))
+        .rotationEffect(.degrees(coverRotation(at: date)))
+    }
+
+    private func coverRotation(at date: Date) -> Double {
+        guard let coverRotationStartedAt else { return settledCoverRotation }
+        return settledCoverRotation + date.timeIntervalSince(coverRotationStartedAt) * 45
+    }
+
+    private func updateCoverRotation(isPlaying: Bool) {
+        if isPlaying {
+            if coverRotationStartedAt == nil { coverRotationStartedAt = .now }
+        } else if let coverRotationStartedAt {
+            settledCoverRotation = coverRotation(at: .now).truncatingRemainder(dividingBy: 360)
+            self.coverRotationStartedAt = nil
+        }
     }
 }
 
 struct PersistentReadAloudOverlay: View {
     @ObservedObject var readAloud: ReadAloudService
+    var onOpenBook: ((UUID) -> Void)?
     var bottomPadding: CGFloat = 22
     var forceVisible = false
 
@@ -1100,12 +1143,16 @@ struct PersistentReadAloudOverlay: View {
             let coverImage = customCoverImage ?? UIImage(named: defaultCoverName)
             let coverSignature = context.coverData.map { "custom-\($0.hashValue)" }
                 ?? "asset-\(defaultCoverName)"
+            let coverAction: (() -> Void)? = onOpenBook.map { action in
+                { action(context.id) }
+            }
             ReaderReadAloudFloater(
                 readAloud: readAloud,
                 bookID: context.id,
                 bookTitle: context.title,
                 coverImage: coverImage,
                 coverSignature: coverSignature,
+                onCoverTap: coverAction,
                 onPlayPause: readAloud.togglePlayback,
                 onClose: { readAloud.stop() }
             )

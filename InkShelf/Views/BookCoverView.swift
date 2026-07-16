@@ -21,7 +21,6 @@ struct BookCoverView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                coverDecoration
             }
             CoverMaterialTexture(seed: book.coverStyle)
                 .blendMode(.softLight)
@@ -77,35 +76,6 @@ struct BookCoverView: View {
         }
     }
 
-    private var coverDecoration: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("墨架典藏")
-                    .font(.system(size: compact ? 6.5 : 8, weight: .medium, design: .serif))
-                    .tracking(compact ? 1.2 : 1.8)
-                    .opacity(0.82)
-                Spacer(minLength: 0)
-            }
-            Spacer(minLength: 0)
-            VStack(spacing: compact ? 5 : 8) {
-                Rectangle()
-                    .fill(.white.opacity(0.64))
-                    .frame(width: compact ? 22 : 32, height: 0.8)
-                Circle()
-                    .fill(.white.opacity(0.72))
-                    .frame(width: compact ? 4 : 6, height: compact ? 4 : 6)
-                Rectangle()
-                    .fill(.white.opacity(0.4))
-                    .frame(width: compact ? 14 : 20, height: 0.7)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, compact ? 5 : 8)
-            .padding(.vertical, compact ? 8 : 12)
-            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: compact ? 3 : 5))
-        }
-        .foregroundStyle(.white.opacity(0.94))
-        .padding(compact ? 9 : 14)
-    }
 }
 
 private struct CoverMaterialTexture: View {
