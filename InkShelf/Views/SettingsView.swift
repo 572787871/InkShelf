@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var readAloud: ReadAloudService
     @AppStorage("readerTheme") private var theme = ReaderTheme.paper.rawValue
     @AppStorage("readerFont") private var font = ReaderFont.system.rawValue
     @AppStorage("pageTurnStyle") private var pageTurn = PageTurnStyle.curl.rawValue
@@ -37,7 +36,6 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }
-        .overlay { PersistentReadAloudOverlay(readAloud: readAloud, bottomPadding: 18) }
     }
 }
 

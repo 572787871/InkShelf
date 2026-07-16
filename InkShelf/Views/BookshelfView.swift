@@ -169,6 +169,11 @@ struct BookshelfView: View {
             }
         }
         .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.immediately)
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded { dismissSearchKeyboard() }
+        )
     }
 
     private var importingOverlay: some View {
@@ -182,13 +187,7 @@ struct BookshelfView: View {
 
     private func openReader(_ book: NovelBook) {
         guard selectedBookID == nil else { return }
-        searchFieldFocused = false
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil,
-            from: nil,
-            for: nil
-        )
+        dismissSearchKeyboard()
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
         var transaction = Transaction()
@@ -196,6 +195,17 @@ struct BookshelfView: View {
         withTransaction(transaction) {
             selectedBookID = book.id
         }
+    }
+
+    private func dismissSearchKeyboard() {
+        guard searchFieldFocused else { return }
+        searchFieldFocused = false
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 
     private func closeReader(bookID: UUID) {
