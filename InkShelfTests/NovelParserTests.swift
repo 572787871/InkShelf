@@ -459,6 +459,78 @@ final class ReaderThemeTests: XCTestCase {
     }
 }
 
+final class ReadAloudTimelineTests: XCTestCase {
+    private func pages(chapterIndices: [Int]) -> [ReaderPage] {
+        chapterIndices.enumerated().map { overallIndex, chapterIndex in
+            let pageInChapter = chapterIndices[..<overallIndex].filter { $0 == chapterIndex }.count + 1
+            let pageCount = chapterIndices.filter { $0 == chapterIndex }.count
+            return ReaderPage(
+                location: ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: pageInChapter - 1),
+                chapterTitle: "第\(chapterIndex + 1)章",
+                text: "第\(chapterIndex + 1)章第\(pageInChapter)页。",
+                pageInChapter: pageInChapter,
+                pageCountInChapter: pageCount,
+                overallIndex: overallIndex,
+                overallCount: chapterIndices.count
+            )
+        }
+    }
+
+    func testElapsedTimeMapsBackToTheSamePageAndUTF16Location() {
+        let texts = ["第一章正文。", "第二页包含 emoji 📖。", "第三页结束。"]
+        let pages = texts.enumerated().map { index, text in
+            ReaderPage(
+                location: ReaderPageLocation(chapterIndex: index == 2 ? 1 : 0, pageIndex: index == 2 ? 0 : index),
+                chapterTitle: index == 2 ? "第二章" : "第一章",
+                text: text,
+                pageInChapter: index == 2 ? 1 : index + 1,
+                pageCountInChapter: index == 2 ? 1 : 2,
+                overallIndex: index,
+                overallCount: texts.count
+            )
+        }
+        let timeline = ReadAloudTimeline(pages: pages)
+        let utf16Location = 5
+        let elapsed = timeline.elapsedTime(pageIndex: 1, utf16Location: utf16Location)
+
+        XCTAssertEqual(
+            timeline.position(at: elapsed),
+            ReadAloudTimeline.Position(pageIndex: 1, utf16Location: utf16Location)
+        )
+        XCTAssertGreaterThan(timeline.duration, elapsed)
+    }
+
+    func testTimelineClampsScrubbingAtBookBoundaries() {
+        let page = ReaderPage(
+            location: ReaderPageLocation(chapterIndex: 0, pageIndex: 0),
+            chapterTitle: "正文",
+            text: "用于测试时间轴边界。",
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+        let timeline = ReadAloudTimeline(pages: [page])
+
+        XCTAssertEqual(timeline.position(at: -10)?.utf16Location, 0)
+        XCTAssertEqual(
+            timeline.position(at: timeline.duration + 100)?.utf16Location,
+            (page.text as NSString).length - 1
+        )
+    }
+
+    func testChapterNavigationAlwaysTargetsTheAdjacentChapterFirstPage() {
+        let pages = pages(chapterIndices: [0, 0, 1, 1, 1, 2])
+
+        XCTAssertEqual(ReadAloudChapterNavigator.nextChapterPageIndex(in: pages, from: 1), 2)
+        XCTAssertEqual(ReadAloudChapterNavigator.nextChapterPageIndex(in: pages, from: 3), 5)
+        XCTAssertEqual(ReadAloudChapterNavigator.previousChapterPageIndex(in: pages, from: 4), 0)
+        XCTAssertEqual(ReadAloudChapterNavigator.previousChapterPageIndex(in: pages, from: 5), 2)
+        XCTAssertNil(ReadAloudChapterNavigator.previousChapterPageIndex(in: pages, from: 0))
+        XCTAssertNil(ReadAloudChapterNavigator.nextChapterPageIndex(in: pages, from: 5))
+    }
+}
+
 final class ReaderRuntimeTests: XCTestCase {
     func testDefaultBookCoverAssetsAreBundled() {
         for style in 0..<BookPalette.styles.count {

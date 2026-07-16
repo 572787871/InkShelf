@@ -15,8 +15,93 @@ enum ReadAloudState: Equatable {
 struct ReadAloudBookContext: Equatable {
     let id: UUID
     let title: String
+    let author: String
     let coverData: Data?
     let coverStyle: Int
+}
+
+struct ReadAloudTimeline: Equatable {
+    struct Position: Equatable {
+        let pageIndex: Int
+        let utf16Location: Int
+    }
+
+    static let estimatedUTF16UnitsPerSecond = 4.2
+
+    let pageStarts: [Int]
+    let pageLengths: [Int]
+    let totalUnits: Int
+
+    init(pages: [ReaderPage]) {
+        var starts: [Int] = []
+        var lengths: [Int] = []
+        var cursor = 0
+        for page in pages {
+            let textLength = (page.text as NSString).length
+            starts.append(cursor)
+            lengths.append(textLength)
+            cursor += max(1, textLength)
+        }
+        pageStarts = starts
+        pageLengths = lengths
+        totalUnits = cursor
+    }
+
+    var duration: TimeInterval {
+        guard totalUnits > 0 else { return 0 }
+        return Double(totalUnits) / Self.estimatedUTF16UnitsPerSecond
+    }
+
+    func elapsedTime(pageIndex: Int, utf16Location: Int) -> TimeInterval {
+        guard pageStarts.indices.contains(pageIndex) else { return 0 }
+        let localLength = pageLengths[pageIndex]
+        let localPosition = min(max(0, utf16Location), localLength)
+        return min(duration, Double(pageStarts[pageIndex] + localPosition) / Self.estimatedUTF16UnitsPerSecond)
+    }
+
+    func position(at elapsedTime: TimeInterval) -> Position? {
+        guard !pageStarts.isEmpty else { return nil }
+        let targetUnit = min(
+            max(0, Int((elapsedTime * Self.estimatedUTF16UnitsPerSecond).rounded())),
+            max(0, totalUnits - 1)
+        )
+        var lowerBound = 0
+        var upperBound = pageStarts.count
+        while lowerBound < upperBound {
+            let middle = (lowerBound + upperBound) / 2
+            if pageStarts[middle] <= targetUnit {
+                lowerBound = middle + 1
+            } else {
+                upperBound = middle
+            }
+        }
+        let pageIndex = max(0, lowerBound - 1)
+        let localPosition = min(
+            max(0, targetUnit - pageStarts[pageIndex]),
+            pageLengths[pageIndex]
+        )
+        return Position(pageIndex: pageIndex, utf16Location: localPosition)
+    }
+}
+
+struct ReadAloudChapterNavigator {
+    static func nextChapterPageIndex(in pages: [ReaderPage], from currentIndex: Int) -> Int? {
+        guard pages.indices.contains(currentIndex) else { return nil }
+        let currentChapter = pages[currentIndex].location.chapterIndex
+        return pages.indices.first {
+            $0 > currentIndex && pages[$0].location.chapterIndex != currentChapter
+        }
+    }
+
+    static func previousChapterPageIndex(in pages: [ReaderPage], from currentIndex: Int) -> Int? {
+        guard pages.indices.contains(currentIndex) else { return nil }
+        let currentChapter = pages[currentIndex].location.chapterIndex
+        guard let previousPageIndex = pages.indices.last(where: {
+            $0 < currentIndex && pages[$0].location.chapterIndex != currentChapter
+        }) else { return nil }
+        let previousChapter = pages[previousPageIndex].location.chapterIndex
+        return pages.indices.first { pages[$0].location.chapterIndex == previousChapter }
+    }
 }
 
 /// A stable UTF-16 text plan shared by speech, highlighting and paragraph buttons.
@@ -98,6 +183,11 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var nextSentenceIndex = 0
     private var sessionPages: [ReaderPage] = []
     private var sessionPageIndex: Int?
+    private var sessionChapterIndices: [Int] = []
+    private var timeline = ReadAloudTimeline(pages: [])
+    private var nowPlayingAnchorElapsed: TimeInterval = 0
+    private var nowPlayingAnchorDate: Date?
+    private var nowPlayingArtwork: MPMediaItemArtwork?
     private var interruptionObserver: NSObjectProtocol?
     private var shouldResumeAfterInterruption = false
 
@@ -143,12 +233,16 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         sessionPages = pages
         sessionPageIndex = pageIndex
+        timeline = ReadAloudTimeline(pages: pages)
+        sessionChapterIndices = chapterIndices(in: pages)
         bookContext = ReadAloudBookContext(
             id: book.id,
             title: book.title,
+            author: book.author,
             coverData: book.coverData,
             coverStyle: book.coverStyle
         )
+        nowPlayingArtwork = makeNowPlayingArtwork(for: bookContext)
         setPage(
             text: pages[pageIndex].text,
             location: pages[pageIndex].location,
@@ -162,12 +256,19 @@ final class ReadAloudService: NSObject, ObservableObject {
         sessionPageIndex = pageIndex
         let page = sessionPages[pageIndex]
         setPage(text: page.text, location: page.location)
-        if continuePlaying { play() }
+        if continuePlaying {
+            play()
+        } else {
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+        }
     }
 
     func refreshSessionPages(_ pages: [ReaderPage], for bookID: UUID) {
         guard bookContext?.id == bookID, let currentPageLocation else { return }
         sessionPages = pages
+        timeline = ReadAloudTimeline(pages: pages)
+        sessionChapterIndices = chapterIndices(in: pages)
         sessionPageIndex = pages.firstIndex { $0.location == currentPageLocation }
             ?? pages.lastIndex {
                 $0.location.chapterIndex == currentPageLocation.chapterIndex
@@ -176,6 +277,9 @@ final class ReadAloudService: NSObject, ObservableObject {
             ?? pages.firstIndex {
                 $0.location.chapterIndex == currentPageLocation.chapterIndex
             }
+        synchronizeNowPlayingAnchorToCurrentSentence()
+        updateRemoteCommandAvailability()
+        updateNowPlayingInfo()
     }
 
     func setPage(text: String, location: ReaderPageLocation, startAtUTF16Location: Int = 0) {
@@ -195,6 +299,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         currentSentenceRange = plan.sentences[startIndex].range
         nextSentenceIndex = startIndex
         state = .ready
+        synchronizeNowPlayingAnchorToCurrentSentence()
+        updateRemoteCommandAvailability()
     }
 
     func play() {
@@ -203,6 +309,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
             state = .playing(sentence: currentSentenceIndex)
+            nowPlayingAnchorDate = .now
             updateNowPlayingInfo()
             return
         }
@@ -213,11 +320,13 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         enqueueSentence(at: nextSentenceIndex)
         state = .playing(sentence: currentSentenceIndex)
+        nowPlayingAnchorDate = .now
         updateNowPlayingInfo()
     }
 
     func pause() {
         guard synthesizer.isSpeaking else { return }
+        freezeNowPlayingPosition()
         synthesizer.pauseSpeaking(at: .word)
         state = .paused(sentence: currentSentenceIndex)
         updateNowPlayingInfo()
@@ -234,10 +343,16 @@ final class ReadAloudService: NSObject, ObservableObject {
         nextSentenceIndex = 0
         sessionPages = []
         sessionPageIndex = nil
+        sessionChapterIndices = []
+        timeline = ReadAloudTimeline(pages: [])
+        nowPlayingAnchorElapsed = 0
+        nowPlayingAnchorDate = nil
+        nowPlayingArtwork = nil
         onPageFinished = nil
         shouldResumeAfterInterruption = false
         state = .unavailable
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        updateRemoteCommandAvailability()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -248,6 +363,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         currentSentenceIndex = index
         currentSentenceRange = plan.sentences[index].range
         nextSentenceIndex = index
+        synchronizeNowPlayingAnchorToCurrentSentence()
         play()
     }
 
@@ -312,12 +428,63 @@ final class ReadAloudService: NSObject, ObservableObject {
         play()
     }
 
+    private func seek(to elapsedTime: TimeInterval) {
+        guard let position = timeline.position(at: elapsedTime),
+              sessionPages.indices.contains(position.pageIndex) else { return }
+        let shouldContinuePlaying = isPlaying
+        sessionPageIndex = position.pageIndex
+        let page = sessionPages[position.pageIndex]
+        setPage(
+            text: page.text,
+            location: page.location,
+            startAtUTF16Location: position.utf16Location
+        )
+        if shouldContinuePlaying {
+            play()
+        } else {
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+        }
+    }
+
+    private func skipChapter(forward: Bool) {
+        guard let targetIndex = forward ? nextChapterPageIndex : previousChapterPageIndex,
+              sessionPages.indices.contains(targetIndex) else { return }
+        let shouldContinuePlaying = isPlaying
+        sessionPageIndex = targetIndex
+        let page = sessionPages[targetIndex]
+        setPage(text: page.text, location: page.location)
+        if shouldContinuePlaying {
+            play()
+        } else {
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+        }
+    }
+
+    private var nextChapterPageIndex: Int? {
+        guard let sessionPageIndex else { return nil }
+        return ReadAloudChapterNavigator.nextChapterPageIndex(
+            in: sessionPages,
+            from: sessionPageIndex
+        )
+    }
+
+    private var previousChapterPageIndex: Int? {
+        guard let sessionPageIndex else { return nil }
+        return ReadAloudChapterNavigator.previousChapterPageIndex(
+            in: sessionPages,
+            from: sessionPageIndex
+        )
+    }
+
     private func configureRemoteCommands() {
         let commands = MPRemoteCommandCenter.shared()
         commands.playCommand.isEnabled = true
         commands.pauseCommand.isEnabled = true
         commands.togglePlayPauseCommand.isEnabled = true
         commands.stopCommand.isEnabled = true
+        commands.changePlaybackPositionCommand.isEnabled = true
         commands.playCommand.addTarget { [weak self] _ in
             guard self != nil else { return .noActionableNowPlayingItem }
             Task { @MainActor in self?.play() }
@@ -341,8 +508,33 @@ final class ReadAloudService: NSObject, ObservableObject {
             Task { @MainActor in self?.stop() }
             return .success
         }
-        commands.nextTrackCommand.isEnabled = false
-        commands.previousTrackCommand.isEnabled = false
+        commands.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard self != nil,
+                  let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .noActionableNowPlayingItem
+            }
+            let positionTime = positionEvent.positionTime
+            Task { @MainActor in self?.seek(to: positionTime) }
+            return .success
+        }
+        commands.nextTrackCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
+            Task { @MainActor in self?.skipChapter(forward: true) }
+            return .success
+        }
+        commands.previousTrackCommand.addTarget { [weak self] _ in
+            guard self != nil else { return .noActionableNowPlayingItem }
+            Task { @MainActor in self?.skipChapter(forward: false) }
+            return .success
+        }
+        updateRemoteCommandAvailability()
+    }
+
+    private func updateRemoteCommandAvailability() {
+        let commands = MPRemoteCommandCenter.shared()
+        commands.changePlaybackPositionCommand.isEnabled = timeline.duration > 0
+        commands.nextTrackCommand.isEnabled = nextChapterPageIndex != nil
+        commands.previousTrackCommand.isEnabled = previousChapterPageIndex != nil
     }
 
     private func observeAudioInterruptions() {
@@ -374,21 +566,67 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private func updateNowPlayingInfo() {
         guard let bookContext else { return }
+        let page = sessionPageIndex.flatMap { sessionPages.indices.contains($0) ? sessionPages[$0] : nil }
+        let chapterTitle = page?.chapterTitle ?? "正文"
+        let elapsedTime = estimatedNowPlayingElapsedTime()
+        let chapterQueueIndex = page.flatMap { currentPage in
+            sessionChapterIndices.firstIndex(of: currentPage.location.chapterIndex)
+        } ?? 0
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: bookContext.title,
-            MPMediaItemPropertyArtist: "墨架朗读",
+            MPMediaItemPropertyTitle: chapterTitle,
+            MPMediaItemPropertyArtist: "\(bookContext.title) · \(bookContext.author)",
             MPMediaItemPropertyAlbumTitle: bookContext.title,
             MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue,
+            MPMediaItemPropertyPlaybackDuration: timeline.duration,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedTime,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1 : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1,
-            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+            MPNowPlayingInfoPropertyPlaybackQueueIndex: chapterQueueIndex,
+            MPNowPlayingInfoPropertyPlaybackQueueCount: sessionChapterIndices.count
         ]
-        let coverImage = bookContext.coverData.flatMap { UIImage(data: $0) }
-            ?? UIImage(named: BookPalette.defaultCoverAssetName(for: bookContext.coverStyle))
-        if let coverImage {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: coverImage.size) { _ in coverImage }
+        if let nowPlayingArtwork {
+            info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func chapterIndices(in pages: [ReaderPage]) -> [Int] {
+        pages.reduce(into: [Int]()) { indices, page in
+            let chapterIndex = page.location.chapterIndex
+            if indices.last != chapterIndex { indices.append(chapterIndex) }
+        }
+    }
+
+    private func makeNowPlayingArtwork(for context: ReadAloudBookContext) -> MPMediaItemArtwork? {
+        let coverImage = context.coverData.flatMap { UIImage(data: $0) }
+            ?? UIImage(named: BookPalette.defaultCoverAssetName(for: context.coverStyle))
+        guard let coverImage else { return nil }
+        return MPMediaItemArtwork(boundsSize: coverImage.size) { _ in coverImage }
+    }
+
+    private func synchronizeNowPlayingAnchorToCurrentSentence() {
+        guard let sessionPageIndex else { return }
+        nowPlayingAnchorElapsed = timeline.elapsedTime(
+            pageIndex: sessionPageIndex,
+            utf16Location: currentSentenceRange?.location ?? 0
+        )
+        nowPlayingAnchorDate = isPlaying ? .now : nil
+    }
+
+    private func estimatedNowPlayingElapsedTime(at date: Date = .now) -> TimeInterval {
+        let elapsedSinceAnchor: TimeInterval
+        if isPlaying, let nowPlayingAnchorDate {
+            elapsedSinceAnchor = max(0, date.timeIntervalSince(nowPlayingAnchorDate))
+        } else {
+            elapsedSinceAnchor = 0
+        }
+        return min(timeline.duration, max(0, nowPlayingAnchorElapsed + elapsedSinceAnchor))
+    }
+
+    private func freezeNowPlayingPosition() {
+        nowPlayingAnchorElapsed = estimatedNowPlayingElapsedTime()
+        nowPlayingAnchorDate = nil
     }
 }
 
@@ -404,6 +642,7 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
             currentSentenceRange = plan.sentences[index].range
             nextSentenceIndex = index
             state = .playing(sentence: index)
+            synchronizeNowPlayingAnchorToCurrentSentence()
             updateNowPlayingInfo()
         }
     }
