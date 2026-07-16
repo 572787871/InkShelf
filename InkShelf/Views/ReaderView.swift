@@ -21,6 +21,7 @@ struct ReaderView: View {
     @State private var showingNote = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
+    @State private var isBrowsingAwayFromReadAloud = false
     @State private var originalReadAloudLocation: ReaderPageLocation?
     @State private var scrubbedWholeBookChapterIndex: Double?
     @State private var isScrubbingWholeBookProgress = false
@@ -176,12 +177,16 @@ struct ReaderView: View {
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
         .onChange(of: readAloud.state) { _, state in
             if case let .failed(message) = state { readAloudError = message }
+            if !readAloud.hasSession { isBrowsingAwayFromReadAloud = false }
         }
         .onChange(of: readAloud.currentPageLocation) { _, playingLocation in
             guard isCurrentReadAloudSession,
-                  let playingLocation,
-                  playingLocation != location,
-                  automatedTurnTarget == nil else { return }
+                  let playingLocation else { return }
+            if isBrowsingAwayFromReadAloud {
+                if playingLocation == location { isBrowsingAwayFromReadAloud = false }
+                return
+            }
+            guard playingLocation != location, automatedTurnTarget == nil else { return }
             location = catalog.nearest(to: playingLocation) ?? playingLocation
             persist(location)
         }
@@ -327,20 +332,34 @@ struct ReaderView: View {
     }
 
     private func commit(_ settledLocation: ReaderPageLocation) {
-        guard settledLocation != location else { return }
-        let shouldContinuePlaying = readAloud.isPlaying || automatedTurnTarget == settledLocation
+        let isAutomatedTurn = automatedTurnTarget == settledLocation
+        let shouldContinuePlaying = readAloud.isPlaying || isAutomatedTurn
         let hadReadAloudSession = isCurrentReadAloudSession
         automatedTurnTarget = nil
-        location = settledLocation
-        persist(settledLocation)
+        if settledLocation != location {
+            location = settledLocation
+            persist(settledLocation)
+        }
         guard hadReadAloudSession else { return }
-        readAloud.moveSession(to: settledLocation, continuePlaying: shouldContinuePlaying)
+        if isAutomatedTurn {
+            isBrowsingAwayFromReadAloud = false
+            if readAloud.currentPageLocation != settledLocation {
+                readAloud.moveSession(to: settledLocation, continuePlaying: shouldContinuePlaying)
+            }
+        } else {
+            isBrowsingAwayFromReadAloud = readAloud.currentPageLocation != settledLocation
+        }
     }
 
     private func jump(to requestedLocation: ReaderPageLocation) {
         let settled = catalog.nearest(to: requestedLocation) ?? requestedLocation
-        location = settled
-        persist(settled)
+        if settled != location {
+            location = settled
+            persist(settled)
+        }
+        if isCurrentReadAloudSession {
+            isBrowsingAwayFromReadAloud = readAloud.currentPageLocation != settled
+        }
     }
 
     private func startReadingCurrentPage() {
@@ -366,6 +385,7 @@ struct ReaderView: View {
 
     private func beginReading(book: NovelBook, page: ReaderPage, paragraphLocation: Int?) {
         if originalReadAloudLocation == nil { originalReadAloudLocation = location }
+        isBrowsingAwayFromReadAloud = false
         attachPageFinishHandler()
         readAloud.startSession(
             book: book,
@@ -383,7 +403,10 @@ struct ReaderView: View {
     }
 
     private func autoAdvanceReadAloud() {
-        guard readAloud.currentPageLocation == location else { return }
+        guard readAloud.currentPageLocation == location else {
+            readAloud.continueAfterPageFinishedWithoutTurningReader()
+            return
+        }
         guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
             readAloud.stop()
             originalReadAloudLocation = nil

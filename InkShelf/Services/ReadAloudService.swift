@@ -302,6 +302,11 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
+    func continueAfterPageFinishedWithoutTurningReader() {
+        guard playbackRequested else { return }
+        advanceInBackground()
+    }
+
     func refreshSessionPages(_ pages: [ReaderPage], for bookID: UUID) {
         guard bookContext?.id == bookID, let currentPageLocation else { return }
         sessionPages = pages
