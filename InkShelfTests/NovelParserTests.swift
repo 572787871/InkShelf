@@ -415,6 +415,14 @@ final class BookProgressTests: XCTestCase {
 }
 
 final class ReaderThemeTests: XCTestCase {
+    func testEmailLoginInputValidationAndNormalization() {
+        let valid = EmailLoginInput(email: "  Reader@Example.COM ", password: "123456")
+        XCTAssertNil(valid.validationMessage)
+        XCTAssertEqual(valid.normalizedEmail, "reader@example.com")
+        XCTAssertNotNil(EmailLoginInput(email: "reader.example.com", password: "123456").validationMessage)
+        XCTAssertNotNil(EmailLoginInput(email: "reader@example.com", password: "123").validationMessage)
+    }
+
     func testEveryThemeHasAnOpaqueDistinctPaperBackColor() {
         for theme in ReaderTheme.allCases {
             let front = UIColor(theme.background)

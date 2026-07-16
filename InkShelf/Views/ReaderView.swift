@@ -168,6 +168,9 @@ struct ReaderView: View {
             readAloud.readerDidDisappear(bookID: bookID)
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
+        .onChange(of: keepScreenAwake) { _, enabled in
+            UIApplication.shared.isIdleTimerDisabled = enabled
+        }
         .onChange(of: showingIndex) { _, _ in reportBlockingState() }
         .onChange(of: showingNote) { _, _ in reportBlockingState() }
         .onChange(of: readAloud.state) { _, state in
@@ -831,6 +834,10 @@ struct ReaderView: View {
                 }
                 .labelsHidden()
                 Spacer()
+                Toggle("常亮", isOn: $keepScreenAwake)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .fixedSize()
                 Picker("翻页", selection: $turnRaw) {
                     ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
