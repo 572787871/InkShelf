@@ -496,10 +496,18 @@ private final class ReaderPageContentView: UIView {
         }
         textView.layoutManager.ensureLayout(for: textView.textContainer)
         let prefixLength = page.chapterHeadingPrefix.utf16.count
+        let bodyCharacterRange = NSRange(location: prefixLength, length: page.text.utf16.count)
+        let laidOutGlyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        let laidOutCharacterRange = textView.layoutManager.characterRange(
+            forGlyphRange: laidOutGlyphRange,
+            actualGlyphRange: nil
+        )
         for (index, button) in paragraphButtons.enumerated() {
             let paragraphRange = paragraphRanges[index]
             let displayRange = NSRange(location: prefixLength + paragraphRange.location, length: 1)
-            guard NSMaxRange(displayRange) <= textView.attributedText.length else {
+            guard NSMaxRange(displayRange) <= textView.attributedText.length,
+                  NSIntersectionRange(displayRange, bodyCharacterRange).length == displayRange.length,
+                  NSIntersectionRange(displayRange, laidOutCharacterRange).length == displayRange.length else {
                 button.isHidden = true
                 continue
             }
@@ -507,10 +515,19 @@ private final class ReaderPageContentView: UIView {
                 forCharacterRange: displayRange,
                 actualCharacterRange: nil
             )
+            guard glyphRange.length > 0,
+                  NSIntersectionRange(glyphRange, laidOutGlyphRange).length == glyphRange.length else {
+                button.isHidden = true
+                continue
+            }
             let glyphRect = textView.layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
+            guard !glyphRect.isNull, !glyphRect.isInfinite, glyphRect.height > 0.5 else {
+                button.isHidden = true
+                continue
+            }
             let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 16) / 2)
             button.frame = CGRect(x: textView.frame.minX + 3, y: y, width: 24, height: 16)
-            button.isHidden = !textView.frame.insetBy(dx: 0, dy: -4).intersects(button.frame)
+            button.isHidden = !textView.frame.insetBy(dx: 0, dy: -2).contains(button.frame)
         }
     }
 
