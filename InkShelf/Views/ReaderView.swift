@@ -463,15 +463,26 @@ struct ReaderView: View {
 
     private func readerChrome(book: NovelBook) -> some View {
         return VStack {
-            HStack(spacing: 18) {
-                Button { requestClose() } label: { Image(systemName: "chevron.left") }
+            HStack(spacing: 0) {
+                Button { requestClose() } label: {
+                    ZStack(alignment: .leading) {
+                        Color.clear
+                        Image(systemName: "chevron.left")
+                            .padding(.leading, 8)
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(book.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(safeChapter(in: book).title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .padding(.leading, 4)
                 Spacer()
-                Button { toggleBookmark(book: book) } label: { Image(systemName: isBookmarked(book) ? "bookmark.fill" : "bookmark") }
-                Button { showingNote = true } label: { Image(systemName: "square.and.pencil") }
+                HStack(spacing: 18) {
+                    Button { toggleBookmark(book: book) } label: { Image(systemName: isBookmarked(book) ? "bookmark.fill" : "bookmark") }
+                    Button { showingNote = true } label: { Image(systemName: "square.and.pencil") }
+                }
             }
             .font(.system(size: 18, weight: .medium))
             .padding(.horizontal, 18)
@@ -1017,7 +1028,8 @@ struct ReaderReadAloudFloater: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .bold))
-                    .frame(width: 26, height: 38)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("关闭朗读")

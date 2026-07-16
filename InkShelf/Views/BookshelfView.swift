@@ -101,6 +101,7 @@ struct BookshelfView: View {
                                 }
                             )
                             .frame(width: 28)
+                            .padding(.top, 110)
                         }
                         .zIndex(10)
                     }
