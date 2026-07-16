@@ -20,6 +20,36 @@ struct ReadAloudBookContext: Equatable {
     let coverStyle: Int
 }
 
+enum NowPlayingArtworkRenderer {
+    static let preferredDimension: CGFloat = 1024
+
+    static func squareImage(from source: UIImage, dimension: CGFloat) -> UIImage {
+        let side = max(1, dimension.rounded(.up))
+        guard source.size.width > 0, source.size.height > 0 else { return source }
+
+        let scale = max(side / source.size.width, side / source.size.height)
+        let drawSize = CGSize(
+            width: source.size.width * scale,
+            height: source.size.height * scale
+        )
+        let drawRect = CGRect(
+            x: (side - drawSize.width) / 2,
+            y: (side - drawSize.height) / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = true
+        format.scale = 1
+        return UIGraphicsImageRenderer(
+            size: CGSize(width: side, height: side),
+            format: format
+        ).image { _ in
+            source.draw(in: drawRect)
+        }
+    }
+}
+
 struct ReadAloudTimeline: Equatable {
     struct Position: Equatable {
         let pageIndex: Int
@@ -631,7 +661,19 @@ final class ReadAloudService: NSObject, ObservableObject {
         let coverImage = context.coverData.flatMap { UIImage(data: $0) }
             ?? UIImage(named: BookPalette.defaultCoverAssetName(for: context.coverStyle))
         guard let coverImage else { return nil }
-        return MPMediaItemArtwork(boundsSize: coverImage.size) { _ in coverImage }
+        let boundsSize = CGSize(
+            width: NowPlayingArtworkRenderer.preferredDimension,
+            height: NowPlayingArtworkRenderer.preferredDimension
+        )
+        return MPMediaItemArtwork(boundsSize: boundsSize) { requestedSize in
+            let requestedSide = max(requestedSize.width, requestedSize.height)
+            return NowPlayingArtworkRenderer.squareImage(
+                from: coverImage,
+                dimension: requestedSide > 0
+                    ? requestedSide
+                    : NowPlayingArtworkRenderer.preferredDimension
+            )
+        }
     }
 
     private func synchronizeNowPlayingAnchorToCurrentSentence() {

@@ -579,6 +579,18 @@ final class ReadAloudTimelineTests: XCTestCase {
 }
 
 final class ReaderRuntimeTests: XCTestCase {
+    func testNowPlayingArtworkIsSquareForPortraitBookCover() {
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 180, height: 300)).image { context in
+            context.cgContext.setFillColor(UIColor.systemBrown.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: 180, height: 300))
+        }
+        let artwork = NowPlayingArtworkRenderer.squareImage(from: source, dimension: 320)
+
+        XCTAssertEqual(artwork.size.width, 320)
+        XCTAssertEqual(artwork.size.height, 320)
+        XCTAssertEqual(artwork.size.width, artwork.size.height)
+    }
+
     func testDefaultBookCoverAssetsAreBundled() {
         for style in 0..<BookPalette.styles.count {
             let assetName = BookPalette.defaultCoverAssetName(for: style)
