@@ -8,6 +8,7 @@ struct ReaderView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
     @Environment(\.dismiss) private var dismiss
     let bookID: UUID
+    let preferredInitialLocation: ReaderPageLocation?
     let interactionDisabled: Bool
     let onRequestClose: (() -> Void)?
     let onReady: () -> Void
@@ -79,12 +80,14 @@ struct ReaderView: View {
 
     init(
         bookID: UUID,
+        preferredInitialLocation: ReaderPageLocation? = nil,
         interactionDisabled: Bool = false,
         onRequestClose: (() -> Void)? = nil,
         onReady: @escaping () -> Void = { },
         onBlockingStateChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.bookID = bookID
+        self.preferredInitialLocation = preferredInitialLocation
         self.interactionDisabled = interactionDisabled
         self.onRequestClose = onRequestClose
         self.onReady = onReady
@@ -151,8 +154,7 @@ struct ReaderView: View {
             readAloud.readerDidAppear(bookID: bookID)
             if let book {
                 if !hasResolvedInitialLocation,
-                   readAloud.isSession(for: bookID),
-                   let playingLocation = readAloud.currentPageLocation {
+                   let playingLocation = openingReadAloudLocation {
                     location = playingLocation
                     isBrowsingAwayFromReadAloud = false
                     attachPageFinishHandler()
@@ -325,8 +327,8 @@ struct ReaderView: View {
         }.value
         guard !Task.isCancelled else { return }
         let openingNarrationLocation: ReaderPageLocation?
-        if !hasResolvedInitialLocation, isCurrentReadAloudSession {
-            openingNarrationLocation = readAloud.currentPageLocation
+        if !hasResolvedInitialLocation {
+            openingNarrationLocation = openingReadAloudLocation
         } else {
             openingNarrationLocation = nil
         }
@@ -344,6 +346,11 @@ struct ReaderView: View {
         catalog = rebuilt
         readAloud.refreshSessionPages(rebuilt.pages, for: book.id)
         onReady()
+    }
+
+    private var openingReadAloudLocation: ReaderPageLocation? {
+        guard isCurrentReadAloudSession else { return nil }
+        return readAloud.currentPageLocation ?? preferredInitialLocation
     }
 
     private func commit(_ settledLocation: ReaderPageLocation) {

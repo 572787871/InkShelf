@@ -20,6 +20,8 @@ struct BookshelfView: View {
     @State private var readerContentVisible = false
     @State private var readerTransitionInFlight = false
     @State private var readerTransitionToken = UUID()
+    @State private var readerPresentationID = UUID()
+    @State private var readerInitialLocation: ReaderPageLocation?
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("libraryLayout") private var layoutRaw = LibraryLayout.grid.rawValue
@@ -76,9 +78,11 @@ struct BookshelfView: View {
 
                         ReaderView(
                             bookID: selectedBookID,
+                            preferredInitialLocation: readerInitialLocation,
                             onRequestClose: { closeReader(bookID: selectedBookID) },
                             onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 }
                         )
+                        .id(readerPresentationID)
                         .ignoresSafeArea()
                         .offset(
                             y: readerContentVisible
@@ -92,22 +96,30 @@ struct BookshelfView: View {
                         )
                         .allowsHitTesting(readerContentVisible)
                         .overlay(alignment: .leading) {
-                            DirectReaderEdgeDismissGesture(
-                                isEnabled: readerContentVisible
-                                    && !readerTransitionInFlight
-                                    && !readerBlocksEdgeDismiss,
-                                onEnded: { translation, predictedTranslation, width in
-                                    if ReaderDismissGestureDecision.shouldFinish(
-                                        translation: translation,
-                                        predictedTranslation: predictedTranslation,
-                                        width: width
-                                    ) {
-                                        closeReader(bookID: selectedBookID)
-                                    }
-                                }
-                            )
-                            .frame(width: 28)
-                            .padding(.top, 110)
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .allowsHitTesting(
+                                    readerContentVisible
+                                        && !readerTransitionInFlight
+                                        && !readerBlocksEdgeDismiss
+                                )
+                                .gesture(
+                                    DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                                        .onEnded { value in
+                                            guard readerContentVisible,
+                                                  !readerTransitionInFlight,
+                                                  !readerBlocksEdgeDismiss else { return }
+                                            if ReaderDismissGestureDecision.shouldFinish(
+                                                translation: max(0, value.translation.width),
+                                                predictedTranslation: max(0, value.predictedEndTranslation.width),
+                                                width: rootProxy.size.width
+                                            ) {
+                                                closeReader(bookID: selectedBookID)
+                                            }
+                                        }
+                                )
+                                .frame(width: 28)
+                                .padding(.top, 110)
                         }
                         .zIndex(10)
                     }
@@ -266,6 +278,10 @@ struct BookshelfView: View {
         readerBlocksEdgeDismiss = false
         readerTransitionInFlight = true
         readerContentVisible = false
+        readerPresentationID = UUID()
+        readerInitialLocation = readAloud.isSession(for: book.id)
+            ? readAloud.currentPageLocation
+            : nil
         let transitionToken = UUID()
         readerTransitionToken = transitionToken
         selectedBookID = book.id
@@ -305,6 +321,7 @@ struct BookshelfView: View {
         readerTransitionToken = transitionToken
         if reduceMotion {
             selectedBookID = nil
+            readerInitialLocation = nil
             readerBlocksEdgeDismiss = false
             readerContentVisible = false
             readerTransitionInFlight = false
@@ -317,6 +334,7 @@ struct BookshelfView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
             guard selectedBookID == bookID, readerTransitionToken == transitionToken else { return }
             selectedBookID = nil
+            readerInitialLocation = nil
             readerBlocksEdgeDismiss = false
             readerTransitionInFlight = false
         }
@@ -541,53 +559,6 @@ private struct NovelDocumentPicker: UIViewControllerRepresentable {
             guard !hasCompleted else { return }
             hasCompleted = true
             parent.onCancel()
-        }
-    }
-}
-
-private struct DirectReaderEdgeDismissGesture: UIViewRepresentable {
-    let isEnabled: Bool
-    let onEnded: (CGFloat, CGFloat, CGFloat) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onEnded: onEnded)
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        let gesture = UIScreenEdgePanGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handle(_:))
-        )
-        gesture.edges = .left
-        gesture.maximumNumberOfTouches = 1
-        gesture.isEnabled = isEnabled
-        view.addGestureRecognizer(gesture)
-        context.coordinator.gesture = gesture
-        return view
-    }
-
-    func updateUIView(_ view: UIView, context: Context) {
-        context.coordinator.onEnded = onEnded
-        context.coordinator.gesture?.isEnabled = isEnabled
-    }
-
-    final class Coordinator: NSObject {
-        var onEnded: (CGFloat, CGFloat, CGFloat) -> Void
-        weak var gesture: UIScreenEdgePanGestureRecognizer?
-
-        init(onEnded: @escaping (CGFloat, CGFloat, CGFloat) -> Void) {
-            self.onEnded = onEnded
-        }
-
-        @objc func handle(_ recognizer: UIScreenEdgePanGestureRecognizer) {
-            guard recognizer.state == .ended else { return }
-            let translation = max(0, recognizer.translation(in: recognizer.view).x)
-            let velocity = max(0, recognizer.velocity(in: recognizer.view).x)
-            let projected = translation + velocity * 0.18
-            let width = recognizer.view?.window?.bounds.width ?? UIScreen.main.bounds.width
-            onEnded(translation, projected, width)
         }
     }
 }
