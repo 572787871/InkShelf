@@ -294,10 +294,10 @@ struct BookshelfView: View {
 
         DispatchQueue.main.async {
             guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
-            withAnimation(.spring(response: 0.72, dampingFraction: 0.92)) {
+            withAnimation(.easeInOut(duration: 0.34)) {
                 readerContentVisible = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.72) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
                 guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
                 readerTransitionInFlight = false
             }
