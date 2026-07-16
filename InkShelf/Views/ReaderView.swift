@@ -129,7 +129,10 @@ struct ReaderView: View {
                             .ignoresSafeArea()
                         }
                         if chromeVisible { readerChrome(book: book) }
-                        if chromeVisible, readAloudPlayerVisible, isCurrentReadAloudSession {
+                        if chromeVisible,
+                           !showingAppearance,
+                           readAloudPlayerVisible,
+                           isCurrentReadAloudSession {
                             readAloudFloater(book: book)
                         } else if !chromeVisible, isCurrentReadAloudSession {
                             immersiveReadAloudBar
@@ -214,13 +217,6 @@ struct ReaderView: View {
                     jump(to: ReaderPageLocation(chapterIndex: chapter, pageIndex: page))
                     showingIndex = false
                 }
-                .overlay {
-                    PersistentReadAloudOverlay(
-                        readAloud: readAloud,
-                        bottomPadding: 18,
-                        forceVisible: isCurrentReadAloudSession
-                    )
-                }
             }
         }
         .sheet(isPresented: $showingNote) {
@@ -231,13 +227,6 @@ struct ReaderView: View {
                     page: location.pageIndex,
                     excerpt: currentExcerpt(book: book)
                 )
-                .overlay {
-                    PersistentReadAloudOverlay(
-                        readAloud: readAloud,
-                        bottomPadding: 18,
-                        forceVisible: isCurrentReadAloudSession
-                    )
-                }
             }
         }
         .alert(
@@ -369,11 +358,7 @@ struct ReaderView: View {
            readAloud.currentPageLocation == page.location,
            let highlightedRange = readAloud.currentSentenceRange,
            NSIntersectionRange(highlightedRange, range).length > 0 {
-            if readAloud.isPlaying {
-                readAloud.pause()
-            } else {
-                readAloud.play()
-            }
+            readAloud.togglePlayback()
             return
         }
         if page.location != location { jump(to: page.location) }
@@ -562,9 +547,7 @@ struct ReaderView: View {
             bookTitle: book.title,
             coverImage: coverImage,
             coverSignature: coverSignature,
-            onPlayPause: {
-                if readAloud.isPlaying { readAloud.pause() } else { readAloud.play() }
-            },
+            onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()
                 readAloudPlayerVisible = false
@@ -834,10 +817,38 @@ struct ReaderView: View {
                 }
                 .labelsHidden()
                 Spacer()
-                Toggle("常亮", isOn: $keepScreenAwake)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .fixedSize()
+                Button {
+                    keepScreenAwake.toggle()
+                } label: {
+                    Label(
+                        "常亮",
+                        systemImage: keepScreenAwake ? "sun.max.fill" : "sun.max"
+                    )
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(
+                        keepScreenAwake
+                            ? theme.background
+                            : theme.foreground.opacity(0.72)
+                    )
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .background(
+                        keepScreenAwake
+                            ? theme.foreground.opacity(0.78)
+                            : theme.foreground.opacity(0.08),
+                        in: Capsule()
+                    )
+                    .overlay {
+                        Capsule()
+                            .stroke(
+                                theme.foreground.opacity(keepScreenAwake ? 0 : 0.16),
+                                lineWidth: 1
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("阅读时屏幕常亮")
+                .accessibilityValue(keepScreenAwake ? "已开启" : "已关闭")
                 Picker("翻页", selection: $turnRaw) {
                     ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
@@ -1069,9 +1080,7 @@ struct PersistentReadAloudOverlay: View {
                 bookTitle: context.title,
                 coverImage: coverImage,
                 coverSignature: coverSignature,
-                onPlayPause: {
-                    if readAloud.isPlaying { readAloud.pause() } else { readAloud.play() }
-                },
+                onPlayPause: readAloud.togglePlayback,
                 onClose: { readAloud.stop() }
             )
             .padding(.leading, 18)

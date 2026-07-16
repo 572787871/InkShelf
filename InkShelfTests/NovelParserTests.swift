@@ -423,6 +423,41 @@ final class ReaderThemeTests: XCTestCase {
         XCTAssertNotNil(EmailLoginInput(email: "reader@example.com", password: "123").validationMessage)
     }
 
+    func testEmailRegistrationInputValidationAndNormalization() {
+        let valid = EmailRegistrationInput(
+            displayName: "  墨架读者  ",
+            email: "  NewReader@Example.COM ",
+            password: "reader2026",
+            passwordConfirmation: "reader2026",
+            acceptedTerms: true
+        )
+        XCTAssertNil(valid.validationMessage)
+        XCTAssertEqual(valid.normalizedDisplayName, "墨架读者")
+        XCTAssertEqual(valid.normalizedEmail, "newreader@example.com")
+
+        XCTAssertNotNil(EmailRegistrationInput(
+            displayName: "读者",
+            email: "reader@example.com",
+            password: "onlyletters",
+            passwordConfirmation: "onlyletters",
+            acceptedTerms: true
+        ).validationMessage)
+        XCTAssertNotNil(EmailRegistrationInput(
+            displayName: "读者",
+            email: "reader@example.com",
+            password: "reader2026",
+            passwordConfirmation: "reader2025",
+            acceptedTerms: true
+        ).validationMessage)
+        XCTAssertNotNil(EmailRegistrationInput(
+            displayName: "读者",
+            email: "reader@example.com",
+            password: "reader2026",
+            passwordConfirmation: "reader2026",
+            acceptedTerms: false
+        ).validationMessage)
+    }
+
     func testEveryThemeHasAnOpaqueDistinctPaperBackColor() {
         for theme in ReaderTheme.allCases {
             let front = UIColor(theme.background)

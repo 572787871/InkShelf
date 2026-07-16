@@ -6,6 +6,7 @@ import ImageIO
 
 struct BookshelfView: View {
     @EnvironmentObject private var library: LibraryStore
+    @EnvironmentObject private var readAloud: ReadAloudService
     @State private var showingImporter = false
     @State private var showingSettings = false
     @State private var searchText = ""
@@ -41,6 +42,13 @@ struct BookshelfView: View {
                 }
 
                 if library.isImporting { importingOverlay }
+
+                if selectedBookID == nil,
+                   !showingImporter,
+                   !showingSettings,
+                   !showingCoverPicker {
+                    PersistentReadAloudOverlay(readAloud: readAloud)
+                }
 
                 if let selectedBookID,
                    library.book(id: selectedBookID) != nil {

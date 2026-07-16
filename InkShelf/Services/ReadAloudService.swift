@@ -172,12 +172,10 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var bookContext: ReadAloudBookContext?
     @Published private(set) var visibleReaderBookID: UUID?
     @Published private(set) var applicationIsActive = true
+    @Published private(set) var playbackRequested = false
 
     var onPageFinished: (() -> Void)?
-    var isPlaying: Bool {
-        if case .playing = state { return true }
-        return false
-    }
+    var isPlaying: Bool { playbackRequested && hasSession }
     var hasSession: Bool { currentPageLocation != nil && !plan.sentences.isEmpty }
     var shouldShowPersistentFloater: Bool {
         hasSession && bookContext?.id != visibleReaderBookID
@@ -268,6 +266,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         if continuePlaying {
             play()
         } else {
+            playbackRequested = false
             state = .paused(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
         }
@@ -298,6 +297,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         currentPageLocation = location
 
         guard let startIndex = plan.sentenceIndex(atOrAfterUTF16Location: startAtUTF16Location) else {
+            playbackRequested = false
             currentSentenceIndex = 0
             currentSentenceRange = nil
             currentPageLocation = nil
@@ -315,7 +315,12 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func play() {
         guard hasSession else { return }
-        guard configureAudioSession() else { return }
+        playbackRequested = true
+        guard configureAudioSession() else {
+            playbackRequested = false
+            updateNowPlayingInfo()
+            return
+        }
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
             state = .playing(sentence: currentSentenceIndex)
@@ -335,14 +340,25 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     func pause() {
-        guard synthesizer.isSpeaking else { return }
         freezeNowPlayingPosition()
-        synthesizer.pauseSpeaking(at: .word)
+        playbackRequested = false
+        if synthesizer.isSpeaking, !synthesizer.isPaused {
+            synthesizer.pauseSpeaking(at: .immediate)
+        }
         state = .paused(sentence: currentSentenceIndex)
         updateNowPlayingInfo()
     }
 
+    func togglePlayback() {
+        if playbackRequested {
+            pause()
+        } else {
+            play()
+        }
+    }
+
     func stop() {
+        playbackRequested = false
         synthesizer.stopSpeaking(at: .immediate)
         queuedSentenceIndices.removeAll()
         plan = ReadAloudTextPlan(text: "")
@@ -456,6 +472,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         if shouldContinuePlaying {
             play()
         } else {
+            playbackRequested = false
             state = .paused(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
         }
@@ -471,6 +488,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         if shouldContinuePlaying {
             play()
         } else {
+            playbackRequested = false
             state = .paused(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
         }
@@ -511,10 +529,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         commands.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard self != nil else { return .noActionableNowPlayingItem }
-            Task { @MainActor in
-                guard let self else { return }
-                if self.isPlaying { self.pause() } else { self.play() }
-            }
+            Task { @MainActor in self?.togglePlayback() }
             return .success
         }
         commands.stopCommand.addTarget { [weak self] _ in
@@ -675,6 +690,12 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
             currentSentenceIndex = index
             currentSentenceRange = plan.sentences[index].range
             nextSentenceIndex = index
+            guard playbackRequested else {
+                self.synthesizer.pauseSpeaking(at: .immediate)
+                state = .paused(sentence: index)
+                updateNowPlayingInfo()
+                return
+            }
             state = .playing(sentence: index)
             synchronizeNowPlayingAnchorToCurrentSentence()
             updateNowPlayingInfo()
@@ -689,6 +710,12 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
         Task { @MainActor in
             guard let finishedIndex = queuedSentenceIndices.removeValue(forKey: identifier) else { return }
             let candidate = finishedIndex + 1
+            guard playbackRequested else {
+                nextSentenceIndex = min(candidate, max(0, plan.sentences.count - 1))
+                state = .paused(sentence: currentSentenceIndex)
+                updateNowPlayingInfo()
+                return
+            }
             guard candidate >= plan.sentences.count else {
                 nextSentenceIndex = candidate
                 enqueueSentence(at: candidate)
@@ -705,6 +732,35 @@ extension ReadAloudService: AVSpeechSynthesizerDelegate {
             } else {
                 advanceInBackground()
             }
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didPause utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor in
+            if playbackRequested {
+                self.synthesizer.continueSpeaking()
+            } else {
+                state = .paused(sentence: currentSentenceIndex)
+                updateNowPlayingInfo()
+            }
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didContinue utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor in
+            guard playbackRequested else {
+                self.synthesizer.pauseSpeaking(at: .immediate)
+                return
+            }
+            state = .playing(sentence: currentSentenceIndex)
+            nowPlayingAnchorDate = .now
+            updateNowPlayingInfo()
         }
     }
 

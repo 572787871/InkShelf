@@ -12,10 +12,7 @@ struct InkShelfApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                BookshelfView()
-                PersistentReadAloudOverlay(readAloud: readAloud)
-            }
+            BookshelfView()
                 .environmentObject(library)
                 .environmentObject(readAloud)
                 .preferredColorScheme(.light)
