@@ -79,12 +79,6 @@ struct BookshelfView: View {
                                 ? 0
                                 : rootProxy.size.height + rootProxy.safeAreaInsets.bottom + 32
                         )
-                        .clipShape(
-                            RoundedRectangle(
-                                cornerRadius: readerContentVisible ? 0 : 28,
-                                style: .continuous
-                            )
-                        )
                         .shadow(
                             color: .black.opacity(readerContentVisible ? 0 : 0.24),
                             radius: readerContentVisible ? 0 : 18,
