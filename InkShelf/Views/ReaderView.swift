@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import PhotosUI
+import CoreImage
 
 struct ReaderView: View {
     @EnvironmentObject private var library: LibraryStore
@@ -375,15 +376,6 @@ struct ReaderView: View {
         }
     }
 
-    private func moveReadAloudToChapter(_ offset: Int, in book: NovelBook) {
-        let chapterIndex = location.chapterIndex + offset
-        guard book.chapters.indices.contains(chapterIndex) else { return }
-        let target = ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: 0)
-        guard let settled = catalog.nearest(to: target), let page = catalog.page(at: settled) else { return }
-        jump(to: settled)
-        beginReading(page: page, paragraphLocation: nil)
-    }
-
     private func returnToOriginalReadAloudProgress() {
         guard let originalReadAloudLocation else { return }
         readAloud.stop()
@@ -524,14 +516,11 @@ struct ReaderView: View {
     private func readAloudFloater(book: NovelBook) -> some View {
         ReaderReadAloudFloater(
             readAloud: readAloud,
+            bookID: book.id,
             coverData: book.coverData,
-            hasPreviousChapter: location.chapterIndex > 0,
-            hasNextChapter: location.chapterIndex + 1 < book.chapters.count,
-            onPreviousChapter: { moveReadAloudToChapter(-1, in: book) },
             onPlayPause: {
                 if readAloud.isPlaying { readAloud.pause() } else { readAloud.play() }
             },
-            onNextChapter: { moveReadAloudToChapter(1, in: book) },
             onClose: {
                 readAloud.stop()
                 readAloudPlayerVisible = false
@@ -920,19 +909,20 @@ struct ReaderView: View {
 
 private struct ReaderReadAloudFloater: View {
     @ObservedObject var readAloud: ReadAloudService
+    let bookID: UUID
     let coverData: Data?
-    let hasPreviousChapter: Bool
-    let hasNextChapter: Bool
-    let onPreviousChapter: () -> Void
     let onPlayPause: () -> Void
-    let onNextChapter: () -> Void
     let onClose: () -> Void
 
     @State private var settledOffset = CGSize.zero
     @GestureState private var dragOffset = CGSize.zero
 
+    private var palette: ReaderFloaterPalette {
+        ReaderFloaterPalette.cached(bookID: bookID, coverData: coverData)
+    }
+
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             Group {
                 if let coverData, let image = UIImage(data: coverData) {
                     Image(uiImage: image).resizable().scaledToFill()
@@ -940,28 +930,42 @@ private struct ReaderReadAloudFloater: View {
                     Image(systemName: "book.closed.fill")
                         .foregroundStyle(.white.opacity(0.8))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(hex: "6B4E3A"))
+                        .background(Color(uiColor: palette.secondary))
                 }
             }
             .frame(width: 42, height: 42)
             .clipShape(Circle())
+            .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 0.7))
 
-            playerButton("backward.end.fill", enabled: hasPreviousChapter, action: onPreviousChapter)
-            playerButton(readAloud.isPlaying ? "pause.fill" : "play.fill", enabled: true, action: onPlayPause)
+            Button(action: onPlayPause) {
+                Image(systemName: readAloud.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
                 .background(.white.opacity(0.18), in: Circle())
-            playerButton("forward.end.fill", enabled: hasNextChapter, action: onNextChapter)
+            .accessibilityLabel(readAloud.isPlaying ? "暂停朗读" : "继续朗读")
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .bold))
-                    .frame(width: 28, height: 38)
+                    .frame(width: 26, height: 38)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("关闭朗读")
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 8)
         .frame(height: 58)
-        .background(Color(hex: "7B745A").opacity(0.92), in: Capsule())
+        .background(
+            LinearGradient(
+                colors: [Color(uiColor: palette.primary), Color(uiColor: palette.secondary)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: Capsule()
+        )
         .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.7))
         .shadow(color: .black.opacity(0.24), radius: 12, y: 5)
         .offset(
@@ -979,22 +983,85 @@ private struct ReaderReadAloudFloater: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("朗读悬浮控制")
     }
+}
 
-    private func playerButton(
-        _ symbol: String,
-        enabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: symbol.contains("play") || symbol.contains("pause") ? 17 : 12, weight: .semibold))
-                .frame(width: 36, height: 38)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .opacity(enabled ? 1 : 0.34)
-        .disabled(!enabled)
+private struct ReaderFloaterPalette {
+    let primary: UIColor
+    let secondary: UIColor
+
+    private static let cache = NSCache<NSString, ReaderFloaterPaletteBox>()
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
+    static func cached(bookID: UUID, coverData: Data?) -> ReaderFloaterPalette {
+        let key = "\(bookID.uuidString)-\(coverData?.hashValue ?? 0)" as NSString
+        if let cached = cache.object(forKey: key) { return cached.palette }
+
+        let palette = make(from: coverData)
+        cache.setObject(ReaderFloaterPaletteBox(palette), forKey: key)
+        return palette
     }
+
+    private static func make(from coverData: Data?) -> ReaderFloaterPalette {
+        guard let coverData,
+              let image = UIImage(data: coverData),
+              let inputImage = CIImage(image: image),
+              let filter = CIFilter(name: "CIAreaAverage") else {
+            return fallback
+        }
+        filter.setValue(inputImage, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(cgRect: inputImage.extent), forKey: kCIInputExtentKey)
+        guard let outputImage = filter.outputImage else { return fallback }
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        context.render(
+            outputImage,
+            toBitmap: &pixel,
+            rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8,
+            colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        let average = UIColor(
+            red: CGFloat(pixel[0]) / 255,
+            green: CGFloat(pixel[1]) / 255,
+            blue: CGFloat(pixel[2]) / 255,
+            alpha: 1
+        )
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard average.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
+            return fallback
+        }
+
+        let adaptedSaturation = min(0.68, max(0.2, saturation * 0.92))
+        let adaptedBrightness = min(0.5, max(0.32, brightness * 0.72))
+        return ReaderFloaterPalette(
+            primary: UIColor(
+                hue: hue,
+                saturation: adaptedSaturation,
+                brightness: min(0.54, adaptedBrightness + 0.045),
+                alpha: 0.96
+            ),
+            secondary: UIColor(
+                hue: hue,
+                saturation: min(0.72, adaptedSaturation + 0.05),
+                brightness: max(0.27, adaptedBrightness - 0.055),
+                alpha: 0.96
+            )
+        )
+    }
+
+    private static let fallback = ReaderFloaterPalette(
+        primary: UIColor(red: 0.32, green: 0.36, blue: 0.39, alpha: 0.96),
+        secondary: UIColor(red: 0.22, green: 0.25, blue: 0.28, alpha: 0.96)
+    )
+}
+
+private final class ReaderFloaterPaletteBox: NSObject {
+    let palette: ReaderFloaterPalette
+    init(_ palette: ReaderFloaterPalette) { self.palette = palette }
 }
 
 private struct PaginationLayout: Hashable {

@@ -312,6 +312,7 @@ private final class ReaderPageBackgroundView: UIView {
 
 private final class ReaderPageContentView: UIView {
     private let backgroundDecoration = ReaderPageBackgroundView()
+    private let highlightDecoration = UIView()
     private let titleLabel = UILabel()
     private let brandLabel = UILabel()
     private let textView = UITextView()
@@ -340,6 +341,9 @@ private final class ReaderPageContentView: UIView {
             blur: appearance.backgroundBlur
         )
         addSubview(backgroundDecoration)
+        highlightDecoration.isUserInteractionEnabled = false
+        highlightDecoration.backgroundColor = .clear
+        addSubview(highlightDecoration)
 
         titleLabel.text = page.chapterTitle
         titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
@@ -388,6 +392,7 @@ private final class ReaderPageContentView: UIView {
         let headerY = max(16, safeAreaInsets.top + 12)
         let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
         backgroundDecoration.frame = bounds
+        highlightDecoration.frame = bounds
         titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 18)
         brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 18)
         textView.frame = CGRect(x: margin, y: headerY + 42, width: width, height: max(0, footerY - headerY - 64))
@@ -396,6 +401,7 @@ private final class ReaderPageContentView: UIView {
         clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 29, height: 18)
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
+        layoutSentenceHighlight()
         layoutParagraphButtons()
     }
 
@@ -425,7 +431,7 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = appearance.lineSpacing
         paragraph.alignment = .natural
-        paragraph.firstLineHeadIndent = appearance.showsReadAloudControls && !paragraphRanges.isEmpty ? 31 : 0
+        paragraph.firstLineHeadIndent = appearance.showsReadAloudControls && !paragraphRanges.isEmpty ? 26 : 0
         let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -434,19 +440,6 @@ private final class ReaderPageContentView: UIView {
                 .paragraphStyle: paragraph
             ]
         )
-        if appearance.highlightedLocation == page.location,
-           let range = appearance.highlightedRange,
-           range.location >= 0,
-           NSMaxRange(range) <= page.text.utf16.count {
-            let displayRange = NSRange(
-                location: range.location + page.chapterHeadingPrefix.utf16.count,
-                length: range.length
-            )
-            attributed.addAttributes([
-                .backgroundColor: UIColor.systemYellow.withAlphaComponent(0.24),
-                .foregroundColor: appearance.textColor
-            ], range: displayRange)
-        }
         styleChapterTitle(in: attributed)
         return attributed
     }
@@ -471,13 +464,14 @@ private final class ReaderPageContentView: UIView {
         paragraphButtons = paragraphRanges.enumerated().map { index, _ in
             let button = UIButton(type: .system)
             button.tag = index
-            button.tintColor = appearance.textColor.withAlphaComponent(0.42)
-            button.backgroundColor = appearance.backgroundColor.withAlphaComponent(0.46)
-            button.layer.cornerRadius = 8
-            button.layer.borderWidth = 0.8
-            button.layer.borderColor = appearance.textColor.withAlphaComponent(0.24).cgColor
+            button.tintColor = appearance.textColor.withAlphaComponent(0.32)
+            button.backgroundColor = .clear
+            button.layer.cornerRadius = 9
+            button.layer.cornerCurve = .continuous
+            button.layer.borderWidth = 0.6
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(0.14).cgColor
             button.setImage(
-                UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)),
+                UIImage(systemName: "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)),
                 for: .normal
             )
             button.accessibilityLabel = "从本段开始朗读"
@@ -525,8 +519,8 @@ private final class ReaderPageContentView: UIView {
                 button.isHidden = true
                 continue
             }
-            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 16) / 2)
-            button.frame = CGRect(x: textView.frame.minX + 3, y: y, width: 24, height: 16)
+            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 18) / 2)
+            button.frame = CGRect(x: textView.frame.minX + 2, y: y, width: 18, height: 18)
             button.isHidden = !textView.frame.insetBy(dx: 0, dy: -2).contains(button.frame)
         }
     }
@@ -539,15 +533,65 @@ private final class ReaderPageContentView: UIView {
             let isCurrent = highlightedRange.map { NSIntersectionRange($0, paragraphRanges[index]).length > 0 } ?? false
             let symbol = isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
             button.setImage(
-                UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .bold)),
+                UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)),
                 for: .normal
             )
-            button.tintColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.86 : 0.42)
+            button.tintColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.78 : 0.32)
             button.backgroundColor = isCurrent
-                ? UIColor.systemYellow.withAlphaComponent(0.22)
-                : appearance.backgroundColor.withAlphaComponent(0.46)
-            button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.46 : 0.24).cgColor
+                ? readingHighlightColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.18 : 0.1)
+                : appearance.textColor.withAlphaComponent(0.025)
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.3 : 0.14).cgColor
             button.isHidden = !appearance.showsReadAloudControls
+        }
+    }
+
+    private var readingHighlightColor: UIColor {
+        appearance.textColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.12 : 0.075)
+    }
+
+    private func layoutSentenceHighlight() {
+        highlightDecoration.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        guard appearance.highlightedLocation == page.location,
+              let range = appearance.highlightedRange,
+              range.location >= 0,
+              NSMaxRange(range) <= page.text.utf16.count,
+              textView.bounds.width > 0 else { return }
+
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let displayRange = NSRange(
+            location: range.location + page.chapterHeadingPrefix.utf16.count,
+            length: range.length
+        )
+        let highlightGlyphRange = textView.layoutManager.glyphRange(
+            forCharacterRange: displayRange,
+            actualCharacterRange: nil
+        )
+        let laidOutGlyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        let visibleHighlightRange = NSIntersectionRange(highlightGlyphRange, laidOutGlyphRange)
+        guard visibleHighlightRange.length > 0 else { return }
+
+        textView.layoutManager.enumerateLineFragments(forGlyphRange: visibleHighlightRange) {
+            [weak self] _, _, _, lineGlyphRange, _ in
+            guard let self else { return }
+            let segmentRange = NSIntersectionRange(lineGlyphRange, visibleHighlightRange)
+            guard segmentRange.length > 0 else { return }
+            var rect = self.textView.layoutManager.boundingRect(
+                forGlyphRange: segmentRange,
+                in: self.textView.textContainer
+            )
+            guard !rect.isNull, !rect.isInfinite, rect.width > 0.5, rect.height > 0.5 else { return }
+            rect.origin.x += self.textView.frame.minX
+            rect.origin.y += self.textView.frame.minY
+            rect = rect.insetBy(dx: -3, dy: -1.5)
+            rect = rect.intersection(self.textView.frame.insetBy(dx: -2, dy: -1))
+            guard !rect.isNull, rect.width > 1, rect.height > 1 else { return }
+
+            let marker = CAShapeLayer()
+            marker.path = UIBezierPath(roundedRect: rect, cornerRadius: 5).cgPath
+            marker.fillColor = self.readingHighlightColor.cgColor
+            marker.strokeColor = self.appearance.textColor.withAlphaComponent(0.04).cgColor
+            marker.lineWidth = 0.5
+            self.highlightDecoration.layer.addSublayer(marker)
         }
     }
 
