@@ -522,6 +522,10 @@ final class ReadAloudTimelineTests: XCTestCase {
     func testChapterNavigationAlwaysTargetsTheAdjacentChapterFirstPage() {
         let pages = pages(chapterIndices: [0, 0, 1, 1, 1, 2])
 
+        XCTAssertEqual(
+            ReadAloudChapterNavigator.currentChapterPageIndices(in: pages, from: 3),
+            [2, 3, 4]
+        )
         XCTAssertEqual(ReadAloudChapterNavigator.nextChapterPageIndex(in: pages, from: 1), 2)
         XCTAssertEqual(ReadAloudChapterNavigator.nextChapterPageIndex(in: pages, from: 3), 5)
         XCTAssertEqual(ReadAloudChapterNavigator.previousChapterPageIndex(in: pages, from: 4), 0)

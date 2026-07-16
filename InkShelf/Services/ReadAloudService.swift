@@ -85,6 +85,12 @@ struct ReadAloudTimeline: Equatable {
 }
 
 struct ReadAloudChapterNavigator {
+    static func currentChapterPageIndices(in pages: [ReaderPage], from currentIndex: Int) -> [Int] {
+        guard pages.indices.contains(currentIndex) else { return [] }
+        let currentChapter = pages[currentIndex].location.chapterIndex
+        return pages.indices.filter { pages[$0].location.chapterIndex == currentChapter }
+    }
+
     static func nextChapterPageIndex(in pages: [ReaderPage], from currentIndex: Int) -> Int? {
         guard pages.indices.contains(currentIndex) else { return nil }
         let currentChapter = pages[currentIndex].location.chapterIndex
@@ -184,6 +190,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var sessionPages: [ReaderPage] = []
     private var sessionPageIndex: Int?
     private var sessionChapterIndices: [Int] = []
+    private var currentChapterPageIndices: [Int] = []
+    private var timelineChapterIndex: Int?
     private var timeline = ReadAloudTimeline(pages: [])
     private var nowPlayingAnchorElapsed: TimeInterval = 0
     private var nowPlayingAnchorDate: Date?
@@ -233,8 +241,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         sessionPages = pages
         sessionPageIndex = pageIndex
-        timeline = ReadAloudTimeline(pages: pages)
         sessionChapterIndices = chapterIndices(in: pages)
+        rebuildCurrentChapterTimeline(force: true)
         let context = ReadAloudBookContext(
             id: book.id,
             title: book.title,
@@ -268,7 +276,6 @@ final class ReadAloudService: NSObject, ObservableObject {
     func refreshSessionPages(_ pages: [ReaderPage], for bookID: UUID) {
         guard bookContext?.id == bookID, let currentPageLocation else { return }
         sessionPages = pages
-        timeline = ReadAloudTimeline(pages: pages)
         sessionChapterIndices = chapterIndices(in: pages)
         sessionPageIndex = pages.firstIndex { $0.location == currentPageLocation }
             ?? pages.lastIndex {
@@ -278,6 +285,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             ?? pages.firstIndex {
                 $0.location.chapterIndex == currentPageLocation.chapterIndex
             }
+        rebuildCurrentChapterTimeline(force: true)
         synchronizeNowPlayingAnchorToCurrentSentence()
         updateRemoteCommandAvailability()
         updateNowPlayingInfo()
@@ -300,6 +308,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         currentSentenceRange = plan.sentences[startIndex].range
         nextSentenceIndex = startIndex
         state = .ready
+        rebuildCurrentChapterTimeline()
         synchronizeNowPlayingAnchorToCurrentSentence()
         updateRemoteCommandAvailability()
     }
@@ -345,6 +354,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         sessionPages = []
         sessionPageIndex = nil
         sessionChapterIndices = []
+        currentChapterPageIndices = []
+        timelineChapterIndex = nil
         timeline = ReadAloudTimeline(pages: [])
         nowPlayingAnchorElapsed = 0
         nowPlayingAnchorDate = nil
@@ -431,10 +442,12 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private func seek(to elapsedTime: TimeInterval) {
         guard let position = timeline.position(at: elapsedTime),
-              sessionPages.indices.contains(position.pageIndex) else { return }
+              currentChapterPageIndices.indices.contains(position.pageIndex) else { return }
+        let absolutePageIndex = currentChapterPageIndices[position.pageIndex]
+        guard sessionPages.indices.contains(absolutePageIndex) else { return }
         let shouldContinuePlaying = isPlaying
-        sessionPageIndex = position.pageIndex
-        let page = sessionPages[position.pageIndex]
+        sessionPageIndex = absolutePageIndex
+        let page = sessionPages[absolutePageIndex]
         setPage(
             text: page.text,
             location: page.location,
@@ -574,9 +587,9 @@ final class ReadAloudService: NSObject, ObservableObject {
             sessionChapterIndices.firstIndex(of: currentPage.location.chapterIndex)
         } ?? 0
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: chapterTitle,
-            MPMediaItemPropertyArtist: "\(bookContext.title) · \(bookContext.author)",
-            MPMediaItemPropertyAlbumTitle: bookContext.title,
+            MPMediaItemPropertyTitle: bookContext.title,
+            MPMediaItemPropertyArtist: chapterTitle,
+            MPMediaItemPropertyAlbumArtist: bookContext.author,
             MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue,
             MPMediaItemPropertyPlaybackDuration: timeline.duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedTime,
@@ -607,9 +620,10 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func synchronizeNowPlayingAnchorToCurrentSentence() {
-        guard let sessionPageIndex else { return }
+        guard let sessionPageIndex,
+              let chapterPageIndex = currentChapterPageIndices.firstIndex(of: sessionPageIndex) else { return }
         nowPlayingAnchorElapsed = timeline.elapsedTime(
-            pageIndex: sessionPageIndex,
+            pageIndex: chapterPageIndex,
             utf16Location: currentSentenceRange?.location ?? 0
         )
         nowPlayingAnchorDate = isPlaying ? .now : nil
@@ -628,6 +642,25 @@ final class ReadAloudService: NSObject, ObservableObject {
     private func freezeNowPlayingPosition() {
         nowPlayingAnchorElapsed = estimatedNowPlayingElapsedTime()
         nowPlayingAnchorDate = nil
+    }
+
+    private func rebuildCurrentChapterTimeline(force: Bool = false) {
+        guard let sessionPageIndex, sessionPages.indices.contains(sessionPageIndex) else {
+            currentChapterPageIndices = []
+            timelineChapterIndex = nil
+            timeline = ReadAloudTimeline(pages: [])
+            return
+        }
+        let chapterIndex = sessionPages[sessionPageIndex].location.chapterIndex
+        guard force || timelineChapterIndex != chapterIndex else { return }
+        currentChapterPageIndices = ReadAloudChapterNavigator.currentChapterPageIndices(
+            in: sessionPages,
+            from: sessionPageIndex
+        )
+        timelineChapterIndex = chapterIndex
+        timeline = ReadAloudTimeline(
+            pages: currentChapterPageIndices.map { sessionPages[$0] }
+        )
     }
 }
 
