@@ -9,7 +9,6 @@ struct BookshelfView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingImporter = false
-    @State private var showingImportInformation = false
     @State private var showingSettings = false
     @State private var searchText = ""
     @State private var selectedBookID: UUID?
@@ -128,12 +127,6 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .alert("导入本地书籍", isPresented: $showingImportInformation) {
-                Button("取消", role: .cancel) { }
-                Button("选择文件") { presentDocumentPickerAfterPrompt() }
-            } message: {
-                Text("支持 TXT、Markdown（.md）和 EPUB。TXT 可识别 UTF-8、UTF-16、GBK 与 GB18030 编码；文件会复制到本机书库后再解析。")
-            }
             .photosPicker(
                 isPresented: $showingCoverPicker,
                 selection: $selectedCoverPhoto,
@@ -181,7 +174,7 @@ struct BookshelfView: View {
                     HeaderButton(systemName: libraryLayout.symbolName)
                 }
                 .accessibilityLabel("书架显示和排序")
-                Button { showingImportInformation = true } label: { HeaderButton(systemName: "plus") }
+                Button { showingImporter = true } label: { HeaderButton(systemName: "plus") }
                     .accessibilityLabel("导入小说")
                     .disabled(library.isImporting)
                 Button { showingSettings = true } label: { HeaderButton(systemName: "person.crop.circle") }
@@ -328,13 +321,6 @@ struct BookshelfView: View {
         }
     }
 
-    private func presentDocumentPickerAfterPrompt() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            guard !library.isImporting else { return }
-            showingImporter = true
-        }
-    }
-
     private func beginCoverSelection(_ book: NovelBook) {
         guard selectedBookID == nil else { return }
         coverPickerBookID = book.id
@@ -384,14 +370,14 @@ private struct BookGridItem: View {
                             height: BookGridLayout.coverHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .frame(maxWidth: .infinity, alignment: .center)
 
                     Text(book.title)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: BookGridLayout.coverWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -429,6 +415,8 @@ private struct BookGridItem: View {
                 }
                 .accessibilityLabel("《\(book.title)》更多操作")
             }
+            .frame(width: BookGridLayout.coverWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

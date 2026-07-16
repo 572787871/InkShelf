@@ -59,6 +59,10 @@ struct SettingsView: View {
                 Section("关于") {
                     LabeledContent("应用", value: "墨架 InkShelf")
                     LabeledContent("版本", value: "1.0.0")
+                    LabeledContent("支持导入", value: "TXT / Markdown / EPUB")
+                    Text("TXT 支持 UTF-8、UTF-16、GBK 和 GB18030 编码，导入后的书籍保存在本机。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     NavigationLink("隐私说明") { PrivacyView() }
                 }
             }
