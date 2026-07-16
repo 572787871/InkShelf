@@ -235,14 +235,15 @@ final class ReadAloudService: NSObject, ObservableObject {
         sessionPageIndex = pageIndex
         timeline = ReadAloudTimeline(pages: pages)
         sessionChapterIndices = chapterIndices(in: pages)
-        bookContext = ReadAloudBookContext(
+        let context = ReadAloudBookContext(
             id: book.id,
             title: book.title,
             author: book.author,
             coverData: book.coverData,
             coverStyle: book.coverStyle
         )
-        nowPlayingArtwork = makeNowPlayingArtwork(for: bookContext)
+        bookContext = context
+        nowPlayingArtwork = makeNowPlayingArtwork(for: context)
         setPage(
             text: pages[pageIndex].text,
             location: pages[pageIndex].location,
