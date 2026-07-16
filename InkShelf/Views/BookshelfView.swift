@@ -271,10 +271,10 @@ struct BookshelfView: View {
 
         DispatchQueue.main.async {
             guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) {
+            withAnimation(.spring(response: 0.72, dampingFraction: 0.92)) {
                 readerContentVisible = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.72) {
                 guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
                 readerTransitionInFlight = false
             }
@@ -376,11 +376,14 @@ private struct BookGridItem: View {
             }
             .buttonStyle(.plain)
 
-            HStack(spacing: 4) {
-                Text(book.chapterProgressDescription)
+            HStack(spacing: 1) {
+                Text("\(book.readChapterCount)章/\(book.displayChapterCount)章")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .allowsTightening(true)
+                    .layoutPriority(1)
 
                 Spacer(minLength: 0)
 
@@ -404,7 +407,7 @@ private struct BookGridItem: View {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 25, height: 24)
+                        .frame(width: 18, height: 24)
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("《\(book.title)》更多操作")
