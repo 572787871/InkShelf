@@ -18,11 +18,9 @@ struct BookshelfView: View {
     @State private var showingCoverPicker = false
     @State private var coverPickerBookID: UUID?
     @State private var selectedCoverPhoto: PhotosPickerItem?
-    @State private var bookCoverFrames: [UUID: CGRect] = [:]
-    @State private var readerSourceFrame: CGRect?
-    @State private var readerShellExpanded = false
     @State private var readerContentVisible = false
     @State private var readerTransitionInFlight = false
+    @State private var readerTransitionToken = UUID()
     @FocusState private var searchFieldFocused: Bool
     @AppStorage("librarySort") private var sortRaw = LibrarySort.recent.rawValue
     @AppStorage("libraryLayout") private var layoutRaw = LibraryLayout.grid.rawValue
@@ -64,13 +62,11 @@ struct BookshelfView: View {
                     }
 
                     if let selectedBookID,
-                       let selectedBook = library.book(id: selectedBookID) {
-                        ReaderTransitionBackdrop(
-                            book: selectedBook,
-                            sourceFrame: readerSourceFrame,
-                            isExpanded: readerShellExpanded,
-                            containerSize: rootProxy.size
-                        )
+                       library.book(id: selectedBookID) != nil {
+                        Color.black
+                            .opacity(readerContentVisible ? 0.08 : 0)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
                         .zIndex(9)
 
                         ReaderView(
@@ -79,9 +75,23 @@ struct BookshelfView: View {
                             onBlockingStateChanged: { readerBlocksEdgeDismiss = $0 }
                         )
                         .ignoresSafeArea()
-                        .opacity(readerContentVisible ? 1 : 0)
-                        .scaleEffect(readerContentVisible ? 1 : 0.985)
-                        .allowsHitTesting(readerContentVisible && !readerTransitionInFlight)
+                        .offset(
+                            y: readerContentVisible
+                                ? 0
+                                : rootProxy.size.height + rootProxy.safeAreaInsets.bottom + 32
+                        )
+                        .clipShape(
+                            RoundedRectangle(
+                                cornerRadius: readerContentVisible ? 0 : 28,
+                                style: .continuous
+                            )
+                        )
+                        .shadow(
+                            color: .black.opacity(readerContentVisible ? 0 : 0.24),
+                            radius: readerContentVisible ? 0 : 18,
+                            y: -8
+                        )
+                        .allowsHitTesting(readerContentVisible)
                         .overlay(alignment: .leading) {
                             DirectReaderEdgeDismissGesture(
                                 isEnabled: readerContentVisible
@@ -101,10 +111,6 @@ struct BookshelfView: View {
                         }
                         .zIndex(10)
                     }
-                }
-                .coordinateSpace(name: BookshelfCoordinateSpace.name)
-                .onPreferenceChange(BookCoverFramePreferenceKey.self) { frames in
-                    bookCoverFrames = frames
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -260,33 +266,29 @@ struct BookshelfView: View {
     }
 
     private func openReader(_ book: NovelBook) {
-        guard selectedBookID == nil, !readerTransitionInFlight else { return }
+        guard selectedBookID == nil else { return }
         dismissSearchKeyboard()
         frozenBookOrder = displayedBooks.map(\.id)
         readerBlocksEdgeDismiss = false
         readerTransitionInFlight = true
-        readerSourceFrame = bookCoverFrames[book.id]
-        readerShellExpanded = false
         readerContentVisible = false
+        let transitionToken = UUID()
+        readerTransitionToken = transitionToken
         selectedBookID = book.id
 
         if reduceMotion {
-            readerShellExpanded = true
             readerContentVisible = true
             readerTransitionInFlight = false
             return
         }
 
         DispatchQueue.main.async {
-            guard selectedBookID == book.id else { return }
-            withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
-                readerShellExpanded = true
+            guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.9)) {
+                readerContentVisible = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
-                guard selectedBookID == book.id else { return }
-                withAnimation(.easeOut(duration: 0.24)) {
-                    readerContentVisible = true
-                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard selectedBookID == book.id, readerTransitionToken == transitionToken else { return }
                 readerTransitionInFlight = false
             }
         }
@@ -304,29 +306,23 @@ struct BookshelfView: View {
     }
 
     private func closeReader(bookID: UUID) {
-        guard selectedBookID == bookID, !readerTransitionInFlight else { return }
+        guard selectedBookID == bookID else { return }
+        let transitionToken = UUID()
+        readerTransitionToken = transitionToken
         if reduceMotion {
             selectedBookID = nil
-            readerSourceFrame = nil
             readerBlocksEdgeDismiss = false
-            readerShellExpanded = false
             readerContentVisible = false
+            readerTransitionInFlight = false
             return
         }
         readerTransitionInFlight = true
-        withAnimation(.easeIn(duration: 0.16)) {
+        withAnimation(.easeInOut(duration: 0.34)) {
             readerContentVisible = false
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard selectedBookID == bookID else { return }
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.9)) {
-                readerShellExpanded = false
-            }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard selectedBookID == bookID else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
+            guard selectedBookID == bookID, readerTransitionToken == transitionToken else { return }
             selectedBookID = nil
-            readerSourceFrame = nil
             readerBlocksEdgeDismiss = false
             readerTransitionInFlight = false
         }
@@ -388,9 +384,6 @@ private struct BookGridItem: View {
                             height: BookGridLayout.coverHeight
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .background {
-                            BookCoverFrameReporter(bookID: book.id)
-                        }
                         .frame(maxWidth: .infinity, alignment: .center)
 
                     Text(book.title)
@@ -453,9 +446,6 @@ private struct BookListItem: View {
                 HStack(alignment: .top, spacing: 15) {
                     BookCoverView(book: book, compact: true)
                         .frame(width: 68, height: 100)
-                        .background {
-                            BookCoverFrameReporter(bookID: book.id)
-                        }
 
                     VStack(alignment: .leading, spacing: 7) {
                         Text(book.title)
@@ -512,74 +502,6 @@ private struct BookListItem: View {
     private var currentChapterTitle: String {
         guard book.chapters.indices.contains(book.currentChapter) else { return "尚未开始阅读" }
         return book.lastReadAt == nil ? "尚未开始阅读" : book.chapters[book.currentChapter].title
-    }
-}
-
-private struct ReaderTransitionBackdrop: View {
-    let book: NovelBook
-    let sourceFrame: CGRect?
-    let isExpanded: Bool
-    let containerSize: CGSize
-
-    var body: some View {
-        let fallback = CGRect(
-            x: containerSize.width / 2 - 48,
-            y: containerSize.height / 2 - 70,
-            width: 96,
-            height: 141
-        )
-        let source = sourceFrame ?? fallback
-        let expandedWidth = min(220, containerSize.width * 0.54)
-        let coverWidth = isExpanded ? expandedWidth : source.width
-        let coverHeight = coverWidth / 0.68
-        let position = isExpanded
-            ? CGPoint(x: containerSize.width / 2, y: containerSize.height / 2)
-            : CGPoint(x: source.midX, y: source.midY)
-
-        ZStack {
-            Color(hex: "EEE9DF")
-                .opacity(isExpanded ? 1 : 0)
-                .ignoresSafeArea()
-            RadialGradient(
-                colors: [Color.white.opacity(0.45), Color(hex: "DDD4C7").opacity(0.25), .clear],
-                center: .center,
-                startRadius: 20,
-                endRadius: max(containerSize.width, containerSize.height) * 0.58
-            )
-            .opacity(isExpanded ? 1 : 0)
-            .ignoresSafeArea()
-            BookCoverView(book: book)
-                .frame(width: coverWidth, height: coverHeight)
-                .drawingGroup()
-                .position(position)
-                .shadow(color: .black.opacity(isExpanded ? 0.32 : 0.12), radius: isExpanded ? 22 : 6, y: isExpanded ? 12 : 4)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-private struct BookCoverFrameReporter: View {
-    let bookID: UUID
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: BookCoverFramePreferenceKey.self,
-                value: [bookID: proxy.frame(in: .named(BookshelfCoordinateSpace.name))]
-            )
-        }
-    }
-}
-
-private enum BookshelfCoordinateSpace {
-    static let name = "BookshelfRoot"
-}
-
-private struct BookCoverFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
     }
 }
 
