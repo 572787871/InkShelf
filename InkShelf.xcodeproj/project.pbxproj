@@ -26,11 +26,7 @@
 		100000000000000000000012 /* InteractivePageTurnView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* InteractivePageTurnView.swift */; };
 		100000000000000000000018 /* ReadAloudRoles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* ReadAloudRoles.swift */; };
 		100000000000000000000019 /* ReadAloudSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* ReadAloudSettingsView.swift */; };
-		10000000000000000000001A /* LocalVoiceKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* LocalVoiceKit.swift */; };
-		10000000000000000000001B /* LocalTTSBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* LocalTTSBridge.mm */; };
-		10000000000000000000001C /* sherpa-onnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001F /* sherpa-onnx.xcframework */; };
-		10000000000000000000001D /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* onnxruntime.xcframework */; };
-		10000000000000000000001E /* SWCompression in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000004 /* SWCompression */; };
+		10000000000000000000001A /* AudiobookSpeechKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* AudiobookSpeechKit.swift */; };
 		100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */; };
 		100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */; };
 		100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* LXGWWenKai-Regular.ttf */; };
@@ -75,31 +71,25 @@
 		200000000000000000000018 /* OFL-LXGWWenKai.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Fonts/OFL-LXGWWenKai.txt; sourceTree = "<group>"; };
 		200000000000000000000019 /* ReadAloudRoles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloudRoles.swift; sourceTree = "<group>"; };
 		20000000000000000000001A /* ReadAloudSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadAloudSettingsView.swift; sourceTree = "<group>"; };
-		20000000000000000000001B /* LocalVoiceKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceKit.swift; sourceTree = "<group>"; };
-		20000000000000000000001C /* LocalTTSBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = LocalTTSBridge.mm; sourceTree = "<group>"; };
-		20000000000000000000001D /* LocalTTSBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LocalTTSBridge.h; sourceTree = "<group>"; };
-		20000000000000000000001E /* InkShelf-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "InkShelf-Bridging-Header.h"; sourceTree = "<group>"; };
-		20000000000000000000001F /* sherpa-onnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "sherpa-onnx.xcframework"; sourceTree = "<group>"; };
-		200000000000000000000020 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "onnxruntime.xcframework"; sourceTree = "<group>"; };
+		20000000000000000000001B /* AudiobookSpeechKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookSpeechKit.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */, 10000000000000000000001E /* SWCompression in Frameworks */, 10000000000000000000001C /* sherpa-onnx.xcframework in Frameworks */, 10000000000000000000001D /* onnxruntime.xcframework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 		400000000000000000000004 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		300000000000000000000001 = {isa = PBXGroup; children = (300000000000000000000002 /* InkShelf */, 30000000000000000000000B /* Vendor */, 300000000000000000000009 /* InkShelfTests */, 30000000000000000000000A /* Products */); sourceTree = "<group>"; };
-		300000000000000000000002 /* InkShelf */ = {isa = PBXGroup; children = (300000000000000000000003 /* App */, 300000000000000000000004 /* Models */, 300000000000000000000005 /* Services */, 300000000000000000000006 /* Theme */, 300000000000000000000007 /* Views */, 300000000000000000000008 /* Resources */, 20000000000000000000001E /* InkShelf-Bridging-Header.h */); path = InkShelf; sourceTree = "<group>"; };
+		300000000000000000000001 = {isa = PBXGroup; children = (300000000000000000000002 /* InkShelf */, 300000000000000000000009 /* InkShelfTests */, 30000000000000000000000A /* Products */); sourceTree = "<group>"; };
+		300000000000000000000002 /* InkShelf */ = {isa = PBXGroup; children = (300000000000000000000003 /* App */, 300000000000000000000004 /* Models */, 300000000000000000000005 /* Services */, 300000000000000000000006 /* Theme */, 300000000000000000000007 /* Views */, 300000000000000000000008 /* Resources */); path = InkShelf; sourceTree = "<group>"; };
 		300000000000000000000003 /* App */ = {isa = PBXGroup; children = (200000000000000000000001 /* InkShelfApp.swift */,); path = App; sourceTree = "<group>"; };
 		300000000000000000000004 /* Models */ = {isa = PBXGroup; children = (200000000000000000000002 /* Book.swift */, 200000000000000000000012 /* ReaderPagination.swift */, 200000000000000000000019 /* ReadAloudRoles.swift */,); path = Models; sourceTree = "<group>"; };
-		300000000000000000000005 /* Services */ = {isa = PBXGroup; children = (200000000000000000000003 /* LibraryStore.swift */, 200000000000000000000004 /* NovelImporter.swift */, 200000000000000000000005 /* ReadAloudService.swift */, 20000000000000000000001B /* LocalVoiceKit.swift */, 20000000000000000000001C /* LocalTTSBridge.mm */, 20000000000000000000001D /* LocalTTSBridge.h */,); path = Services; sourceTree = "<group>"; };
+		300000000000000000000005 /* Services */ = {isa = PBXGroup; children = (200000000000000000000003 /* LibraryStore.swift */, 200000000000000000000004 /* NovelImporter.swift */, 200000000000000000000005 /* ReadAloudService.swift */, 20000000000000000000001B /* AudiobookSpeechKit.swift */,); path = Services; sourceTree = "<group>"; };
 		300000000000000000000006 /* Theme */ = {isa = PBXGroup; children = (200000000000000000000006 /* BookPalette.swift */, 200000000000000000000007 /* ReaderPreferences.swift */,); path = Theme; sourceTree = "<group>"; };
 		300000000000000000000007 /* Views */ = {isa = PBXGroup; children = (200000000000000000000008 /* BookCoverView.swift */, 200000000000000000000009 /* BookshelfView.swift */, 20000000000000000000000A /* SettingsView.swift */, 20000000000000000000001A /* ReadAloudSettingsView.swift */, 20000000000000000000000B /* BookInfoView.swift */, 20000000000000000000000C /* ReaderView.swift */, 200000000000000000000013 /* InteractivePageTurnView.swift */,); path = Views; sourceTree = "<group>"; };
 		300000000000000000000008 /* Resources */ = {isa = PBXGroup; children = (20000000000000000000000D /* Assets.xcassets */, 20000000000000000000000E /* PrivacyInfo.xcprivacy */, 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */, 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */, 200000000000000000000016 /* LXGWWenKai-Regular.ttf */, 200000000000000000000017 /* OFL-Noto.txt */, 200000000000000000000018 /* OFL-LXGWWenKai.txt */,); path = Resources; sourceTree = "<group>"; };
 		300000000000000000000009 /* InkShelfTests */ = {isa = PBXGroup; children = (20000000000000000000000F /* NovelParserTests.swift */,); path = InkShelfTests; sourceTree = "<group>"; };
 		30000000000000000000000A /* Products */ = {isa = PBXGroup; children = (200000000000000000000010 /* InkShelf.app */, 200000000000000000000011 /* InkShelfTests.xctest */,); name = Products; sourceTree = "<group>"; };
-		30000000000000000000000B /* Vendor */ = {isa = PBXGroup; children = (20000000000000000000001F /* sherpa-onnx.xcframework */, 200000000000000000000020 /* onnxruntime.xcframework */,); path = Vendor; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -110,7 +100,7 @@
 			buildRules = ();
 			dependencies = ();
 			name = InkShelf;
-			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */, 900000000000000000000004 /* SWCompression */,);
+			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */,);
 			productName = InkShelf;
 			productReference = 200000000000000000000010 /* InkShelf.app */;
 			productType = "com.apple.product-type.application";
@@ -138,7 +128,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (en, Base, zh_Hans,);
 			mainGroup = 300000000000000000000001;
-			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */, 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */,);
+			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,);
 			productRefGroup = 30000000000000000000000A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -163,8 +153,8 @@
 /* Begin XCBuildConfiguration section */
 		800000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
 		800000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_NS_ASSERTIONS = NO; GCC_C_LANGUAGE_STANDARD = gnu17; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MTL_ENABLE_DEBUG_INFO = NO; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; VALIDATE_PRODUCT = YES; }; name = Release; };
-		800000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_ASSET_PATHS = ""; DEVELOPMENT_TEAM = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = InkShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "墨架"; INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES; INFOPLIST_KEY_UIAppFonts = (NotoSerifCJKsc-Regular.otf, NotoSansCJKsc-Regular.otf, LXGWWenKai-Regular.ttf,); INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; OTHER_LDFLAGS = "-lc++"; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_OBJC_BRIDGING_HEADER = "InkShelf/InkShelf-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
-		800000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_ASSET_PATHS = ""; DEVELOPMENT_TEAM = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = InkShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "墨架"; INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES; INFOPLIST_KEY_UIAppFonts = (NotoSerifCJKsc-Regular.otf, NotoSansCJKsc-Regular.otf, LXGWWenKai-Regular.ttf,); INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; OTHER_LDFLAGS = "-lc++"; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_OBJC_BRIDGING_HEADER = "InkShelf/InkShelf-Bridging-Header.h"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		800000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_ASSET_PATHS = ""; DEVELOPMENT_TEAM = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = InkShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "墨架"; INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES; INFOPLIST_KEY_UIAppFonts = (NotoSerifCJKsc-Regular.otf, NotoSansCJKsc-Regular.otf, LXGWWenKai-Regular.ttf,); INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		800000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_ASSET_PATHS = ""; DEVELOPMENT_TEAM = ""; ENABLE_PREVIEWS = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_FILE = InkShelf/Info.plist; INFOPLIST_KEY_CFBundleDisplayName = "墨架"; INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES; INFOPLIST_KEY_UIAppFonts = (NotoSerifCJKsc-Regular.otf, NotoSansCJKsc-Regular.otf, LXGWWenKai-Regular.ttf,); INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 1.0.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelf; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
 		800000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelfTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/InkShelf.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/InkShelf"; }; name = Debug; };
 		800000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.InkShelfTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/InkShelf.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/InkShelf"; }; name = Release; };
 /* End XCBuildConfiguration section */
@@ -177,12 +167,10 @@
 
 /* Begin XCRemoteSwiftPackageReference section */
 		900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/weichsel/ZIPFoundation.git"; requirement = {kind = exactVersion; version = 0.9.20; }; };
-		900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/tsolomko/SWCompression.git"; requirement = {kind = exactVersion; version = 4.9.0; }; };
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		900000000000000000000002 /* ZIPFoundation */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */; productName = ZIPFoundation; };
-		900000000000000000000004 /* SWCompression */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */; productName = SWCompression; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 600000000000000000000001 /* Project object */;

@@ -19,7 +19,6 @@ struct ReaderView: View {
     @State private var chromeVisible = false
     @State private var showingIndex = false
     @State private var showingAppearance = false
-    @State private var showingReadAloudSettings = false
     @State private var showingNote = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
@@ -130,7 +129,6 @@ struct ReaderView: View {
                                     && !interactionDisabled,
                                 automatedTurnTarget: automatedTurnTarget,
                                 onCommit: commit,
-                                onPlayParagraph: playParagraph,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
                             .ignoresSafeArea()
@@ -181,7 +179,6 @@ struct ReaderView: View {
             readAloud.readerDidDisappear(bookID: bookID)
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
-        .onChange(of: showingReadAloudSettings) { _, _ in reportBlockingState() }
         .onChange(of: keepScreenAwake) { _, enabled in
             UIApplication.shared.isIdleTimerDisabled = enabled
         }
@@ -244,9 +241,6 @@ struct ReaderView: View {
                 )
             }
         }
-        .sheet(isPresented: $showingReadAloudSettings) {
-            ReadAloudSettingsSheet(onStart: startReadingFromSettings)
-        }
         .alert(
             "朗读失败",
             isPresented: Binding(
@@ -306,7 +300,6 @@ struct ReaderView: View {
             horizontalMargin: margin,
             highlightedLocation: ownsReadAloudSession ? readAloud.currentPageLocation : nil,
             highlightedRange: ownsReadAloudSession ? readAloud.currentSentenceRange : nil,
-            showsReadAloudControls: ownsReadAloudSession,
             isReadAloudPlaying: ownsReadAloudSession && readAloud.isPlaying
         )
     }
@@ -330,7 +323,7 @@ struct ReaderView: View {
                 fontName: readerFont.name,
                 fontSize: fontSize,
                 lineSpacing: lineSpacing,
-                paragraphFirstLineIndent: 26
+                paragraphFirstLineIndent: 0
             )
         )
     }
@@ -402,41 +395,24 @@ struct ReaderView: View {
     }
 
     private func startReadingCurrentPage() {
+        guard readAloud.canStartReading else {
+            readAloudError = "请先返回主页，在右上角设置中配置朗读服务"
+            return
+        }
         guard let book, let page = catalog.page(at: location) else {
             readAloudError = "当前页面尚未加载完成"
             return
         }
-        beginReading(book: book, page: page, paragraphLocation: nil)
+        beginReading(book: book, page: page)
     }
 
-    private func startReadingFromSettings() {
-        showingReadAloudSettings = false
-        showingAppearance = false
-        chromeVisible = false
-        startReadingCurrentPage()
-    }
-
-    private func playParagraph(_ page: ReaderPage, range: NSRange) {
-        if isCurrentReadAloudSession,
-           readAloud.currentPageLocation == page.location,
-           let highlightedRange = readAloud.currentSentenceRange,
-           NSIntersectionRange(highlightedRange, range).length > 0 {
-            readAloud.togglePlayback()
-            return
-        }
-        if page.location != location { jump(to: page.location) }
-        guard let book else { return }
-        beginReading(book: book, page: page, paragraphLocation: range.location)
-    }
-
-    private func beginReading(book: NovelBook, page: ReaderPage, paragraphLocation: Int?) {
+    private func beginReading(book: NovelBook, page: ReaderPage) {
         isBrowsingAwayFromReadAloud = false
         attachPageFinishHandler()
         readAloud.startSession(
             book: book,
             pages: catalog.pages,
-            location: page.location,
-            startAtUTF16Location: paragraphLocation ?? 0
+            location: page.location
         )
     }
 
@@ -513,7 +489,6 @@ struct ReaderView: View {
             showingAppearance
                 || showingIndex
                 || showingNote
-                || showingReadAloudSettings
                 || showingCustomBackgroundEditor
                 || isScrubbingWholeBookProgress
         )
@@ -595,7 +570,11 @@ struct ReaderView: View {
                         toggleNightMode()
                     }
                     ChromeAction(icon: "waveform", label: "朗读") {
-                        showingReadAloudSettings = true
+                        if isCurrentReadAloudSession {
+                            readAloud.togglePlayback()
+                        } else {
+                            startReadingCurrentPage()
+                        }
                     }
                     ChromeAction(
                         icon: showingAppearance ? "chevron.down.circle.fill" : "paintpalette",

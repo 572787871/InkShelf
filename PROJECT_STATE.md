@@ -25,18 +25,17 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Views/InteractivePageTurnView.swift`
   - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
 - `InkShelf/Services/ReadAloudService.swift`
-  - imported Kokoro/VITS session, local PCM playback, sentence highlighting,
-    background audio, chapter timeline, MediaPlayer metadata and remote commands
-- `InkShelf/Services/LocalVoiceKit.swift` and `LocalTTSBridge.mm`
-  - secure ZIP voice-package storage, official model catalog download/install,
-    sherpa-onnx model loading and offline PCM generation through a narrow
-    Objective-C++ boundary
+  - automatic audiobook session, network TTS orchestration, sentence
+    highlighting, background audio, chapter timeline and MediaPlayer controls
+- `InkShelf/Services/AudiobookSpeechKit.swift`
+  - MiMo and OpenAI-compatible clients, automatic role casting, Keychain
+    credential storage and generated-audio playback
 - `InkShelf/Models/ReadAloudRoles.swift`
   - local dialogue attribution, stable character/unknown speaker assignments,
-    and persisted read-aloud voice preferences
+    and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
-  - automatic character voice, unknown-dialogue alternation, speed, narrator,
-    and three character voice-slot settings
+  - homepage-only provider, endpoint, model, API key, privacy consent, speed and
+    connection-test UI; no manual voice settings
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -68,8 +67,7 @@ context, not a substitute for inspecting the current code and Git history.
 - Narration and manual browsing are deliberately decoupled.
 - A manual page turn, directory jump, or progress browsing action does not move
   the speech queue to that page.
-- “从本页听” starts the visible page. A paragraph play button starts that
-  paragraph.
+- “从本页听” starts the visible page. Paragraph play buttons have been removed.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -81,27 +79,19 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Automatic character voices are local-only: the current chapter is analyzed
-  lazily for quoted dialogue and explicit speaking verbs, then named characters
-  are assigned stable voice slots. Ambiguous dialogue can alternate between
-  fallback slots without inventing a character identity.
-- Apple system voices are not enumerated or used as a fallback. Reading is
-  unavailable until a validated Kokoro or VITS ZIP package is imported. Every
-  package contains `voice.json`, model/token assets and explicit speaker IDs.
-- The model store downloads a pinned Kokoro Chinese/English INT8 archive from
-  the official sherpa-onnx release, reports progress/cancellation/retry, verifies
-  its fixed SHA-256, safely installs its 103-speaker manifest, and removes the
-  temporary archive. Network access is used only for an explicit model download;
-  installed inference remains offline.
-- Model inference runs through pinned sherpa-onnx iOS binaries and AVAudioEngine
-  plays copied Float32 PCM. Models, novel text and generated audio stay on the
-  device. Package import rejects traversal paths/symlinks and caps expansion at
-  2 GB.
-- Read-aloud settings are available from the app Settings screen and persist on
-  device. In the reader, the bottom “朗读” action first opens the settings sheet;
-  narrator and role voices can be previewed there, and “开始朗读” starts from
-  the visible page. Voice and speed changes apply to subsequent utterances
-  without retargeting the active narration session.
+- Character attribution remains local: the current chapter is analyzed lazily
+  for quoted dialogue and explicit speaking verbs. The automatic director gives
+  named characters stable provider roles and alternates ambiguous dialogue
+  without exposing manual voice slots.
+- Apple system voices, Kokoro/VITS packages and the old model store are not used.
+  Short sentence units are synthesized through either MiMo chat audio or a
+  configurable OpenAI-compatible `/audio/speech` service. The API key is stored
+  in the iOS Keychain and text upload is disabled until the user explicitly
+  consents.
+- Read-aloud settings are available only from the homepage top-right Settings
+  screen. The reader's bottom “朗读” action starts or pauses immediately; when
+  configuration is incomplete it only directs the user back to homepage
+  Settings. Connection testing synthesizes one short narrator sample.
 - Automatic visible-page turns are accepted transactionally by the curl/cover
   engines. Programmatic turns have engine and reader-level completion fallbacks
   so a missing UIKit animation callback cannot leave narration waiting at the
@@ -112,16 +102,15 @@ context, not a substitute for inspecting the current code and Git history.
   visible page after 0.85 seconds when UIKit does not report completion.
 - Reader page capacity uses a lightweight line-aware pass over the source with
   the visible text area, actual font metrics, line spacing, explicit newlines,
-  chapter-title allowance, the read-aloud paragraph indent, and three safety rows.
+  chapter-title allowance and three safety rows.
   Do not run TextKit once per page: imported books can exceed 20,000 pages and
   reader opening must remain responsive. Narration must never consume text
   clipped below the page before a turn.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
-- Pagination reserves the read-aloud control indent only on the first line of a
-  page or paragraph; wrapped continuation lines use the full text width so their
-  last row does not leave artificial empty character slots.
+- Reader pagination uses the full text width because paragraph narration
+  controls and their first-line indent were removed.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
@@ -133,7 +122,7 @@ context, not a substitute for inspecting the current code and Git history.
   page locations. Repagination can keep the same chapter/page IDs while changing
   their text boundaries, and stale cached text must never diverge from speech.
 - Natural completion at the end of the book clears the narration session after
-  the final local PCM buffer reports completion.
+  the final generated audio finishes playback.
 
 ### Shelf and covers
 
@@ -166,5 +155,6 @@ context, not a substitute for inspecting the current code and Git history.
 ## Real-device checks still matter
 
 Actions proves compilation and automated tests, not touch feel, page-curl visual
-quality, real-device model speed/memory, audio interruptions, background playback,
-or crash freedom. Report those as requiring signed IPA/iPhone verification.
+quality, network-provider compatibility, audio interruptions, background
+playback, or crash freedom. Report those as requiring signed IPA/iPhone
+verification.

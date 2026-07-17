@@ -79,9 +79,8 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         return result
     }
 
-    /// Fast, conservative capacity math. It reserves the paragraph-control
-    /// indent on every paragraph's first line plus three complete safety rows,
-    /// and counts explicit newlines while walking the source exactly once.
+    /// Fast, conservative capacity math. It supports an optional first-line
+    /// indent and keeps three complete safety rows while walking the source.
     private var estimatedColumns: (full: Int, indented: Int) {
         let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
             ?? UIFont.systemFont(ofSize: fontSize)
@@ -197,9 +196,6 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
-        // The paragraph play button occupies only the first rendered line.
-        // Wrapped lines must match the full-width reader layout; otherwise the
-        // paginator leaves artificial empty character slots at the page end.
         paragraph.firstLineHeadIndent = paragraphFirstLineIndent
         paragraph.headIndent = 0
         return [.font: font, .paragraphStyle: paragraph]

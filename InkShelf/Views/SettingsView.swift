@@ -59,7 +59,9 @@ struct SettingsView: View {
                         Label {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("功能设置")
-                                Text(readAloud.settings.automaticallyAssignsCharacterVoices ? "自动分角色已开启" : "使用统一旁白声线")
+                                Text(readAloud.canStartReading
+                                    ? "\(readAloud.settings.provider.title) · 自动分角色"
+                                    : "待配置语音服务")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -67,9 +69,7 @@ struct SettingsView: View {
                             Image(systemName: "waveform")
                         }
                     }
-                    Text(readAloud.localVoicePackages.isEmpty
-                        ? "尚未导入本地音色；朗读不会使用苹果系统声音。"
-                        : "分角色识别与 Kokoro/VITS 语音合成都完全在设备本机完成。")
+                    Text("朗读设置只保留在这里。阅读页不会再弹出设置或显示声线选择。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -453,7 +453,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("当前分角色朗读只使用本机文本规则、已下载或导入的 Kokoro/VITS 模型和本地音频播放，不使用系统音色。只有用户主动下载模型时会访问模型来源，小说正文和已安装模型不会上传。")
+            Text("分角色识别在设备上完成。只有你在朗读设置中明确允许并开始朗读时，当前短句才会发送到你配置的小米 MiMo 或 OpenAI 兼容语音服务。API Key 保存在设备钥匙串中；服务方如何处理数据由其隐私政策决定。")
         }.navigationTitle("隐私说明")
     }
 }

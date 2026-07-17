@@ -20,14 +20,6 @@ struct ReadAloudBookContext: Equatable {
     let coverStyle: Int
 }
 
-struct ReadAloudVoiceOption: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let packageID: String
-    let packageName: String
-    let speakerID: Int
-}
-
 enum NowPlayingArtworkRenderer {
     static let preferredDimension: CGFloat = 1024
 
@@ -148,7 +140,7 @@ struct ReadAloudChapterNavigator {
     }
 }
 
-/// A stable UTF-16 text plan shared by speech, highlighting and paragraph buttons.
+/// A stable UTF-16 text plan shared by speech and highlighting.
 /// UIKit text ranges are UTF-16 based, so keeping one coordinate system prevents
 /// Chinese punctuation and emoji from shifting the highlight.
 struct ReadAloudTextPlan: Equatable {
@@ -159,7 +151,6 @@ struct ReadAloudTextPlan: Equatable {
     }
 
     let sentences: [Sentence]
-    let paragraphRanges: [NSRange]
 
     init(text: String, speakers: [ReadAloudSpeaker]? = nil) {
         sentences = Self.units(in: text, option: .bySentences).enumerated().map { index, range in
@@ -169,7 +160,6 @@ struct ReadAloudTextPlan: Equatable {
                 speaker: speakers.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? .narrator
             )
         }
-        paragraphRanges = Self.units(in: text, option: .byParagraphs)
     }
 
     func sentenceIndex(atOrAfterUTF16Location location: Int) -> Int? {
@@ -203,8 +193,8 @@ struct ReadAloudTextPlan: Equatable {
     }
 }
 
-/// Fully offline reading session. Text is synthesized by imported Kokoro/VITS
-/// models and played as local PCM; no system voice or network service is used.
+/// Automatic audiobook session. Character attribution stays on-device while
+/// short sentence units are synthesized by the configured network provider.
 @MainActor
 final class ReadAloudService: NSObject, ObservableObject {
     private static let settingsDefaultsKey = "readAloudSettings"
@@ -217,14 +207,17 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var visibleReaderBookID: UUID?
     @Published private(set) var applicationIsActive = true
     @Published private(set) var playbackRequested = false
-    @Published private(set) var localVoicePackages: [LocalVoicePackage]
-    @Published private(set) var localVoiceCatalogStates: [String: LocalVoiceCatalogState]
+    @Published private(set) var connectionState = AudiobookConnectionState.idle
+    @Published var apiKey: String {
+        didSet {
+            guard apiKey != oldValue else { return }
+            AudiobookCredentialStore.saveAPIKey(apiKey)
+            connectionState = .idle
+        }
+    }
     @Published var settings: ReadAloudSettings {
         didSet {
-            if oldValue.alternatesUnattributedDialogue != settings.alternatesUnattributedDialogue {
-                rolePlan = .empty
-                analyzedRoleChapters.removeAll()
-            }
+            if oldValue != settings { connectionState = .idle }
             persistSettings()
         }
     }
@@ -236,17 +229,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         hasSession && bookContext?.id != visibleReaderBookID
     }
 
-    private let voiceStore: LocalVoicePackageStore
-    private let localSynthesizer = LocalVoiceSynthesizer()
-    private let speechPlayer = LocalSpeechAudioPlayer()
-    private let previewPlayer = LocalSpeechAudioPlayer()
+    private let speechClient = AudiobookSpeechClient()
+    private let speechPlayer = AudiobookAudioPlayer()
+    private let previewPlayer = AudiobookAudioPlayer()
     private var plan = ReadAloudTextPlan(text: "")
     private var rolePlan = ReadAloudRolePlan.empty
     private var analyzedRoleChapters: Set<Int> = []
     private var synthesisTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
-    private var catalogDownloadTasks: [String: URLSessionDownloadTask] = [:]
-    private var catalogProgressTasks: [String: Task<Void, Never>] = [:]
     private var playbackToken = UUID()
     private var previewToken = UUID()
     private var activeSentenceIndex: Int?
@@ -264,20 +254,9 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var shouldResumeAfterInterruption = false
 
     override init() {
-        let voiceStore = LocalVoicePackageStore()
-        self.voiceStore = voiceStore
-        let installedPackages = voiceStore.installedPackages()
-        localVoicePackages = installedPackages
-        var catalogStates = Dictionary(
-            uniqueKeysWithValues: LocalVoiceCatalog.models.map { ($0.id, LocalVoiceCatalogState.available) }
-        )
-        for package in installedPackages {
-            if let catalogID = package.catalogID { catalogStates[catalogID] = .installed }
-        }
-        localVoiceCatalogStates = catalogStates
+        apiKey = AudiobookCredentialStore.loadAPIKey()
         settings = Self.loadSettings()
         super.init()
-        Self.cleanAbandonedCatalogDownloads()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
@@ -305,173 +284,59 @@ final class ReadAloudService: NSObject, ObservableObject {
         hasSession && bookContext?.id == bookID
     }
 
-    var availableLocalVoices: [ReadAloudVoiceOption] {
-        localVoicePackages.flatMap { package in
-            package.manifest.speakers.map { speaker in
-                let selection = LocalVoiceSelection(packageID: package.id, speakerID: speaker.id)
-                return ReadAloudVoiceOption(
-                    id: selection.identifier,
-                    name: speaker.name,
-                    packageID: package.id,
-                    packageName: package.name,
-                    speakerID: speaker.id
-                )
-            }
-        }
+    var canStartReading: Bool {
+        settings.allowsTextUpload
+            && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var canStartLocalReading: Bool { !availableLocalVoices.isEmpty }
-
-    var localVoiceCatalog: [LocalVoiceCatalogModel] { LocalVoiceCatalog.models }
-
-    func catalogState(for model: LocalVoiceCatalogModel) -> LocalVoiceCatalogState {
-        localVoiceCatalogStates[model.id] ?? .available
+    func applyProviderDefaults(for provider: ReadAloudProvider) {
+        settings.provider = provider
+        settings.baseURL = provider.defaultBaseURL
+        settings.model = provider.defaultModel
+        connectionState = .idle
     }
 
-    func importLocalVoicePackage(from url: URL) async throws {
-        let package = try await voiceStore.importPackage(from: url)
-        localVoicePackages.append(package)
-        localVoicePackages.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if resolvedVoice(identifier: settings.narratorVoiceIdentifier) == nil,
-           let first = availableLocalVoices.first {
-            settings.narratorVoiceIdentifier = first.id
-        }
-    }
-
-    func downloadCatalogModel(_ model: LocalVoiceCatalogModel) {
-        guard catalogDownloadTasks[model.id] == nil,
-              catalogState(for: model) != .installed,
-              catalogState(for: model) != .installing else { return }
-
-        let destination: URL
-        do {
-            destination = try Self.catalogDownloadURL(for: model)
-        } catch {
-            localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
-            return
-        }
-        localVoiceCatalogStates[model.id] = .downloading(progress: 0)
-
-        let task = URLSession.shared.downloadTask(with: model.downloadURL) { [weak self] temporaryURL, response, error in
-            let result: Result<URL, Error>
-            do {
-                if let error { throw error }
-                guard let response = response as? HTTPURLResponse,
-                      (200...299).contains(response.statusCode) else {
-                    throw LocalVoicePackageError.downloadFailed("服务器没有返回有效文件")
-                }
-                guard let temporaryURL else {
-                    throw LocalVoicePackageError.downloadFailed("下载文件不存在")
-                }
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.moveItem(at: temporaryURL, to: destination)
-                result = .success(destination)
-            } catch {
-                result = .failure(error)
-            }
-            Task { @MainActor [weak self] in
-                self?.catalogDownloadFinished(model, result: result)
-            }
-        }
-        catalogDownloadTasks[model.id] = task
-        catalogProgressTasks[model.id] = Task { [weak self, weak task] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard let self, let task,
-                      self.catalogDownloadTasks[model.id] === task else { return }
-                let expected = task.countOfBytesExpectedToReceive > 0
-                    ? task.countOfBytesExpectedToReceive
-                    : model.downloadBytes
-                let progress = min(1, max(0, Double(task.countOfBytesReceived) / Double(expected)))
-                self.localVoiceCatalogStates[model.id] = .downloading(progress: progress)
-            }
-        }
-        task.resume()
-    }
-
-    func cancelCatalogModelDownload(_ model: LocalVoiceCatalogModel) {
-        catalogDownloadTasks.removeValue(forKey: model.id)?.cancel()
-        catalogProgressTasks.removeValue(forKey: model.id)?.cancel()
-        localVoiceCatalogStates[model.id] = .available
-        if let url = try? Self.catalogDownloadURL(for: model) { try? FileManager.default.removeItem(at: url) }
-    }
-
-    func removeLocalVoicePackage(_ package: LocalVoicePackage) throws {
-        let removedVoiceIDs = Set(availableLocalVoices.filter { $0.packageID == package.id }.map(\.id))
+    func testConnection() {
+        guard connectionState != .testing else { return }
         stopVoicePreview()
-        if activeVoiceUses(packageID: package.id) || currentSentenceUses(packageID: package.id) { stop() }
-        try voiceStore.remove(package)
-        localVoicePackages.removeAll { $0.id == package.id }
-        if let catalogID = package.catalogID { localVoiceCatalogStates[catalogID] = .available }
-        Task { await localSynthesizer.unload(packageID: package.id) }
-        if removedVoiceIDs.contains(settings.narratorVoiceIdentifier) {
-            settings.narratorVoiceIdentifier = availableLocalVoices.first?.id ?? ""
-        }
-        settings.roleVoiceIdentifiers = settings.roleVoiceIdentifiers.map {
-            removedVoiceIDs.contains($0) ? "" : $0
-        }
-    }
-
-    private func catalogDownloadFinished(
-        _ model: LocalVoiceCatalogModel,
-        result: Result<URL, Error>
-    ) {
-        guard catalogDownloadTasks.removeValue(forKey: model.id) != nil else {
-            if case let .success(url) = result { try? FileManager.default.removeItem(at: url) }
-            return
-        }
-        catalogProgressTasks.removeValue(forKey: model.id)?.cancel()
-        switch result {
-        case let .failure(error):
-            if (error as? URLError)?.code == .cancelled {
-                localVoiceCatalogStates[model.id] = .available
-            } else {
-                localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
-            }
-        case let .success(archiveURL):
-            localVoiceCatalogStates[model.id] = .installing
-            Task { [weak self] in
-                guard let self else { return }
-                defer { try? FileManager.default.removeItem(at: archiveURL) }
-                do {
-                    let package = try await voiceStore.installCatalogModel(model, from: archiveURL)
-                    localVoicePackages.removeAll { $0.catalogID == model.id }
-                    localVoicePackages.append(package)
-                    localVoicePackages.sort {
-                        $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                    }
-                    localVoiceCatalogStates[model.id] = .installed
-                    if resolvedVoice(identifier: settings.narratorVoiceIdentifier) == nil,
-                       let first = availableLocalVoices.first(where: { $0.packageID == package.id }) {
-                        settings.narratorVoiceIdentifier = first.id
-                    }
-                } catch {
-                    localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
-                }
+        connectionState = .testing
+        let configuration = settings
+        let key = apiKey
+        let token = UUID()
+        previewToken = token
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let audio = try await speechClient.synthesize(
+                    text: "夜色渐深，故事从这里缓缓开始。",
+                    speaker: .narrator,
+                    settings: configuration,
+                    apiKey: key
+                )
+                try Task.checkCancellation()
+                guard previewToken == token else { return }
+                guard configureAudioSession() else { return }
+                previewTask = nil
+                connectionState = .connected
+                try previewPlayer.play(audio) { }
+            } catch is CancellationError {
+                guard previewToken == token else { return }
+                previewTask = nil
+                connectionState = .idle
+            } catch {
+                guard previewToken == token else { return }
+                previewTask = nil
+                connectionState = .failed(error.localizedDescription)
             }
         }
-    }
-
-    private static func catalogDownloadURL(for model: LocalVoiceCatalogModel) throws -> URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let directory = caches.appendingPathComponent("VoiceModelDownloads", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent(model.id).appendingPathExtension("tar.bz2")
-    }
-
-    private static func cleanAbandonedCatalogDownloads() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let directory = caches.appendingPathComponent("VoiceModelDownloads", isDirectory: true)
-        try? FileManager.default.removeItem(at: directory)
     }
 
     func startSession(
         book: NovelBook,
         pages: [ReaderPage],
-        location: ReaderPageLocation,
-        startAtUTF16Location: Int = 0
+        location: ReaderPageLocation
     ) {
         guard let pageIndex = pages.firstIndex(where: { $0.location == location }) else {
             state = .failed(message: "当前朗读页面不存在")
@@ -494,8 +359,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         nowPlayingArtwork = makeNowPlayingArtwork(for: context)
         setPage(
             text: pages[pageIndex].text,
-            location: pages[pageIndex].location,
-            startAtUTF16Location: startAtUTF16Location
+            location: pages[pageIndex].location
         )
         play()
     }
@@ -602,9 +466,9 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func play() {
         guard hasSession else { return }
-        guard canStartLocalReading else {
+        guard canStartReading else {
             playbackRequested = false
-            state = .failed(message: "请先导入 Kokoro 或 VITS 本地音色包")
+            state = .failed(message: "请先在主页右上角设置中完成朗读服务配置")
             updateNowPlayingInfo()
             return
         }
@@ -623,7 +487,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 updateNowPlayingInfo()
             } catch {
                 playbackRequested = false
-                state = .failed(message: "无法恢复本地音频：\(error.localizedDescription)")
+                state = .failed(message: "无法恢复朗读音频：\(error.localizedDescription)")
                 updateNowPlayingInfo()
             }
             return
@@ -669,50 +533,6 @@ final class ReadAloudService: NSObject, ObservableObject {
     /// Finishes a naturally completed book after the final PCM buffer callback.
     func finishAtEndOfBook() {
         resetSession(stoppingSpeech: false)
-    }
-
-    func previewVoice(roleSlot: Int?) {
-        if isPlaying { pause() }
-        stopVoicePreview()
-        guard configureAudioSession() else { return }
-
-        let speaker: ReadAloudSpeaker
-        let sample: String
-        if let roleSlot {
-            let safeSlot = min(max(0, roleSlot), ReadAloudSettings.roleVoiceCount - 1)
-            speaker = .unknownDialogue(turn: safeSlot)
-            sample = "你好，这是角色声线 \(safeSlot + 1) 的试听。"
-        } else {
-            speaker = .narrator
-            sample = "夜色渐深，故事从这里缓缓开始。"
-        }
-        guard let choice = preferredLocalVoice(for: speaker) else {
-            state = .failed(message: "请先导入并选择本地音色")
-            return
-        }
-        let token = UUID()
-        previewToken = token
-        previewTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let audio = try await localSynthesizer.synthesize(
-                    text: sample,
-                    package: choice.package,
-                    speakerID: choice.voice.speakerID,
-                    speed: Float(settings.rateMultiplier)
-                )
-                try Task.checkCancellation()
-                guard previewToken == token else { return }
-                previewTask = nil
-                try previewPlayer.play(audio) {}
-            } catch is CancellationError {
-                return
-            } catch {
-                guard previewToken == token else { return }
-                previewTask = nil
-                state = .failed(message: "音色试听失败：\(error.localizedDescription)")
-            }
-        }
     }
 
     func stopVoicePreview() {
@@ -765,21 +585,10 @@ final class ReadAloudService: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    func play(fromUTF16Location location: Int) {
-        guard let index = plan.sentenceIndex(atOrAfterUTF16Location: location) else { return }
-        cancelSpeechPlayback()
-        currentSentenceIndex = index
-        currentSentenceRange = plan.sentences[index].range
-        nextSentenceIndex = index
-        synchronizeNowPlayingAnchorToCurrentSentence()
-        play()
-    }
-
     private func enqueueSentence(at index: Int) {
-        guard plan.sentences.indices.contains(index),
-              let choice = preferredLocalVoice(for: plan.sentences[index].speaker) else {
+        guard plan.sentences.indices.contains(index) else {
             playbackRequested = false
-            state = .failed(message: "当前声线不可用，请在朗读设置中重新选择")
+            state = .failed(message: "当前朗读位置不可用")
             updateNowPlayingInfo()
             return
         }
@@ -797,11 +606,11 @@ final class ReadAloudService: NSObject, ObservableObject {
         synthesisTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let audio = try await localSynthesizer.synthesize(
+                let audio = try await speechClient.synthesize(
                     text: sentence.text,
-                    package: choice.package,
-                    speakerID: choice.voice.speakerID,
-                    speed: Float(settings.rateMultiplier)
+                    speaker: sentence.speaker,
+                    settings: settings,
+                    apiKey: apiKey
                 )
                 try Task.checkCancellation()
                 guard playbackToken == token, playbackRequested else { return }
@@ -816,7 +625,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 synthesisTask = nil
                 activeSentenceIndex = nil
                 playbackRequested = false
-                state = .failed(message: "本地朗读失败：\(error.localizedDescription)")
+                state = .failed(message: "朗读失败：\(error.localizedDescription)")
                 updateNowPlayingInfo()
             }
         }
@@ -838,66 +647,6 @@ final class ReadAloudService: NSObject, ObservableObject {
             state = .failed(message: "无法启动音频：\(error.localizedDescription)")
             return false
         }
-    }
-
-    private func preferredLocalVoice(
-        for speaker: ReadAloudSpeaker
-    ) -> (voice: ReadAloudVoiceOption, package: LocalVoicePackage)? {
-        let narrator = resolvedVoice(identifier: settings.narratorVoiceIdentifier)
-            ?? availableLocalVoices.first
-        let selected: ReadAloudVoiceOption?
-        if settings.automaticallyAssignsCharacterVoices, speaker.isDialogue {
-            let slot = voiceSlot(for: speaker)
-            let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
-                ? settings.roleVoiceIdentifiers[slot]
-                : ""
-            if let configured = resolvedVoice(identifier: configuredIdentifier) {
-                selected = configured
-            } else {
-                let alternatives = availableLocalVoices.filter { $0.id != narrator?.id }
-                selected = alternatives.isEmpty ? narrator : alternatives[slot % alternatives.count]
-            }
-        } else {
-            selected = narrator
-        }
-        guard let selected,
-              let package = localVoicePackages.first(where: { $0.id == selected.packageID }) else {
-            return nil
-        }
-        return (selected, package)
-    }
-
-    private func voiceSlot(for speaker: ReadAloudSpeaker) -> Int {
-        switch speaker {
-        case .narrator:
-            return 0
-        case let .unknownDialogue(turn):
-            return abs(turn) % ReadAloudSettings.roleVoiceCount
-        case let .character(name):
-            var hash: UInt64 = 14_695_981_039_346_656_037
-            for byte in name.utf8 {
-                hash ^= UInt64(byte)
-                hash &*= 1_099_511_628_211
-            }
-            return Int(hash % UInt64(ReadAloudSettings.roleVoiceCount))
-        }
-    }
-
-    private func resolvedVoice(identifier: String) -> ReadAloudVoiceOption? {
-        guard LocalVoiceSelection(identifier: identifier) != nil else { return nil }
-        return availableLocalVoices.first { $0.id == identifier }
-    }
-
-    private func activeVoiceUses(packageID: String) -> Bool {
-        let identifiers = [settings.narratorVoiceIdentifier] + settings.roleVoiceIdentifiers
-        return identifiers.contains {
-            LocalVoiceSelection(identifier: $0)?.packageID == packageID
-        }
-    }
-
-    private func currentSentenceUses(packageID: String) -> Bool {
-        guard plan.sentences.indices.contains(currentSentenceIndex) else { return false }
-        return preferredLocalVoice(for: plan.sentences[currentSentenceIndex].speaker)?.package.id == packageID
     }
 
     private func cancelSpeechPlayback() {
@@ -941,7 +690,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard !chapterPages.isEmpty else { return }
         let chapterPlan = ReadAloudRoleAnalyzer.plan(
             for: chapterPages,
-            alternatesUnattributedDialogue: settings.alternatesUnattributedDialogue
+            alternatesUnattributedDialogue: true
         )
         var combined = rolePlan.speakersByPage
         combined.merge(chapterPlan.speakersByPage) { _, new in new }

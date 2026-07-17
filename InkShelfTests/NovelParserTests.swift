@@ -5,7 +5,7 @@ import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
-    func testReadAloudPlanKeepsSentenceAndParagraphRangesInUTF16Coordinates() throws {
+    func testReadAloudPlanKeepsSentenceRangesInUTF16Coordinates() throws {
         let text = "  第一段😀第一句。第二句！\n\n第二段内容。  "
         let plan = ReadAloudTextPlan(text: text)
         let nsText = text as NSString
@@ -15,22 +15,6 @@ final class NovelParserTests: XCTestCase {
             "第二句！",
             "第二段内容。"
         ])
-        XCTAssertEqual(plan.paragraphRanges.map { nsText.substring(with: $0) }, [
-            "第一段😀第一句。第二句！",
-            "第二段内容。"
-        ])
-    }
-
-    func testParagraphStartResolvesToItsFirstSpokenSentence() throws {
-        let text = "第一段第一句。第一段第二句。\n第二段第一句。"
-        let plan = ReadAloudTextPlan(text: text)
-        let secondParagraph = try XCTUnwrap(plan.paragraphRanges.last)
-        let sentenceIndex = try XCTUnwrap(
-            plan.sentenceIndex(atOrAfterUTF16Location: secondParagraph.location)
-        )
-
-        XCTAssertEqual(plan.sentences[sentenceIndex].text, "第二段第一句。")
-        XCTAssertTrue(NSIntersectionRange(plan.sentences[sentenceIndex].range, secondParagraph).length > 0)
     }
 
     func testBookGridCoverSizeKeepsAStablePortraitRatio() {
@@ -679,67 +663,21 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
-    func testLocalVoiceManifestDefaultsToOneSpeaker() throws {
-        let json = #"""
-        {
-          "name": "离线中文音色",
-          "engine": "vits",
-          "model": "model.onnx",
-          "tokens": "tokens.txt"
-        }
-        """#.data(using: .utf8)!
+    func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
+        let first = AudiobookVoiceDirector.direction(for: .character("张三"), provider: .mimo)
+        let second = AudiobookVoiceDirector.direction(for: .character("张三"), provider: .mimo)
+        let narrator = AudiobookVoiceDirector.direction(for: .narrator, provider: .mimo)
 
-        let manifest = try JSONDecoder().decode(LocalVoicePackageManifest.self, from: json)
-
-        XCTAssertEqual(manifest.formatVersion, 1)
-        XCTAssertEqual(manifest.engine, .vits)
-        XCTAssertEqual(manifest.speakers, [LocalVoiceSpeaker(id: 0, name: "默认音色")])
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(narrator.voiceID, "白桦")
+        XCTAssertNotEqual(first.voiceID, narrator.voiceID)
     }
 
-    func testLocalVoicePackageRejectsParentDirectoryPaths() throws {
-        let manifest = LocalVoicePackageManifest(
-            name: "测试音色",
-            engine: .vits,
-            model: "model.onnx",
-            tokens: "tokens.txt"
-        )
-        let package = LocalVoicePackage(
-            id: "package",
-            directoryURL: URL(fileURLWithPath: "/tmp/voice-package", isDirectory: true),
-            manifest: manifest
-        )
+    func testUnknownDialogueAlternatesAutomaticVoices() {
+        let first = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 0), provider: .mimo)
+        let second = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 1), provider: .mimo)
 
-        XCTAssertThrowsError(try package.fileURL(for: "../outside.onnx"))
-        XCTAssertEqual(
-            LocalVoiceSelection(packageID: "package", speakerID: 7).identifier,
-            "package::7"
-        )
-    }
-
-    func testBuiltInVoiceCatalogHasCompleteKokoroSpeakerMap() throws {
-        let model = try XCTUnwrap(LocalVoiceCatalog.models.first)
-
-        XCTAssertEqual(model.id, "kokoro-int8-multi-lang-v1_1")
-        XCTAssertEqual(model.manifest.engine, .kokoro)
-        XCTAssertEqual(model.manifest.model, "model.int8.onnx")
-        XCTAssertEqual(model.manifest.speakers.count, 103)
-        XCTAssertEqual(model.manifest.speakers.map(\.id), Array(0...102))
-        XCTAssertEqual(model.manifest.speakers[3].name, "中文女声 001")
-        XCTAssertEqual(model.manifest.speakers[58].name, "中文男声 009")
-        XCTAssertEqual(model.archiveSHA256.count, 64)
-        XCTAssertEqual(model.downloadURL.scheme, "https")
-    }
-
-    func testLocalVoiceArchiveSHA256UsesStreamingFileHash() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-hash-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: url) }
-        try Data("InkShelf".utf8).write(to: url)
-
-        XCTAssertEqual(
-            try LocalVoicePackageStore.sha256(of: url),
-            "5899151d811a8a3a1aa7fc71b52f40c76cf262b4680473d96f414f960df1a726"
-        )
+        XCTAssertNotEqual(first.voiceID, second.voiceID)
     }
 
     func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
@@ -797,15 +735,28 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 0)])
     }
 
-    func testSettingsNormalizationClampsRateAndVoiceSlots() {
+    func testSettingsNormalizationClampsRateAndTrimsConnectionFields() {
         var settings = ReadAloudSettings()
         settings.rateMultiplier = 3
-        settings.roleVoiceIdentifiers = ["one"]
+        settings.baseURL = "  https://example.com/v1  "
+        settings.model = "  speech-model "
 
         let normalized = settings.normalized
 
         XCTAssertEqual(normalized.rateMultiplier, 1.2)
-        XCTAssertEqual(normalized.roleVoiceIdentifiers, ["one", "", ""])
+        XCTAssertEqual(normalized.baseURL, "https://example.com/v1")
+        XCTAssertEqual(normalized.model, "speech-model")
+    }
+
+    func testLegacySettingsMigrateToSafeMiMoDefaults() throws {
+        let legacy = #"{"rateMultiplier":0.8,"narratorVoiceIdentifier":"old"}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: legacy)
+
+        XCTAssertEqual(settings.provider, .mimo)
+        XCTAssertEqual(settings.baseURL, ReadAloudProvider.mimo.defaultBaseURL)
+        XCTAssertEqual(settings.model, ReadAloudProvider.mimo.defaultModel)
+        XCTAssertFalse(settings.allowsTextUpload)
     }
 
     private func page(index: Int, text: String) -> ReaderPage {
@@ -945,7 +896,6 @@ final class ReaderRuntimeTests: XCTestCase {
                 horizontalMargin: 22,
                 highlightedLocation: nil,
                 highlightedRange: nil,
-                showsReadAloudControls: false,
                 isReadAloudPlaying: false
             )
             let host = ReaderPageTurnHostController()
@@ -1007,7 +957,6 @@ final class ReaderRuntimeTests: XCTestCase {
             horizontalMargin: 22,
             highlightedLocation: pages[0].location,
             highlightedRange: NSRange(location: 0, length: 2),
-            showsReadAloudControls: true,
             isReadAloudPlaying: true
         )
         let host = ReaderPageTurnHostController()

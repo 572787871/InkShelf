@@ -1,297 +1,140 @@
 import SwiftUI
-import UniformTypeIdentifiers
-
-struct ReadAloudSettingsSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var readAloud: ReadAloudService
-    let onStart: (() -> Void)?
-
-    init(onStart: (() -> Void)? = nil) {
-        self.onStart = onStart
-    }
-
-    var body: some View {
-        NavigationStack {
-            ReadAloudSettingsView(onStart: onStart == nil ? nil : startReading)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button(onStart == nil ? "完成" : "取消") { dismiss() }
-                    }
-                }
-        }
-    }
-
-    private func startReading() {
-        readAloud.stopVoicePreview()
-        dismiss()
-        onStart?()
-    }
-}
 
 struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
-    let onStart: (() -> Void)?
-    @State private var showingVoiceImporter = false
-    @State private var isImportingVoice = false
-    @State private var importError: String?
-    @State private var packageToDelete: LocalVoicePackage?
-
-    init(onStart: (() -> Void)? = nil) {
-        self.onStart = onStart
-    }
-
-    private var voiceOptions: [ReadAloudVoiceOption] {
-        readAloud.availableLocalVoices
-    }
 
     var body: some View {
         Form {
-            Section("本地音色模型") {
-                NavigationLink {
-                    LocalVoiceModelStoreView()
-                } label: {
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        Image(systemName: "square.grid.2x2.fill")
+                        Image(systemName: "waveform.and.person.filled")
+                            .font(.system(size: 28, weight: .semibold))
                             .foregroundStyle(.tint)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("模型商店")
-                            Text("下载官方 Kokoro/VITS 离线模型")
+                            .frame(width: 44, height: 44)
+                            .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("AI 有声书")
+                                .font(.headline)
+                            Text("自动识别对白、稳定分配角色并连续朗读")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    Text("不再提供手工声线选择。旁白、人物和未知对白由导演逻辑自动分配；阅读页只负责开始、暂停和继续播放。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("语音服务") {
+                Picker("服务类型", selection: providerBinding) {
+                    ForEach(ReadAloudProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
                 }
 
-                Button {
-                    showingVoiceImporter = true
-                } label: {
+                TextField("服务地址", text: settingBinding(\.baseURL))
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+
+                TextField("模型", text: settingBinding(\.model))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                SecureField("API Key", text: $readAloud.apiKey)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                providerHelp
+            }
+
+            Section("自动导演") {
+                Label("旁白与对白自动拆分", systemImage: "text.quote")
+                Label("同一人物保持稳定角色", systemImage: "person.2.wave.2")
+                Label("按句合成，自动衔接翻页", systemImage: "books.vertical")
+
+                Text("角色识别在设备上完成，只把当前要朗读的短句发送给所选语音服务。服务支持的音色能力不同，OpenAI 兼容服务需实现 /audio/speech 接口。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("播放") {
+                Slider(value: settingBinding(\.rateMultiplier), in: 0.7...1.2, step: 0.05)
+                LabeledContent("语速", value: speedDescription)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("隐私与连接") {
+                Toggle("允许发送朗读文本片段", isOn: settingBinding(\.allowsTextUpload))
+
+                Button(action: readAloud.testConnection) {
                     HStack {
-                        Label("导入音色包", systemImage: "square.and.arrow.down")
+                        Label("测试连接并试听", systemImage: "network")
                         Spacer()
-                        if isImportingVoice { ProgressView().controlSize(.small) }
+                        connectionIndicator
                     }
                 }
-                .disabled(isImportingVoice)
+                .disabled(!readAloud.canStartReading || readAloud.connectionState == .testing)
 
-                if readAloud.localVoicePackages.isEmpty {
-                    ContentUnavailableView(
-                        "尚未导入音色",
-                        systemImage: "waveform.badge.exclamationmark",
-                        description: Text("导入包含 voice.json 的 Kokoro 或 VITS ZIP 模型包后，才能试听和开始朗读。")
-                    )
-                    .listRowBackground(Color.clear)
-                } else {
-                    ForEach(readAloud.localVoicePackages) { package in
-                        HStack(spacing: 12) {
-                            Image(systemName: "waveform.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(.tint)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(package.name)
-                                Text("\(package.engineName) · \(package.voiceCount) 个音色 · 完全离线")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button(role: .destructive) {
-                                packageToDelete = package
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("删除\(package.name)")
-                        }
-                    }
-                }
-
-                Text("模型只保存在本机 Application Support 中。导入过程会校验模型清单和文件路径，不会上传音色或小说正文。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("分角色配音") {
-                Toggle(
-                    "自动分配角色声线",
-                    isOn: settingBinding(\.automaticallyAssignsCharacterVoices)
-                )
-                Toggle(
-                    "连续未知对话轮换声线",
-                    isOn: settingBinding(\.alternatesUnattributedDialogue)
-                )
-                .disabled(!readAloud.settings.automaticallyAssignsCharacterVoices)
-
-                Text("应用会在本机识别引号对话和“某某说、问、答、喊”等提示语。无法确定人物时只轮换未知角色声线，不会改写或上传正文。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("朗读速度") {
-                Slider(
-                    value: settingBinding(\.rateMultiplier),
-                    in: 0.65...1.2,
-                    step: 0.05
-                )
-                LabeledContent("当前速度", value: speedDescription)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("声线") {
-                voiceRow(
-                    title: "旁白",
-                    selection: settingBinding(\.narratorVoiceIdentifier),
-                    roleSlot: nil
-                )
-                ForEach(0..<ReadAloudSettings.roleVoiceCount, id: \.self) { index in
-                    voiceRow(
-                        title: "角色声线 \(index + 1)",
-                        selection: roleVoiceBinding(at: index),
-                        roleSlot: index
-                    )
-                }
-
-                if voiceOptions.isEmpty {
-                    Text("没有本地音色。请先导入 Kokoro 或 VITS 音色模型包。墨架不会回退使用苹果系统声音。")
+                if case let .failed(message) = readAloud.connectionState {
+                    Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("选择“自动选择”时，墨架只会从已导入的本地模型音色中分配；同一人物会稳定使用同一声线槽位。")
+                        .foregroundStyle(.red)
+                } else if readAloud.connectionState == .connected {
+                    Text("连接成功，已播放自动旁白试听。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.green)
                 }
-            }
 
-            Section("生效范围") {
-                Text("声线和速度会从下一句开始生效；连续对话轮换规则会从下一页或下次开始朗读时生效。后台播放、锁屏控制和原进度返回方式保持不变。")
+                Text("API Key 保存在 iPhone 钥匙串中，不会写入书库或偏好文件。小说只会在开始朗读或连接试听时发送给你选择的服务，墨架不会代为保存。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-            }
-
-            if let onStart {
-                Section {
-                    Button(action: onStart) {
-                        Label("开始朗读", systemImage: "play.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .listRowBackground(Color.clear)
-                    .disabled(!readAloud.canStartLocalReading || isImportingVoice)
-                } footer: {
-                    Text(readAloud.canStartLocalReading
-                        ? "将使用本地模型，从当前可见页面开头开始朗读。"
-                        : "必须先导入至少一个本地音色才能开始朗读。")
-                }
             }
         }
-        .navigationTitle("朗读设置")
+        .navigationTitle("朗读服务")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { readAloud.stopVoicePreview() }
-        .fileImporter(
-            isPresented: $showingVoiceImporter,
-            allowedContentTypes: [.zip],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case let .success(urls):
-                guard let url = urls.first else { return }
-                importVoicePackage(from: url)
-            case let .failure(error):
-                importError = error.localizedDescription
-            }
-        }
-        .alert("音色包导入失败", isPresented: importErrorIsPresented) {
-            Button("知道了", role: .cancel) { importError = nil }
-        } message: {
-            Text(importError ?? "未知错误")
-        }
-        .confirmationDialog(
-            "删除本地音色包？",
-            isPresented: packageDeleteIsPresented,
-            titleVisibility: .visible
-        ) {
-            if let packageToDelete {
-                Button("删除 \(packageToDelete.name)", role: .destructive) {
-                    removeVoicePackage(packageToDelete)
-                }
-            }
-            Button("取消", role: .cancel) { packageToDelete = nil }
-        } message: {
-            Text("模型文件会从此设备删除；如果正在使用该音色，朗读也会停止。")
+    }
+
+    @ViewBuilder
+    private var providerHelp: some View {
+        switch readAloud.settings.provider {
+        case .mimo:
+            Text("使用 MiMo 的 OpenAI 兼容 chat/completions 音频协议，自动调用白桦、冰糖、苏打、茉莉等预置角色。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        case .openAICompatible:
+            Text("可连接其他兼容服务或自建网关。墨架会调用 audio/speech，并自动分配服务常见的角色 ID；服务不支持某个角色时会直接显示接口错误。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private func voiceRow(
-        title: String,
-        selection: Binding<String>,
-        roleSlot: Int?
-    ) -> some View {
-        LabeledContent(title) {
-            HStack(spacing: 10) {
-                Picker(title, selection: selection) {
-                    Text("自动选择").tag("")
-                    if !selection.wrappedValue.isEmpty,
-                       !voiceOptions.contains(where: { $0.id == selection.wrappedValue }) {
-                        Text("已不可用的声线").tag(selection.wrappedValue)
-                    }
-                    ForEach(voiceOptions) { voice in
-                        Text("\(voice.name) · \(voice.packageName)").tag(voice.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .disabled(voiceOptions.isEmpty)
-
-                Button {
-                    readAloud.previewVoice(roleSlot: roleSlot)
-                } label: {
-                    Image(systemName: "speaker.wave.2.fill")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("试听\(title)")
-                .disabled(voiceOptions.isEmpty)
-            }
+    private var connectionIndicator: some View {
+        switch readAloud.connectionState {
+        case .idle:
+            EmptyView()
+        case .testing:
+            ProgressView().controlSize(.small)
+        case .connected:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case let .failed(message):
+            Image(systemName: "exclamationmark.circle.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel(message)
         }
     }
 
-    private var importErrorIsPresented: Binding<Bool> {
+    private var providerBinding: Binding<ReadAloudProvider> {
         Binding(
-            get: { importError != nil },
-            set: { if !$0 { importError = nil } }
+            get: { readAloud.settings.provider },
+            set: { readAloud.applyProviderDefaults(for: $0) }
         )
-    }
-
-    private var packageDeleteIsPresented: Binding<Bool> {
-        Binding(
-            get: { packageToDelete != nil },
-            set: { if !$0 { packageToDelete = nil } }
-        )
-    }
-
-    private func importVoicePackage(from url: URL) {
-        isImportingVoice = true
-        Task {
-            do {
-                try await readAloud.importLocalVoicePackage(from: url)
-            } catch {
-                importError = error.localizedDescription
-            }
-            isImportingVoice = false
-        }
-    }
-
-    private func removeVoicePackage(_ package: LocalVoicePackage) {
-        packageToDelete = nil
-        do {
-            try readAloud.removeLocalVoicePackage(package)
-        } catch {
-            importError = error.localizedDescription
-        }
-    }
-
-    private var speedDescription: String {
-        "\(Int((readAloud.settings.rateMultiplier * 100).rounded()))%"
     }
 
     private func settingBinding<Value>(
@@ -303,172 +146,7 @@ struct ReadAloudSettingsView: View {
         )
     }
 
-    private func roleVoiceBinding(at index: Int) -> Binding<String> {
-        Binding(
-            get: {
-                guard readAloud.settings.roleVoiceIdentifiers.indices.contains(index) else { return "" }
-                return readAloud.settings.roleVoiceIdentifiers[index]
-            },
-            set: { identifier in
-                guard readAloud.settings.roleVoiceIdentifiers.indices.contains(index) else { return }
-                readAloud.settings.roleVoiceIdentifiers[index] = identifier
-            }
-        )
-    }
-}
-
-private struct LocalVoiceModelStoreView: View {
-    @EnvironmentObject private var readAloud: ReadAloudService
-    @State private var pendingDownload: LocalVoiceCatalogModel?
-
-    var body: some View {
-        List {
-            Section {
-                Label {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("下载后完全离线")
-                            .font(.headline)
-                        Text("只有下载模型时需要网络。小说正文、角色分析和语音生成始终留在设备上。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } icon: {
-                    Image(systemName: "iphone.and.arrow.forward")
-                        .font(.title2)
-                        .foregroundStyle(.tint)
-                }
-                .padding(.vertical, 4)
-            }
-
-            Section {
-                ForEach(readAloud.localVoiceCatalog) { model in
-                    modelRow(model)
-                }
-            } header: {
-                Text("可下载模型")
-            } footer: {
-                Text("模型由原作者或 sherpa-onnx 官方发布。墨架会校验完整性，安装完成后删除下载缓存。建议使用 Wi-Fi，并在安装完成前保持应用开启。")
-            }
-
-            if !readAloud.localVoicePackages.isEmpty {
-                Section("已安装") {
-                    ForEach(readAloud.localVoicePackages) { package in
-                        LabeledContent(package.name) {
-                            Text("\(package.voiceCount) 个音色")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text("返回朗读设置可试听、分配声线或删除模型。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .navigationTitle("模型商店")
-        .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            "下载离线模型？",
-            isPresented: pendingDownloadIsPresented,
-            titleVisibility: .visible
-        ) {
-            if let pendingDownload {
-                Button("下载 \(pendingDownload.downloadSizeDescription)") {
-                    readAloud.downloadCatalogModel(pendingDownload)
-                    self.pendingDownload = nil
-                }
-            }
-            Button("取消", role: .cancel) { pendingDownload = nil }
-        } message: {
-            if let pendingDownload {
-                Text("\(pendingDownload.name) 下载后会自动校验并安装。")
-            }
-        }
-    }
-
-    private func modelRow(_ model: LocalVoiceCatalogModel) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.name)
-                        .font(.headline)
-                    Text("\(model.language) · \(model.manifest.speakers.count) 个音色 · \(model.downloadSizeDescription)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Text(model.summary)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 16) {
-                Link("\(model.licenseName) 许可", destination: model.licenseURL)
-                Link("模型来源", destination: model.sourceURL)
-            }
-            .font(.caption)
-
-            stateControls(for: model)
-        }
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private func stateControls(for model: LocalVoiceCatalogModel) -> some View {
-        switch readAloud.catalogState(for: model) {
-        case .available:
-            Button {
-                pendingDownload = model
-            } label: {
-                Label("下载并安装", systemImage: "arrow.down.circle.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-
-        case let .downloading(progress):
-            VStack(alignment: .leading, spacing: 8) {
-                ProgressView(value: progress) {
-                    Text("正在下载 \(Int((progress * 100).rounded()))%")
-                        .font(.caption)
-                }
-                Button("取消下载", role: .cancel) {
-                    readAloud.cancelCatalogModelDownload(model)
-                }
-                .font(.caption)
-            }
-
-        case .installing:
-            HStack(spacing: 10) {
-                ProgressView()
-                Text("正在校验并安装…")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-        case .installed:
-            Label("已安装，可以离线试听和朗读", systemImage: "checkmark.circle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.green)
-
-        case let .failed(message):
-            VStack(alignment: .leading, spacing: 8) {
-                Label("下载或安装失败", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("重新下载") { pendingDownload = model }
-                    .buttonStyle(.bordered)
-            }
-        }
-    }
-
-    private var pendingDownloadIsPresented: Binding<Bool> {
-        Binding(
-            get: { pendingDownload != nil },
-            set: { if !$0 { pendingDownload = nil } }
-        )
+    private var speedDescription: String {
+        String(format: "%.2f×", readAloud.settings.rateMultiplier)
     }
 }

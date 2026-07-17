@@ -1,27 +1,64 @@
 import Foundation
 
-struct ReadAloudSettings: Codable, Equatable, Sendable {
-    static let roleVoiceCount = 3
+enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
+    case mimo
+    case openAICompatible
 
-    var automaticallyAssignsCharacterVoices = true
-    var alternatesUnattributedDialogue = true
-    var rateMultiplier = 0.86
-    var narratorVoiceIdentifier = ""
-    var roleVoiceIdentifiers = ["", "", ""]
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mimo: "小米 MiMo"
+        case .openAICompatible: "OpenAI 兼容"
+        }
+    }
+
+    var defaultBaseURL: String {
+        switch self {
+        case .mimo: "https://api.xiaomimimo.com/v1"
+        case .openAICompatible: "https://api.openai.com/v1"
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .mimo: "mimo-v2.5-tts"
+        case .openAICompatible: "gpt-4o-mini-tts"
+        }
+    }
+}
+
+/// Only connection and playback preferences are user configurable. Character
+/// casting is automatic and intentionally has no manual voice slots.
+struct ReadAloudSettings: Codable, Equatable, Sendable {
+    var provider = ReadAloudProvider.mimo
+    var baseURL = ReadAloudProvider.mimo.defaultBaseURL
+    var model = ReadAloudProvider.mimo.defaultModel
+    var rateMultiplier = 0.9
+    var allowsTextUpload = false
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, baseURL, model, rateMultiplier, allowsTextUpload
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decodeIfPresent(ReadAloudProvider.self, forKey: .provider) ?? .mimo
+        baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
+            ?? provider.defaultBaseURL
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+            ?? provider.defaultModel
+        rateMultiplier = try container.decodeIfPresent(Double.self, forKey: .rateMultiplier) ?? 0.9
+        allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
+    }
 
     var normalized: ReadAloudSettings {
         var copy = self
-        copy.rateMultiplier = min(1.2, max(0.65, copy.rateMultiplier))
-        if copy.roleVoiceIdentifiers.count < Self.roleVoiceCount {
-            copy.roleVoiceIdentifiers.append(
-                contentsOf: Array(
-                    repeating: "",
-                    count: Self.roleVoiceCount - copy.roleVoiceIdentifiers.count
-                )
-            )
-        } else if copy.roleVoiceIdentifiers.count > Self.roleVoiceCount {
-            copy.roleVoiceIdentifiers = Array(copy.roleVoiceIdentifiers.prefix(Self.roleVoiceCount))
-        }
+        copy.baseURL = copy.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.model = copy.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.rateMultiplier = min(1.2, max(0.7, copy.rateMultiplier))
         return copy
     }
 }

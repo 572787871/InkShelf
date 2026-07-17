@@ -16,45 +16,28 @@
 - 羊皮纸、纯白、护眼、夜间主题；宋体、楷体、系统字体
 - 字号、行距、页边距、屏幕亮度和阅读常亮
 - 正文/封面独立文件存储、轻量元数据原子持久化、隐私清单、单元测试
-- 下载后完全离线的 Kokoro/VITS 分角色配音、模型商店、音色包导入、试听、后台与锁屏控制
+- 自动识别对白并稳定分配角色的 AI 有声书、后台播放与锁屏控制
 
 ## 运行
 
 1. 使用 Xcode 16 或更新版本打开 `InkShelf.xcodeproj`。
-2. 运行 `bash scripts/bootstrap-local-tts.sh`，下载并校验固定版本的 sherpa-onnx iOS 运行库。
-3. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20 和 SWCompression 4.9.0。
-4. 在 Signing & Capabilities 中选择你的开发团队。
-5. 选择 iOS 17+ 模拟器或真机运行。
+2. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20。
+3. 在 Signing & Capabilities 中选择你的开发团队。
+4. 选择 iOS 17+ 模拟器或真机运行。
 
-工程不依赖后端。所有书籍、进度、书签和笔记默认只保存在 App 沙盒。
+所有书籍、进度、书签和笔记默认只保存在 App 沙盒；仅启用 AI 朗读时需要用户自行配置语音服务。
 
-## 本地音色包
+## AI 有声书
 
-朗读不使用 `AVSpeechSynthesizer`，也不会回退到苹果系统音色。在“设置 → 朗读 → 功能设置 → 模型商店”可以下载官方 Kokoro 中文多音色模型；应用会显示进度、支持取消和重试，并在安装前校验固定 SHA-256。模型安装完成后删除下载缓存，后续语音生成不需要网络。
+朗读不使用 `AVSpeechSynthesizer`，也没有手工声线设置。实现参考 [mimo-tts](https://github.com/dqsq2e2/mimo-tts) 的“角色识别 → 自动选角 → 分段合成”流程：墨架在设备上识别旁白和对白，同一人物会获得稳定的自动角色，然后按短句调用语音接口。
 
-也可以从文件 App 导入自定义 ZIP 音色包。ZIP 内可有一层目录，但模型根目录必须包含 `voice.json`：
+配置入口只在“主页右上角设置 → 朗读 → 功能设置”。当前支持：
 
-```json
-{
-  "formatVersion": 1,
-  "name": "中文小说音色",
-  "engine": "kokoro",
-  "model": "model.onnx",
-  "voices": "voices.bin",
-  "tokens": "tokens.txt",
-  "lexicons": ["lexicon-zh.txt", "lexicon-us-en.txt"],
-  "dataDirectory": "espeak-ng-data",
-  "speakers": [
-    { "id": 0, "name": "温柔女声" },
-    { "id": 1, "name": "沉稳男声" }
-  ]
-}
-```
+- 小米 MiMo `chat/completions` 音频协议，默认使用 `mimo-v2.5-tts`。
+- 标准 `audio/speech` 形式的 OpenAI 兼容服务或自建网关。
 
-`engine` 可为 `kokoro` 或 `vits`。VITS 不需要 `voices`；`lexicons` 和 `dataDirectory` 可按模型实际文件省略。`speakers.id` 必须对应模型的 speaker ID。模型包展开上限为 2 GB，导入器拒绝绝对路径、父目录路径和符号链接。
+API Key 只保存在 iOS 钥匙串中。用户必须明确允许发送朗读片段；未授权或未完成配置时，阅读页不会发起网络请求。不同兼容服务对模型、角色 ID 和 `instructions` 的支持可能不同，应先用设置页的连接试听确认。
 
 ## 第三方依赖
 
 - [ZIPFoundation](https://github.com/weichsel/ZIPFoundation)（MIT）：EPUB ZIP 容器读取。
-- [SWCompression](https://github.com/tsolomko/SWCompression)（MIT）：官方模型 `.tar.bz2` 解压。
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）：Kokoro/VITS 离线语音合成。

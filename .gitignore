@@ -4,5 +4,3 @@ DerivedData/
 xcuserdata/
 .DS_Store
 InkShelf.xcodeproj/project.xcworkspace/xcuserdata/
-Vendor/sherpa-onnx.xcframework/
-Vendor/onnxruntime.xcframework/
