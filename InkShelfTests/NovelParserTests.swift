@@ -508,6 +508,78 @@ final class ReaderThemeTests: XCTestCase {
     }
 }
 
+final class ReadAloudRoleAnalyzerTests: XCTestCase {
+    func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
+        let pages = [
+            page(index: 0, text: "张三说：“我们出发。”"),
+            page(index: 1, text: "李四问：“现在吗？”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.character("张三")])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("李四")])
+    }
+
+    func testNarrationKeepsNarratorVoice() {
+        let page = page(index: 0, text: "天色渐渐亮了。远处传来钟声。")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.narrator, .narrator])
+    }
+
+    func testUnknownDialogueAlternatesAcrossPages() {
+        let pages = [
+            page(index: 0, text: "“你是谁？”"),
+            page(index: 1, text: "“先别问，跟我走。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.unknownDialogue(turn: 0)])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 1)])
+    }
+
+    func testUnknownDialogueDoesNotAlternateWhenDisabled() {
+        let pages = [
+            page(index: 0, text: "“第一句。”"),
+            page(index: 1, text: "“第二句。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(
+            for: pages,
+            alternatesUnattributedDialogue: false
+        )
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.unknownDialogue(turn: 0)])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 0)])
+    }
+
+    func testSettingsNormalizationClampsRateAndVoiceSlots() {
+        var settings = ReadAloudSettings()
+        settings.rateMultiplier = 3
+        settings.roleVoiceIdentifiers = ["one"]
+
+        let normalized = settings.normalized
+
+        XCTAssertEqual(normalized.rateMultiplier, 1.2)
+        XCTAssertEqual(normalized.roleVoiceIdentifiers, ["one", "", ""])
+    }
+
+    private func page(index: Int, text: String) -> ReaderPage {
+        ReaderPage(
+            location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
+            chapterTitle: "第一章",
+            text: text,
+            pageInChapter: index + 1,
+            pageCountInChapter: 2,
+            overallIndex: index,
+            overallCount: 2
+        )
+    }
+}
+
 final class ReadAloudTimelineTests: XCTestCase {
     private func pages(chapterIndices: [Int]) -> [ReaderPage] {
         chapterIndices.enumerated().map { overallIndex, chapterIndex in

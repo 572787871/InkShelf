@@ -20,6 +20,12 @@ struct ReadAloudBookContext: Equatable {
     let coverStyle: Int
 }
 
+struct ReadAloudVoiceOption: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let language: String
+}
+
 enum NowPlayingArtworkRenderer {
     static let preferredDimension: CGFloat = 1024
 
@@ -147,14 +153,19 @@ struct ReadAloudTextPlan: Equatable {
     struct Sentence: Equatable {
         let text: String
         let range: NSRange
+        let speaker: ReadAloudSpeaker
     }
 
     let sentences: [Sentence]
     let paragraphRanges: [NSRange]
 
-    init(text: String) {
-        sentences = Self.units(in: text, option: .bySentences).map {
-            Sentence(text: (text as NSString).substring(with: $0), range: $0)
+    init(text: String, speakers: [ReadAloudSpeaker]? = nil) {
+        sentences = Self.units(in: text, option: .bySentences).enumerated().map { index, range in
+            Sentence(
+                text: (text as NSString).substring(with: range),
+                range: range,
+                speaker: speakers.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? .narrator
+            )
         }
         paragraphRanges = Self.units(in: text, option: .byParagraphs)
     }
@@ -195,6 +206,8 @@ struct ReadAloudTextPlan: Equatable {
 /// changing pagination, highlighting or player controls.
 @MainActor
 final class ReadAloudService: NSObject, ObservableObject {
+    private static let settingsDefaultsKey = "readAloudSettings"
+
     @Published private(set) var state: ReadAloudState = .unavailable
     @Published private(set) var currentSentenceIndex = 0
     @Published private(set) var currentSentenceRange: NSRange?
@@ -203,6 +216,15 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var visibleReaderBookID: UUID?
     @Published private(set) var applicationIsActive = true
     @Published private(set) var playbackRequested = false
+    @Published var settings: ReadAloudSettings {
+        didSet {
+            if oldValue.alternatesUnattributedDialogue != settings.alternatesUnattributedDialogue {
+                rolePlan = .empty
+                analyzedRoleChapters.removeAll()
+            }
+            persistSettings()
+        }
+    }
 
     var onPageFinished: (() -> Void)?
     var isPlaying: Bool { playbackRequested && hasSession }
@@ -213,6 +235,8 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private let synthesizer = AVSpeechSynthesizer()
     private var plan = ReadAloudTextPlan(text: "")
+    private var rolePlan = ReadAloudRolePlan.empty
+    private var analyzedRoleChapters: Set<Int> = []
     private var queuedSentenceIndices: [ObjectIdentifier: Int] = [:]
     private var nextSentenceIndex = 0
     private var sessionPages: [ReaderPage] = []
@@ -228,6 +252,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var shouldResumeAfterInterruption = false
 
     override init() {
+        settings = Self.loadSettings()
         super.init()
         synthesizer.delegate = self
         UIApplication.shared.beginReceivingRemoteControlEvents()
@@ -257,6 +282,12 @@ final class ReadAloudService: NSObject, ObservableObject {
         hasSession && bookContext?.id == bookID
     }
 
+    var availableChineseVoices: [ReadAloudVoiceOption] {
+        Self.chineseVoices.map {
+            ReadAloudVoiceOption(id: $0.identifier, name: $0.name, language: $0.language)
+        }
+    }
+
     func startSession(
         book: NovelBook,
         pages: [ReaderPage],
@@ -269,6 +300,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         sessionPages = pages
         sessionPageIndex = pageIndex
+        rolePlan = .empty
+        analyzedRoleChapters.removeAll()
         sessionChapterIndices = chapterIndices(in: pages)
         rebuildCurrentChapterTimeline(force: true)
         let context = ReadAloudBookContext(
@@ -310,6 +343,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     func refreshSessionPages(_ pages: [ReaderPage], for bookID: UUID) {
         guard bookContext?.id == bookID, let currentPageLocation else { return }
         sessionPages = pages
+        rolePlan = .empty
+        analyzedRoleChapters.removeAll()
         sessionChapterIndices = chapterIndices(in: pages)
         sessionPageIndex = pages.firstIndex { $0.location == currentPageLocation }
             ?? pages.lastIndex {
@@ -328,7 +363,11 @@ final class ReadAloudService: NSObject, ObservableObject {
     func setPage(text: String, location: ReaderPageLocation, startAtUTF16Location: Int = 0) {
         synthesizer.stopSpeaking(at: .immediate)
         queuedSentenceIndices.removeAll(keepingCapacity: true)
-        plan = ReadAloudTextPlan(text: text)
+        ensureRolePlan(forChapter: location.chapterIndex)
+        plan = ReadAloudTextPlan(
+            text: text,
+            speakers: rolePlan.speakers(for: location)
+        )
         currentPageLocation = location
 
         guard let startIndex = plan.sentenceIndex(atOrAfterUTF16Location: startAtUTF16Location) else {
@@ -397,6 +436,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         synthesizer.stopSpeaking(at: .immediate)
         queuedSentenceIndices.removeAll()
         plan = ReadAloudTextPlan(text: "")
+        rolePlan = .empty
+        analyzedRoleChapters.removeAll()
         currentSentenceIndex = 0
         currentSentenceRange = nil
         currentPageLocation = nil
@@ -432,12 +473,14 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private func enqueueSentence(at index: Int) {
         guard plan.sentences.indices.contains(index) else { return }
-        let sentence = plan.sentences[index].text
-        let utterance = AVSpeechUtterance(string: sentence)
-        utterance.voice = preferredVoice(for: sentence)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.86
-        utterance.pitchMultiplier = isDialogue(sentence) ? 1.06 : 1
-        utterance.preUtteranceDelay = index == currentSentenceIndex ? 0 : 0.035
+        let sentence = plan.sentences[index]
+        let utterance = AVSpeechUtterance(string: sentence.text)
+        utterance.voice = preferredVoice(for: sentence.speaker)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * Float(settings.rateMultiplier)
+        utterance.pitchMultiplier = pitchMultiplier(for: sentence.speaker)
+        utterance.preUtteranceDelay = index == currentSentenceIndex
+            ? 0
+            : (sentence.speaker.isDialogue ? 0.055 : 0.035)
         queuedSentenceIndices[ObjectIdentifier(utterance)] = index
         synthesizer.speak(utterance)
     }
@@ -460,19 +503,88 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private func preferredVoice(for sentence: String) -> AVSpeechSynthesisVoice? {
-        if isDialogue(sentence) {
-            for language in ["zh-TW", "zh-HK", "zh-CN"] {
-                if let voice = AVSpeechSynthesisVoice(language: language) { return voice }
-            }
+    private func preferredVoice(for speaker: ReadAloudSpeaker) -> AVSpeechSynthesisVoice? {
+        let narrator = configuredVoice(identifier: settings.narratorVoiceIdentifier)
+            ?? AVSpeechSynthesisVoice(language: "zh-CN")
+            ?? Self.chineseVoices.first
+        guard settings.automaticallyAssignsCharacterVoices, speaker.isDialogue else {
+            return narrator
         }
-        return AVSpeechSynthesisVoice(language: "zh-CN")
-            ?? AVSpeechSynthesisVoice.speechVoices().first { $0.language.hasPrefix("zh") }
+
+        let slot = voiceSlot(for: speaker)
+        let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
+            ? settings.roleVoiceIdentifiers[slot]
+            : ""
+        if let configured = configuredVoice(identifier: configuredIdentifier) { return configured }
+
+        let narratorIdentifier = narrator?.identifier
+        let alternatives = Self.chineseVoices.filter { $0.identifier != narratorIdentifier }
+        guard !alternatives.isEmpty else { return narrator }
+        return alternatives[slot % alternatives.count]
     }
 
-    private func isDialogue(_ sentence: String) -> Bool {
-        guard let first = sentence.trimmingCharacters(in: .whitespacesAndNewlines).first else { return false }
-        return "\"“「『".contains(first)
+    private func pitchMultiplier(for speaker: ReadAloudSpeaker) -> Float {
+        guard settings.automaticallyAssignsCharacterVoices, speaker.isDialogue else { return 1 }
+        let pitchValues: [Float] = [0.94, 1.06, 1]
+        return pitchValues[voiceSlot(for: speaker)]
+    }
+
+    private func voiceSlot(for speaker: ReadAloudSpeaker) -> Int {
+        switch speaker {
+        case .narrator:
+            return 0
+        case let .unknownDialogue(turn):
+            return abs(turn) % ReadAloudSettings.roleVoiceCount
+        case let .character(name):
+            var hash: UInt64 = 14_695_981_039_346_656_037
+            for byte in name.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            return Int(hash % UInt64(ReadAloudSettings.roleVoiceCount))
+        }
+    }
+
+    private func configuredVoice(identifier: String) -> AVSpeechSynthesisVoice? {
+        guard !identifier.isEmpty else { return nil }
+        return AVSpeechSynthesisVoice(identifier: identifier)
+    }
+
+    private func ensureRolePlan(forChapter chapterIndex: Int) {
+        guard !analyzedRoleChapters.contains(chapterIndex) else { return }
+        let chapterPages = sessionPages.filter { $0.location.chapterIndex == chapterIndex }
+        guard !chapterPages.isEmpty else { return }
+        let chapterPlan = ReadAloudRoleAnalyzer.plan(
+            for: chapterPages,
+            alternatesUnattributedDialogue: settings.alternatesUnattributedDialogue
+        )
+        var combined = rolePlan.speakersByPage
+        combined.merge(chapterPlan.speakersByPage) { _, new in new }
+        rolePlan = ReadAloudRolePlan(speakersByPage: combined)
+        analyzedRoleChapters.insert(chapterIndex)
+    }
+
+    private func persistSettings() {
+        guard let data = try? JSONEncoder().encode(settings.normalized) else { return }
+        UserDefaults.standard.set(data, forKey: Self.settingsDefaultsKey)
+    }
+
+    private static func loadSettings() -> ReadAloudSettings {
+        guard let data = UserDefaults.standard.data(forKey: settingsDefaultsKey),
+              let decoded = try? JSONDecoder().decode(ReadAloudSettings.self, from: data) else {
+            return ReadAloudSettings()
+        }
+        return decoded.normalized
+    }
+
+    private static var chineseVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("zh") }
+            .sorted {
+                if $0.language != $1.language { return $0.language < $1.language }
+                if $0.name != $1.name { return $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                return $0.identifier < $1.identifier
+            }
     }
 
     private func advanceInBackground() {

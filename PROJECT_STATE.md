@@ -27,6 +27,12 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Services/ReadAloudService.swift`
   - AVSpeechSynthesizer session, sentence highlighting, background audio,
     chapter timeline, MediaPlayer now-playing metadata and remote commands
+- `InkShelf/Models/ReadAloudRoles.swift`
+  - local dialogue attribution, stable character/unknown speaker assignments,
+    and persisted read-aloud voice preferences
+- `InkShelf/Views/ReadAloudSettingsView.swift`
+  - automatic character voice, unknown-dialogue alternation, speed, narrator,
+    and three character voice-slot settings
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -71,6 +77,14 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
+- Automatic character voices are local-only: the current chapter is analyzed
+  lazily for quoted dialogue and explicit speaking verbs, then named characters
+  are assigned stable voice slots. Ambiguous dialogue can alternate between
+  fallback slots without inventing a character identity.
+- Read-aloud settings are available from the app Settings screen and persist on
+  device; the same page is reachable from the reader appearance controls.
+  Voice and speed changes apply to subsequent utterances without retargeting
+  the active narration session.
 
 ### Shelf and covers
 

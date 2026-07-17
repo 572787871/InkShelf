@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var readAloud: ReadAloudService
     @State private var showingEmailAccount = false
     @State private var isSigningInWithApple = false
     @State private var isSigningOut = false
@@ -51,10 +52,24 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("AI 朗读") {
-                    HStack { Label("配音引擎", systemImage: "waveform"); Spacer(); Text("等待接入").foregroundStyle(.secondary) }
-                    Text("工程已定义章节预处理、播放、暂停、句子定位与状态同步接口，可直接接入后续 AI 语音服务。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                Section("朗读") {
+                    NavigationLink {
+                        ReadAloudSettingsView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("功能设置")
+                                Text(readAloud.settings.automaticallyAssignsCharacterVoices ? "自动分角色已开启" : "使用统一旁白声线")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "waveform")
+                        }
+                    }
+                    Text("分角色识别与系统语音合成都在设备本机完成。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 Section("关于") {
                     LabeledContent("应用", value: "墨架 InkShelf")
@@ -436,7 +451,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("未来启用 AI 朗读时，应用会在发送任何正文前明确展示所使用的服务、数据范围和隐私条款，并再次征得同意。")
+            Text("当前分角色朗读只使用本机文本规则和系统语音，不会把小说正文发送到网络服务。未来如接入在线语音，应用会先明确展示服务、数据范围和隐私条款并再次征得同意。")
         }.navigationTitle("隐私说明")
     }
 }

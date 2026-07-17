@@ -19,6 +19,7 @@ struct ReaderView: View {
     @State private var chromeVisible = false
     @State private var showingIndex = false
     @State private var showingAppearance = false
+    @State private var showingReadAloudSettings = false
     @State private var showingNote = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
@@ -175,6 +176,7 @@ struct ReaderView: View {
             readAloud.readerDidDisappear(bookID: bookID)
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
+        .onChange(of: showingReadAloudSettings) { _, _ in reportBlockingState() }
         .onChange(of: keepScreenAwake) { _, enabled in
             UIApplication.shared.isIdleTimerDisabled = enabled
         }
@@ -236,6 +238,9 @@ struct ReaderView: View {
                     excerpt: currentExcerpt(book: book)
                 )
             }
+        }
+        .sheet(isPresented: $showingReadAloudSettings) {
+            ReadAloudSettingsSheet()
         }
         .alert(
             "朗读失败",
@@ -470,6 +475,7 @@ struct ReaderView: View {
             showingAppearance
                 || showingIndex
                 || showingNote
+                || showingReadAloudSettings
                 || showingCustomBackgroundEditor
                 || isScrubbingWholeBookProgress
         )
@@ -910,6 +916,21 @@ struct ReaderView: View {
                 Text("边距")
                 Slider(value: $margin, in: 14...38, step: 2)
             }
+
+            Button {
+                showingReadAloudSettings = true
+            } label: {
+                HStack {
+                    Label("朗读功能设置", systemImage: "waveform")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("设置自动分角色、朗读速度和角色声线")
         }
         .font(.caption)
     }
