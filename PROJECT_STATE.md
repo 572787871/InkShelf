@@ -103,9 +103,16 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
+- Pagination reserves the read-aloud control indent only on the first line of a
+  page or paragraph; wrapped continuation lines use the full text width so their
+  last row does not leave artificial empty character slots.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
+- Reader appearance controls use grouped cards with coordinated theme/background
+  previews, brightness, precise font-size controls, named line-spacing presets
+  plus numeric sliders, page margins, font, page-turn style, and screen-awake
+  state. Layout reset restores only typography defaults.
 - Page-turn controller caches compare retained `ReaderPage` content, not only
   page locations. Repagination can keep the same chapter/page IDs while changing
   their text boundaries, and stale cached text must never diverge from speech.

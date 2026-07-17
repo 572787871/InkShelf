@@ -804,155 +804,289 @@ struct ReaderView: View {
     }
 
     private var appearanceControls: some View {
-        VStack(spacing: 15) {
-            HStack(spacing: 13) {
-                Text("颜色")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .leading)
-                ForEach(ReaderTheme.allCases) { item in
-                    Button {
-                        themeRaw = item.rawValue
-                        if item != .night { dayThemeRaw = item.rawValue }
-                    } label: {
-                        Circle()
-                            .fill(item.background)
-                            .frame(width: 32, height: 32)
-                            .overlay {
-                                Circle().stroke(
-                                    themeRaw == item.rawValue ? theme.foreground.opacity(0.82) : .gray.opacity(0.3),
-                                    lineWidth: themeRaw == item.rawValue ? 2 : 1
-                                )
-                            }
-                            .overlay {
-                                if themeRaw == item.rawValue {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(item.foreground)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
+        VStack(spacing: 12) {
+            HStack {
+                Label("阅读外观", systemImage: "textformat")
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
+                Button("排版复位") {
+                    fontRaw = ReaderFont.system.rawValue
+                    fontSize = 19
+                    lineSpacing = 9
+                    margin = 22
+                }
+                .font(.caption.weight(.medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
 
-            HStack(alignment: .top, spacing: 9) {
-                Text("背景")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .leading)
-                    .padding(.top, 10)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(ReaderBackgroundStyle.allCases) { style in
+            appearanceCard {
+                VStack(spacing: 12) {
+                    HStack(spacing: 13) {
+                        appearanceRowLabel("颜色", icon: "circle.lefthalf.filled")
+                        ForEach(ReaderTheme.allCases) { item in
                             Button {
-                                selectBackground(style)
+                                themeRaw = item.rawValue
+                                if item != .night { dayThemeRaw = item.rawValue }
                             } label: {
-                                VStack(spacing: 5) {
-                                    ReaderBackgroundSurface(
-                                        theme: style.recommendedTheme ?? theme,
-                                        style: style,
-                                        customImage: customBackgroundImage,
-                                        overlayOpacity: style == .custom
-                                            ? CGFloat(1 - customTransparency)
-                                            : style.readabilityOverlayOpacity,
-                                        blur: style == .custom ? customBlur : .none
-                                    )
-                                    .frame(width: 50, height: 38)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                Circle()
+                                    .fill(item.background)
+                                    .frame(width: 30, height: 30)
                                     .overlay {
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(
-                                                backgroundStyle == style
-                                                    ? theme.foreground.opacity(0.82)
-                                                    : .gray.opacity(0.24),
-                                                lineWidth: backgroundStyle == style ? 2 : 1
-                                            )
+                                        Circle().stroke(
+                                            themeRaw == item.rawValue
+                                                ? theme.foreground.opacity(0.86)
+                                                : .gray.opacity(0.24),
+                                            lineWidth: themeRaw == item.rawValue ? 2.5 : 1
+                                        )
                                     }
                                     .overlay {
-                                        if style == .custom {
-                                            Image(systemName: style.symbolName)
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundStyle(theme.foreground.opacity(0.7))
-                                                .frame(width: 24, height: 24)
-                                                .background(.ultraThinMaterial, in: Circle())
+                                        if themeRaw == item.rawValue {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(item.foreground)
                                         }
                                     }
-                                    Text(style.rawValue)
-                                        .font(.system(size: 9))
-                                        .lineLimit(1)
-                                        .foregroundStyle(.secondary)
-                                }
                             }
                             .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(alignment: .top, spacing: 10) {
+                        appearanceRowLabel("背景", icon: "photo.on.rectangle")
+                            .padding(.top, 8)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 9) {
+                                ForEach(ReaderBackgroundStyle.allCases) { style in
+                                    Button {
+                                        selectBackground(style)
+                                    } label: {
+                                        VStack(spacing: 4) {
+                                            ReaderBackgroundSurface(
+                                                theme: style.recommendedTheme ?? theme,
+                                                style: style,
+                                                customImage: customBackgroundImage,
+                                                overlayOpacity: style == .custom
+                                                    ? CGFloat(1 - customTransparency)
+                                                    : style.readabilityOverlayOpacity,
+                                                blur: style == .custom ? customBlur : .none
+                                            )
+                                            .frame(width: 48, height: 34)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                            .overlay {
+                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                    .stroke(
+                                                        backgroundStyle == style
+                                                            ? theme.foreground.opacity(0.86)
+                                                            : .gray.opacity(0.2),
+                                                        lineWidth: backgroundStyle == style ? 2.5 : 1
+                                                    )
+                                            }
+                                            .overlay {
+                                                if style == .custom {
+                                                    Image(systemName: style.symbolName)
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                        .foregroundStyle(theme.foreground.opacity(0.72))
+                                                        .frame(width: 22, height: 22)
+                                                        .background(.ultraThinMaterial, in: Circle())
+                                                }
+                                            }
+                                            Text(style.rawValue)
+                                                .font(.system(size: 9, weight: backgroundStyle == style ? .semibold : .regular))
+                                                .lineLimit(1)
+                                                .foregroundStyle(backgroundStyle == style ? .primary : .secondary)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            Divider().opacity(0.5)
+            appearanceCard {
+                VStack(spacing: 12) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "sun.min")
+                            .foregroundStyle(.secondary)
+                        Slider(value: $brightness, in: 0.05...1) { _ in
+                            UIScreen.main.brightness = brightness
+                        }
+                        .tint(theme.foreground.opacity(0.72))
+                        Image(systemName: "sun.max.fill")
+                            .foregroundStyle(.secondary)
+                    }
 
-            HStack(spacing: 10) {
-                Image(systemName: "sun.min")
-                Slider(value: $brightness, in: 0.05...1) { _ in UIScreen.main.brightness = brightness }
-                Image(systemName: "sun.max.fill")
+                    Divider().opacity(0.35)
+
+                    HStack(spacing: 10) {
+                        appearanceRowLabel("字号", icon: "textformat.size")
+                        HStack(spacing: 0) {
+                            Button { fontSize = max(14, fontSize - 1) } label: {
+                                Image(systemName: "minus")
+                                    .frame(width: 32, height: 30)
+                            }
+                            Text("\(Int(fontSize))")
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .frame(width: 38)
+                            Button { fontSize = min(32, fontSize + 1) } label: {
+                                Image(systemName: "plus")
+                                    .frame(width: 32, height: 30)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+
+                        Spacer()
+
+                        Menu {
+                            Picker("字体", selection: $fontRaw) {
+                                ForEach(ReaderFont.allCases) {
+                                    Text($0.displayName).tag($0.rawValue)
+                                }
+                            }
+                        } label: {
+                            Label(readerFont.displayName, systemImage: "character.cursor.ibeam")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 11)
+                                .frame(height: 30)
+                                .background(Color.primary.opacity(0.06), in: Capsule())
+                        }
+                    }
+
+                    appearanceSliderRow(
+                        title: "行距",
+                        value: lineSpacingDescription,
+                        icon: "line.3.horizontal",
+                        valueBinding: $lineSpacing,
+                        range: 4...20,
+                        step: 1
+                    )
+
+                    HStack(spacing: 6) {
+                        ForEach(lineSpacingPresets, id: \.value) { preset in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    lineSpacing = preset.value
+                                }
+                            } label: {
+                                Text(preset.label)
+                                    .font(.caption2.weight(.medium))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 26)
+                                    .foregroundStyle(
+                                        abs(lineSpacing - preset.value) < 0.5
+                                            ? theme.background
+                                            : Color.secondary
+                                    )
+                                    .background(
+                                        abs(lineSpacing - preset.value) < 0.5
+                                            ? theme.foreground.opacity(0.78)
+                                            : Color.primary.opacity(0.045),
+                                        in: Capsule()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    appearanceSliderRow(
+                        title: "页边距",
+                        value: "\(Int(margin)) pt",
+                        icon: "arrow.left.and.right",
+                        valueBinding: $margin,
+                        range: 14...40,
+                        step: 2
+                    )
+                }
             }
 
-            HStack(spacing: 10) {
-                Button("A−") { fontSize = max(14, fontSize - 1) }.buttonStyle(.bordered)
-                Text("\(Int(fontSize))").font(.caption.monospacedDigit()).frame(width: 25)
-                Button("A+") { fontSize = min(32, fontSize + 1) }.buttonStyle(.bordered)
-                Picker("字体", selection: $fontRaw) {
-                    ForEach(ReaderFont.allCases) { Text($0.displayName).tag($0.rawValue) }
+            HStack(spacing: 9) {
+                Menu {
+                    Picker("翻页方式", selection: $turnRaw) {
+                        ForEach(PageTurnStyle.allCases) {
+                            Text($0.rawValue).tag($0.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("\(turnStyle.rawValue)翻页", systemImage: "book.pages")
+                        .readerSettingChip()
                 }
-                .labelsHidden()
-                Spacer()
+
                 Button {
                     keepScreenAwake.toggle()
                 } label: {
                     Label(
-                        "常亮",
+                        keepScreenAwake ? "屏幕常亮" : "自动息屏",
                         systemImage: keepScreenAwake ? "sun.max.fill" : "sun.max"
                     )
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(
-                        keepScreenAwake
-                            ? theme.background
-                            : theme.foreground.opacity(0.72)
-                    )
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
-                    .background(
-                        keepScreenAwake
-                            ? theme.foreground.opacity(0.78)
-                            : theme.foreground.opacity(0.08),
-                        in: Capsule()
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(
-                                theme.foreground.opacity(keepScreenAwake ? 0 : 0.16),
-                                lineWidth: 1
-                            )
-                    }
+                    .readerSettingChip(isSelected: keepScreenAwake)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("阅读时屏幕常亮")
                 .accessibilityValue(keepScreenAwake ? "已开启" : "已关闭")
-                Picker("翻页", selection: $turnRaw) {
-                    ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                }
-                .labelsHidden()
-            }
 
-            HStack(spacing: 9) {
-                Text("行距")
-                Slider(value: $lineSpacing, in: 3...16, step: 1)
-                Text("边距")
-                Slider(value: $margin, in: 14...38, step: 2)
+                Spacer(minLength: 0)
             }
-
         }
         .font(.caption)
+    }
+
+    private var lineSpacingPresets: [(label: String, value: Double)] {
+        [("紧凑", 5), ("标准", 9), ("舒适", 13), ("宽松", 17)]
+    }
+
+    private var lineSpacingDescription: String {
+        let nearest = lineSpacingPresets.min { abs($0.value - lineSpacing) < abs($1.value - lineSpacing) }
+        let label = nearest.map { abs($0.value - lineSpacing) < 0.5 ? $0.label : "自定" } ?? "自定"
+        return "\(label) · \(Int(lineSpacing)) pt"
+    }
+
+    private func appearanceRowLabel(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 58, alignment: .leading)
+    }
+
+    private func appearanceCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
+            .background(
+                Color.primary.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+            }
+    }
+
+    private func appearanceSliderRow(
+        title: String,
+        value: String,
+        icon: String,
+        valueBinding: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double
+    ) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Text(value)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: valueBinding, in: range, step: step)
+                .tint(theme.foreground.opacity(0.72))
+        }
     }
 
     private func toggleNightMode() {
@@ -1314,6 +1448,24 @@ private final class ReaderFloaterPaletteBox: NSObject {
 private struct PaginationLayout: Hashable {
     let bookID: UUID
     let readerLayout: ReaderPaginationLayout
+}
+
+private extension View {
+    func readerSettingChip(isSelected: Bool = false) -> some View {
+        self
+            .font(.caption.weight(.medium))
+            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(
+                Color.primary.opacity(isSelected ? 0.11 : 0.05),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(Color.primary.opacity(isSelected ? 0.12 : 0.06), lineWidth: 0.5)
+            }
+    }
 }
 
 private struct ChromeAction: View {

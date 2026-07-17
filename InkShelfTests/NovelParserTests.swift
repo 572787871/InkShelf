@@ -203,6 +203,42 @@ final class NovelParserTests: XCTestCase {
         }
     }
 
+    func testOnlyParagraphFirstLinesReserveTheReadAloudIndent() throws {
+        let text = String(repeating: "甲", count: 2_000)
+        let fullWidthLayout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 0
+        )
+        let readAloudLayout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let fullWidthFirstPage = try XCTUnwrap(
+            fullWidthLayout.pages(for: text, chapterTitle: nil).first
+        )
+        let readAloudFirstPage = try XCTUnwrap(
+            readAloudLayout.pages(for: text, chapterTitle: nil).first
+        )
+
+        XCTAssertLessThanOrEqual(
+            fullWidthFirstPage.count - readAloudFirstPage.count,
+            2,
+            "段落缩进只能影响首行，不能让每一行都少排文字"
+        )
+        XCTAssertEqual(
+            readAloudLayout.pages(for: text, chapterTitle: nil).joined(),
+            text
+        )
+    }
+
     func testGB18030TextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
         let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(

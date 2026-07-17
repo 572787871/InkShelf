@@ -53,14 +53,26 @@ struct ReaderPaginationLayout: Hashable, Sendable {
             if text.hasPrefix(headingPrefix) {
                 let bodyStart = text.index(cursor, offsetBy: headingPrefix.count)
                 let bodyRows = max(1, rows - estimatedHeadingRows(for: chapterTitle))
-                let end = pageEnd(in: text, from: bodyStart, rows: bodyRows, columns: columns)
+                let end = pageEnd(
+                    in: text,
+                    from: bodyStart,
+                    rows: bodyRows,
+                    firstLineColumns: columns.indented,
+                    continuationColumns: columns.full
+                )
                 result.append(String(text[cursor..<end]))
                 cursor = end
             }
         }
 
         while cursor < text.endIndex {
-            let end = pageEnd(in: text, from: cursor, rows: rows, columns: columns)
+            let end = pageEnd(
+                in: text,
+                from: cursor,
+                rows: rows,
+                firstLineColumns: columns.indented,
+                continuationColumns: columns.full
+            )
             result.append(String(text[cursor..<end]))
             cursor = end
         }
@@ -68,15 +80,19 @@ struct ReaderPaginationLayout: Hashable, Sendable {
     }
 
     /// Fast, conservative capacity math. It reserves the paragraph-control
-    /// indent on every line plus three complete safety rows, and counts explicit
-    /// newlines while walking the source exactly once.
-    private var estimatedColumns: Int {
+    /// indent on every paragraph's first line plus three complete safety rows,
+    /// and counts explicit newlines while walking the source exactly once.
+    private var estimatedColumns: (full: Int, indented: Int) {
         let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
             ?? UIFont.systemFont(ofSize: fontSize)
         let ideographWidth = ("汉" as NSString).size(withAttributes: [.font: font]).width
         let characterWidth = max(1, max(fontSize, ideographWidth))
-        let availableWidth = max(1, textWidth - paragraphFirstLineIndent - 4)
-        return max(1, Int(floor(availableWidth / characterWidth)))
+        let fullWidth = max(1, textWidth - 4)
+        let indentedWidth = max(1, fullWidth - paragraphFirstLineIndent)
+        return (
+            full: max(1, Int(floor(fullWidth / characterWidth))),
+            indented: max(1, Int(floor(indentedWidth / characterWidth)))
+        )
     }
 
     private var estimatedRows: Int {
@@ -101,12 +117,14 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         in text: String,
         from start: String.Index,
         rows maximumRows: Int,
-        columns: Int
+        firstLineColumns: Int,
+        continuationColumns: Int
     ) -> String.Index {
         guard start < text.endIndex else { return text.endIndex }
         var index = start
         var row = 1
         var column = 0
+        var columns = firstLineColumns
 
         while index < text.endIndex {
             let character = text[index]
@@ -116,12 +134,14 @@ struct ReaderPaginationLayout: Hashable, Sendable {
                 guard row < maximumRows else { break }
                 row += 1
                 column = 0
+                columns = firstLineColumns
                 continue
             }
             if column == columns {
                 guard row < maximumRows else { break }
                 row += 1
                 column = 0
+                columns = continuationColumns
             }
             column += 1
             index = next
@@ -177,12 +197,11 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
-        // The paragraph play button occupies this leading space while a read
-        // aloud session is attached. Reserving the same indent on every line
-        // makes independently rendered continuation pages no taller than the
-        // TextKit pagination pass.
+        // The paragraph play button occupies only the first rendered line.
+        // Wrapped lines must match the full-width reader layout; otherwise the
+        // paginator leaves artificial empty character slots at the page end.
         paragraph.firstLineHeadIndent = paragraphFirstLineIndent
-        paragraph.headIndent = paragraphFirstLineIndent
+        paragraph.headIndent = 0
         return [.font: font, .paragraphStyle: paragraph]
     }
 
