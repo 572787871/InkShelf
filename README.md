@@ -16,28 +16,42 @@
 - 羊皮纸、纯白、护眼、夜间主题；宋体、楷体、系统字体
 - 字号、行距、页边距、屏幕亮度和阅读常亮
 - 正文/封面独立文件存储、轻量元数据原子持久化、隐私清单、单元测试
-- `ReadAloudService` AI 配音扩展接口
+- 完全离线的 Kokoro/VITS 分角色配音、模型包导入、试听、后台与锁屏控制
 
 ## 运行
 
 1. 使用 Xcode 16 或更新版本打开 `InkShelf.xcodeproj`。
-2. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20。
-3. 在 Signing & Capabilities 中选择你的开发团队。
-4. 选择 iOS 17+ 模拟器或真机运行。
+2. 运行 `bash scripts/bootstrap-local-tts.sh`，下载并校验固定版本的 sherpa-onnx iOS 运行库。
+3. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20。
+4. 在 Signing & Capabilities 中选择你的开发团队。
+5. 选择 iOS 17+ 模拟器或真机运行。
 
 工程不依赖后端。所有书籍、进度、书签和笔记默认只保存在 App 沙盒。
 
-## AI 朗读接入
+## 本地音色包
 
-实现 `Services/ReadAloudService.swift` 中的协议，并将实现注入阅读页即可。接口已覆盖：
+朗读不使用 `AVSpeechSynthesizer`，也不会回退到苹果系统音色。请在“设置 → 朗读 → 功能设置”导入 ZIP 音色包。ZIP 内可有一层目录，但模型根目录必须包含 `voice.json`：
 
-- 按书籍/章节预处理音频
-- 播放、暂停、停止
-- 句子级定位
-- 准备中、播放中、暂停和失败状态
+```json
+{
+  "formatVersion": 1,
+  "name": "中文小说音色",
+  "engine": "kokoro",
+  "model": "model.onnx",
+  "voices": "voices.bin",
+  "tokens": "tokens.txt",
+  "lexicons": ["lexicon-zh.txt", "lexicon-us-en.txt"],
+  "dataDirectory": "espeak-ng-data",
+  "speakers": [
+    { "id": 0, "name": "温柔女声" },
+    { "id": 1, "name": "沉稳男声" }
+  ]
+}
+```
 
-建议正式接入时把 API 密钥放在服务端，并增加分段缓存、后台音频、锁屏控制、倍速、定时关闭和隐私授权页。
+`engine` 可为 `kokoro` 或 `vits`。VITS 不需要 `voices`；`lexicons` 和 `dataDirectory` 可按模型实际文件省略。`speakers.id` 必须对应模型的 speaker ID。模型包展开上限为 2 GB，导入器拒绝绝对路径、父目录路径和符号链接。
 
 ## 第三方依赖
 
 - [ZIPFoundation](https://github.com/weichsel/ZIPFoundation)（MIT）：EPUB ZIP 容器读取。
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）：Kokoro/VITS 离线语音合成。

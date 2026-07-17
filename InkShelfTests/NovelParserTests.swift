@@ -679,6 +679,43 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
+    func testLocalVoiceManifestDefaultsToOneSpeaker() throws {
+        let json = #"""
+        {
+          "name": "离线中文音色",
+          "engine": "vits",
+          "model": "model.onnx",
+          "tokens": "tokens.txt"
+        }
+        """#.data(using: .utf8)!
+
+        let manifest = try JSONDecoder().decode(LocalVoicePackageManifest.self, from: json)
+
+        XCTAssertEqual(manifest.formatVersion, 1)
+        XCTAssertEqual(manifest.engine, .vits)
+        XCTAssertEqual(manifest.speakers, [LocalVoiceSpeaker(id: 0, name: "默认音色")])
+    }
+
+    func testLocalVoicePackageRejectsParentDirectoryPaths() throws {
+        let manifest = LocalVoicePackageManifest(
+            name: "测试音色",
+            engine: .vits,
+            model: "model.onnx",
+            tokens: "tokens.txt"
+        )
+        let package = LocalVoicePackage(
+            id: "package",
+            directoryURL: URL(fileURLWithPath: "/tmp/voice-package", isDirectory: true),
+            manifest: manifest
+        )
+
+        XCTAssertThrowsError(try package.fileURL(for: "../outside.onnx"))
+        XCTAssertEqual(
+            LocalVoiceSelection(packageID: "package", speakerID: 7).identifier,
+            "package::7"
+        )
+    }
+
     func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
         let pages = [
             page(index: 0, text: "张三说：“我们出发。”"),

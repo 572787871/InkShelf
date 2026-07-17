@@ -23,7 +23,9 @@ struct ReadAloudBookContext: Equatable {
 struct ReadAloudVoiceOption: Identifiable, Equatable {
     let id: String
     let name: String
-    let language: String
+    let packageID: String
+    let packageName: String
+    let speakerID: Int
 }
 
 enum NowPlayingArtworkRenderer {
@@ -201,9 +203,8 @@ struct ReadAloudTextPlan: Equatable {
     }
 }
 
-/// Current built-in engine. The view talks only to this reading-session API, so
-/// a cloud AI voice engine can later replace the utterance producer without
-/// changing pagination, highlighting or player controls.
+/// Fully offline reading session. Text is synthesized by imported Kokoro/VITS
+/// models and played as local PCM; no system voice or network service is used.
 @MainActor
 final class ReadAloudService: NSObject, ObservableObject {
     private static let settingsDefaultsKey = "readAloudSettings"
@@ -216,6 +217,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var visibleReaderBookID: UUID?
     @Published private(set) var applicationIsActive = true
     @Published private(set) var playbackRequested = false
+    @Published private(set) var localVoicePackages: [LocalVoicePackage]
     @Published var settings: ReadAloudSettings {
         didSet {
             if oldValue.alternatesUnattributedDialogue != settings.alternatesUnattributedDialogue {
@@ -233,12 +235,18 @@ final class ReadAloudService: NSObject, ObservableObject {
         hasSession && bookContext?.id != visibleReaderBookID
     }
 
-    private let synthesizer = AVSpeechSynthesizer()
-    private let previewSynthesizer = AVSpeechSynthesizer()
+    private let voiceStore: LocalVoicePackageStore
+    private let localSynthesizer = LocalVoiceSynthesizer()
+    private let speechPlayer = LocalSpeechAudioPlayer()
+    private let previewPlayer = LocalSpeechAudioPlayer()
     private var plan = ReadAloudTextPlan(text: "")
     private var rolePlan = ReadAloudRolePlan.empty
     private var analyzedRoleChapters: Set<Int> = []
-    private var queuedSentenceIndices: [ObjectIdentifier: Int] = [:]
+    private var synthesisTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
+    private var playbackToken = UUID()
+    private var previewToken = UUID()
+    private var activeSentenceIndex: Int?
     private var nextSentenceIndex = 0
     private var sessionPages: [ReaderPage] = []
     private var sessionPageIndex: Int?
@@ -253,9 +261,11 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var shouldResumeAfterInterruption = false
 
     override init() {
+        let voiceStore = LocalVoicePackageStore()
+        self.voiceStore = voiceStore
+        localVoicePackages = voiceStore.installedPackages()
         settings = Self.loadSettings()
         super.init()
-        synthesizer.delegate = self
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
@@ -283,9 +293,45 @@ final class ReadAloudService: NSObject, ObservableObject {
         hasSession && bookContext?.id == bookID
     }
 
-    var availableChineseVoices: [ReadAloudVoiceOption] {
-        Self.chineseVoices.map {
-            ReadAloudVoiceOption(id: $0.identifier, name: $0.name, language: $0.language)
+    var availableLocalVoices: [ReadAloudVoiceOption] {
+        localVoicePackages.flatMap { package in
+            package.manifest.speakers.map { speaker in
+                let selection = LocalVoiceSelection(packageID: package.id, speakerID: speaker.id)
+                return ReadAloudVoiceOption(
+                    id: selection.identifier,
+                    name: speaker.name,
+                    packageID: package.id,
+                    packageName: package.name,
+                    speakerID: speaker.id
+                )
+            }
+        }
+    }
+
+    var canStartLocalReading: Bool { !availableLocalVoices.isEmpty }
+
+    func importLocalVoicePackage(from url: URL) async throws {
+        let package = try await voiceStore.importPackage(from: url)
+        localVoicePackages.append(package)
+        localVoicePackages.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if resolvedVoice(identifier: settings.narratorVoiceIdentifier) == nil,
+           let first = availableLocalVoices.first {
+            settings.narratorVoiceIdentifier = first.id
+        }
+    }
+
+    func removeLocalVoicePackage(_ package: LocalVoicePackage) throws {
+        let removedVoiceIDs = Set(availableLocalVoices.filter { $0.packageID == package.id }.map(\.id))
+        stopVoicePreview()
+        if activeVoiceUses(packageID: package.id) || currentSentenceUses(packageID: package.id) { stop() }
+        try voiceStore.remove(package)
+        localVoicePackages.removeAll { $0.id == package.id }
+        Task { await localSynthesizer.unload(packageID: package.id) }
+        if removedVoiceIDs.contains(settings.narratorVoiceIdentifier) {
+            settings.narratorVoiceIdentifier = availableLocalVoices.first?.id ?? ""
+        }
+        settings.roleVoiceIdentifiers = settings.roleVoiceIdentifiers.map {
+            removedVoiceIDs.contains($0) ? "" : $0
         }
     }
 
@@ -396,9 +442,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         stoppingCurrentSpeech: Bool = true
     ) {
         if stoppingCurrentSpeech {
-            synthesizer.stopSpeaking(at: .immediate)
+            cancelSpeechPlayback()
         }
-        queuedSentenceIndices.removeAll(keepingCapacity: true)
         ensureRolePlan(forChapter: location.chapterIndex)
         plan = ReadAloudTextPlan(
             text: text,
@@ -425,6 +470,12 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func play() {
         guard hasSession else { return }
+        guard canStartLocalReading else {
+            playbackRequested = false
+            state = .failed(message: "请先导入 Kokoro 或 VITS 本地音色包")
+            updateNowPlayingInfo()
+            return
+        }
         stopVoicePreview()
         playbackRequested = true
         guard configureAudioSession() else {
@@ -432,17 +483,20 @@ final class ReadAloudService: NSObject, ObservableObject {
             updateNowPlayingInfo()
             return
         }
-        if synthesizer.isPaused {
-            synthesizer.continueSpeaking()
-            state = .playing(sentence: currentSentenceIndex)
-            nowPlayingAnchorDate = .now
-            updateNowPlayingInfo()
+        if speechPlayer.isPaused {
+            do {
+                try speechPlayer.resume()
+                state = .playing(sentence: currentSentenceIndex)
+                nowPlayingAnchorDate = .now
+                updateNowPlayingInfo()
+            } catch {
+                playbackRequested = false
+                state = .failed(message: "无法恢复本地音频：\(error.localizedDescription)")
+                updateNowPlayingInfo()
+            }
             return
         }
-        guard !synthesizer.isSpeaking else {
-            if queuedSentenceIndices.isEmpty {
-                enqueueSentence(at: nextSentenceIndex)
-            }
+        guard synthesisTask == nil, !speechPlayer.hasScheduledAudio else {
             state = .playing(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
             return
@@ -456,8 +510,13 @@ final class ReadAloudService: NSObject, ObservableObject {
     func pause() {
         freezeNowPlayingPosition()
         playbackRequested = false
-        if synthesizer.isSpeaking, !synthesizer.isPaused {
-            synthesizer.pauseSpeaking(at: .immediate)
+        if speechPlayer.hasScheduledAudio {
+            speechPlayer.pause()
+        } else if synthesisTask != nil {
+            playbackToken = UUID()
+            synthesisTask?.cancel()
+            synthesisTask = nil
+            activeSentenceIndex = nil
         }
         state = .paused(sentence: currentSentenceIndex)
         updateNowPlayingInfo()
@@ -475,15 +534,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         resetSession(stoppingSpeech: true)
     }
 
-    /// Finishes a naturally completed book without asking AVSpeechSynthesizer
-    /// to stop again from inside its utterance-completion callback chain.
+    /// Finishes a naturally completed book after the final PCM buffer callback.
     func finishAtEndOfBook() {
         resetSession(stoppingSpeech: false)
     }
 
     func previewVoice(roleSlot: Int?) {
         if isPlaying { pause() }
-        previewSynthesizer.stopSpeaking(at: .immediate)
+        stopVoicePreview()
         guard configureAudioSession() else { return }
 
         let speaker: ReadAloudSpeaker
@@ -496,17 +554,40 @@ final class ReadAloudService: NSObject, ObservableObject {
             speaker = .narrator
             sample = "夜色渐深，故事从这里缓缓开始。"
         }
-        let utterance = AVSpeechUtterance(string: sample)
-        utterance.voice = preferredPreviewVoice(for: speaker)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * Float(settings.rateMultiplier)
-        utterance.pitchMultiplier = previewPitchMultiplier(for: speaker)
-        previewSynthesizer.speak(utterance)
+        guard let choice = preferredLocalVoice(for: speaker) else {
+            state = .failed(message: "请先导入并选择本地音色")
+            return
+        }
+        let token = UUID()
+        previewToken = token
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let audio = try await localSynthesizer.synthesize(
+                    text: sample,
+                    package: choice.package,
+                    speakerID: choice.voice.speakerID,
+                    speed: Float(settings.rateMultiplier)
+                )
+                try Task.checkCancellation()
+                guard previewToken == token else { return }
+                previewTask = nil
+                try previewPlayer.play(audio) {}
+            } catch is CancellationError {
+                return
+            } catch {
+                guard previewToken == token else { return }
+                previewTask = nil
+                state = .failed(message: "音色试听失败：\(error.localizedDescription)")
+            }
+        }
     }
 
     func stopVoicePreview() {
-        if previewSynthesizer.isSpeaking || previewSynthesizer.isPaused {
-            previewSynthesizer.stopSpeaking(at: .immediate)
-        }
+        previewToken = UUID()
+        previewTask?.cancel()
+        previewTask = nil
+        previewPlayer.stop()
         if !hasSession { deactivateAudioSession() }
     }
 
@@ -514,9 +595,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         playbackRequested = false
         stopVoicePreview()
         if stoppingSpeech {
-            synthesizer.stopSpeaking(at: .immediate)
+            cancelSpeechPlayback()
         }
-        queuedSentenceIndices.removeAll()
         plan = ReadAloudTextPlan(text: "")
         rolePlan = .empty
         analyzedRoleChapters.removeAll()
@@ -555,8 +635,7 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func play(fromUTF16Location location: Int) {
         guard let index = plan.sentenceIndex(atOrAfterUTF16Location: location) else { return }
-        synthesizer.stopSpeaking(at: .immediate)
-        queuedSentenceIndices.removeAll(keepingCapacity: true)
+        cancelSpeechPlayback()
         currentSentenceIndex = index
         currentSentenceRange = plan.sentences[index].range
         nextSentenceIndex = index
@@ -565,17 +644,50 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func enqueueSentence(at index: Int) {
-        guard plan.sentences.indices.contains(index) else { return }
+        guard plan.sentences.indices.contains(index),
+              let choice = preferredLocalVoice(for: plan.sentences[index].speaker) else {
+            playbackRequested = false
+            state = .failed(message: "当前声线不可用，请在朗读设置中重新选择")
+            updateNowPlayingInfo()
+            return
+        }
         let sentence = plan.sentences[index]
-        let utterance = AVSpeechUtterance(string: sentence.text)
-        utterance.voice = preferredVoice(for: sentence.speaker)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * Float(settings.rateMultiplier)
-        utterance.pitchMultiplier = pitchMultiplier(for: sentence.speaker)
-        utterance.preUtteranceDelay = index == currentSentenceIndex
-            ? 0
-            : (sentence.speaker.isDialogue ? 0.055 : 0.035)
-        queuedSentenceIndices[ObjectIdentifier(utterance)] = index
-        synthesizer.speak(utterance)
+        let token = UUID()
+        playbackToken = token
+        activeSentenceIndex = index
+        currentSentenceIndex = index
+        currentSentenceRange = sentence.range
+        nextSentenceIndex = index
+        state = .playing(sentence: index)
+        synchronizeNowPlayingAnchorToCurrentSentence()
+        updateNowPlayingInfo()
+
+        synthesisTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let audio = try await localSynthesizer.synthesize(
+                    text: sentence.text,
+                    package: choice.package,
+                    speakerID: choice.voice.speakerID,
+                    speed: Float(settings.rateMultiplier)
+                )
+                try Task.checkCancellation()
+                guard playbackToken == token, playbackRequested else { return }
+                synthesisTask = nil
+                try speechPlayer.play(audio) { [weak self] in
+                    self?.sentenceAudioDidFinish(index: index, token: token)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard playbackToken == token else { return }
+                synthesisTask = nil
+                activeSentenceIndex = nil
+                playbackRequested = false
+                state = .failed(message: "本地朗读失败：\(error.localizedDescription)")
+                updateNowPlayingInfo()
+            }
+        }
     }
 
     private func configureAudioSession() -> Bool {
@@ -596,50 +708,31 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private func preferredVoice(for speaker: ReadAloudSpeaker) -> AVSpeechSynthesisVoice? {
-        let narrator = configuredVoice(identifier: settings.narratorVoiceIdentifier)
-            ?? AVSpeechSynthesisVoice(language: "zh-CN")
-            ?? Self.chineseVoices.first
-        guard settings.automaticallyAssignsCharacterVoices, speaker.isDialogue else {
-            return narrator
+    private func preferredLocalVoice(
+        for speaker: ReadAloudSpeaker
+    ) -> (voice: ReadAloudVoiceOption, package: LocalVoicePackage)? {
+        let narrator = resolvedVoice(identifier: settings.narratorVoiceIdentifier)
+            ?? availableLocalVoices.first
+        let selected: ReadAloudVoiceOption?
+        if settings.automaticallyAssignsCharacterVoices, speaker.isDialogue {
+            let slot = voiceSlot(for: speaker)
+            let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
+                ? settings.roleVoiceIdentifiers[slot]
+                : ""
+            if let configured = resolvedVoice(identifier: configuredIdentifier) {
+                selected = configured
+            } else {
+                let alternatives = availableLocalVoices.filter { $0.id != narrator?.id }
+                selected = alternatives.isEmpty ? narrator : alternatives[slot % alternatives.count]
+            }
+        } else {
+            selected = narrator
         }
-
-        let slot = voiceSlot(for: speaker)
-        let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
-            ? settings.roleVoiceIdentifiers[slot]
-            : ""
-        if let configured = configuredVoice(identifier: configuredIdentifier) { return configured }
-
-        let narratorIdentifier = narrator?.identifier
-        let alternatives = Self.chineseVoices.filter { $0.identifier != narratorIdentifier }
-        guard !alternatives.isEmpty else { return narrator }
-        return alternatives[slot % alternatives.count]
-    }
-
-    private func preferredPreviewVoice(for speaker: ReadAloudSpeaker) -> AVSpeechSynthesisVoice? {
-        guard speaker.isDialogue else { return preferredVoice(for: .narrator) }
-        let narrator = configuredVoice(identifier: settings.narratorVoiceIdentifier)
-            ?? AVSpeechSynthesisVoice(language: "zh-CN")
-            ?? Self.chineseVoices.first
-        let slot = voiceSlot(for: speaker)
-        let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
-            ? settings.roleVoiceIdentifiers[slot]
-            : ""
-        if let configured = configuredVoice(identifier: configuredIdentifier) { return configured }
-        let alternatives = Self.chineseVoices.filter { $0.identifier != narrator?.identifier }
-        return alternatives.isEmpty ? narrator : alternatives[slot % alternatives.count]
-    }
-
-    private func previewPitchMultiplier(for speaker: ReadAloudSpeaker) -> Float {
-        guard speaker.isDialogue else { return 1 }
-        let pitchValues: [Float] = [0.94, 1.06, 1]
-        return pitchValues[voiceSlot(for: speaker)]
-    }
-
-    private func pitchMultiplier(for speaker: ReadAloudSpeaker) -> Float {
-        guard settings.automaticallyAssignsCharacterVoices, speaker.isDialogue else { return 1 }
-        let pitchValues: [Float] = [0.94, 1.06, 1]
-        return pitchValues[voiceSlot(for: speaker)]
+        guard let selected,
+              let package = localVoicePackages.first(where: { $0.id == selected.packageID }) else {
+            return nil
+        }
+        return (selected, package)
     }
 
     private func voiceSlot(for speaker: ReadAloudSpeaker) -> Int {
@@ -658,9 +751,56 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private func configuredVoice(identifier: String) -> AVSpeechSynthesisVoice? {
-        guard !identifier.isEmpty else { return nil }
-        return AVSpeechSynthesisVoice(identifier: identifier)
+    private func resolvedVoice(identifier: String) -> ReadAloudVoiceOption? {
+        guard LocalVoiceSelection(identifier: identifier) != nil else { return nil }
+        return availableLocalVoices.first { $0.id == identifier }
+    }
+
+    private func activeVoiceUses(packageID: String) -> Bool {
+        let identifiers = [settings.narratorVoiceIdentifier] + settings.roleVoiceIdentifiers
+        return identifiers.contains {
+            LocalVoiceSelection(identifier: $0)?.packageID == packageID
+        }
+    }
+
+    private func currentSentenceUses(packageID: String) -> Bool {
+        guard plan.sentences.indices.contains(currentSentenceIndex) else { return false }
+        return preferredLocalVoice(for: plan.sentences[currentSentenceIndex].speaker)?.package.id == packageID
+    }
+
+    private func cancelSpeechPlayback() {
+        playbackToken = UUID()
+        synthesisTask?.cancel()
+        synthesisTask = nil
+        speechPlayer.stop()
+        activeSentenceIndex = nil
+    }
+
+    private func sentenceAudioDidFinish(index: Int, token: UUID) {
+        guard playbackToken == token, activeSentenceIndex == index else { return }
+        activeSentenceIndex = nil
+        let candidate = index + 1
+        guard playbackRequested else {
+            nextSentenceIndex = min(candidate, max(0, plan.sentences.count - 1))
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+            return
+        }
+        guard candidate >= plan.sentences.count else {
+            nextSentenceIndex = candidate
+            enqueueSentence(at: candidate)
+            return
+        }
+        currentSentenceRange = nil
+        nextSentenceIndex = 0
+        state = .ready
+        if applicationIsActive,
+           bookContext?.id == visibleReaderBookID,
+           let onPageFinished {
+            onPageFinished()
+        } else {
+            advanceInBackground()
+        }
     }
 
     private func ensureRolePlan(forChapter chapterIndex: Int) {
@@ -688,16 +828,6 @@ final class ReadAloudService: NSObject, ObservableObject {
             return ReadAloudSettings()
         }
         return decoded.normalized
-    }
-
-    private static var chineseVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("zh") }
-            .sorted {
-                if $0.language != $1.language { return $0.language < $1.language }
-                if $0.name != $1.name { return $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                return $0.identifier < $1.identifier
-            }
     }
 
     private func advanceInBackground() {
@@ -952,101 +1082,5 @@ final class ReadAloudService: NSObject, ObservableObject {
         timeline = ReadAloudTimeline(
             pages: currentChapterPageIndices.map { sessionPages[$0] }
         )
-    }
-}
-
-extension ReadAloudService: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        didStart utterance: AVSpeechUtterance
-    ) {
-        let identifier = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let index = queuedSentenceIndices[identifier], plan.sentences.indices.contains(index) else { return }
-            currentSentenceIndex = index
-            currentSentenceRange = plan.sentences[index].range
-            nextSentenceIndex = index
-            guard playbackRequested else {
-                self.synthesizer.pauseSpeaking(at: .immediate)
-                state = .paused(sentence: index)
-                updateNowPlayingInfo()
-                return
-            }
-            state = .playing(sentence: index)
-            synchronizeNowPlayingAnchorToCurrentSentence()
-            updateNowPlayingInfo()
-        }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        didFinish utterance: AVSpeechUtterance
-    ) {
-        let identifier = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let finishedIndex = queuedSentenceIndices.removeValue(forKey: identifier) else { return }
-            let candidate = finishedIndex + 1
-            guard playbackRequested else {
-                nextSentenceIndex = min(candidate, max(0, plan.sentences.count - 1))
-                state = .paused(sentence: currentSentenceIndex)
-                updateNowPlayingInfo()
-                return
-            }
-            guard candidate >= plan.sentences.count else {
-                nextSentenceIndex = candidate
-                enqueueSentence(at: candidate)
-                return
-            }
-            queuedSentenceIndices.removeAll()
-            currentSentenceRange = nil
-            nextSentenceIndex = 0
-            state = .ready
-            if applicationIsActive,
-               bookContext?.id == visibleReaderBookID,
-               let onPageFinished {
-                onPageFinished()
-            } else {
-                advanceInBackground()
-            }
-        }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        didPause utterance: AVSpeechUtterance
-    ) {
-        Task { @MainActor in
-            if playbackRequested {
-                self.synthesizer.continueSpeaking()
-            } else {
-                state = .paused(sentence: currentSentenceIndex)
-                updateNowPlayingInfo()
-            }
-        }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        didContinue utterance: AVSpeechUtterance
-    ) {
-        Task { @MainActor in
-            guard playbackRequested else {
-                self.synthesizer.pauseSpeaking(at: .immediate)
-                return
-            }
-            state = .playing(sentence: currentSentenceIndex)
-            nowPlayingAnchorDate = .now
-            updateNowPlayingInfo()
-        }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        didCancel utterance: AVSpeechUtterance
-    ) {
-        let identifier = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            queuedSentenceIndices.removeValue(forKey: identifier)
-        }
     }
 }

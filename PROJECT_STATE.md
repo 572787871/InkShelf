@@ -25,8 +25,11 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Views/InteractivePageTurnView.swift`
   - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
 - `InkShelf/Services/ReadAloudService.swift`
-  - AVSpeechSynthesizer session, sentence highlighting, background audio,
-    chapter timeline, MediaPlayer now-playing metadata and remote commands
+  - imported Kokoro/VITS session, local PCM playback, sentence highlighting,
+    background audio, chapter timeline, MediaPlayer metadata and remote commands
+- `InkShelf/Services/LocalVoiceKit.swift` and `LocalTTSBridge.mm`
+  - secure ZIP voice-package storage, sherpa-onnx model loading and offline PCM
+    generation through a narrow Objective-C++ boundary
 - `InkShelf/Models/ReadAloudRoles.swift`
   - local dialogue attribution, stable character/unknown speaker assignments,
     and persisted read-aloud voice preferences
@@ -81,6 +84,13 @@ context, not a substitute for inspecting the current code and Git history.
   lazily for quoted dialogue and explicit speaking verbs, then named characters
   are assigned stable voice slots. Ambiguous dialogue can alternate between
   fallback slots without inventing a character identity.
+- Apple system voices are not enumerated or used as a fallback. Reading is
+  unavailable until a validated Kokoro or VITS ZIP package is imported. Every
+  package contains `voice.json`, model/token assets and explicit speaker IDs.
+- Model inference runs through pinned sherpa-onnx iOS binaries and AVAudioEngine
+  plays copied Float32 PCM. Models, novel text and generated audio stay on the
+  device. Package import rejects traversal paths/symlinks and caps expansion at
+  2 GB.
 - Read-aloud settings are available from the app Settings screen and persist on
   device. In the reader, the bottom “朗读” action first opens the settings sheet;
   narrator and role voices can be previewed there, and “开始朗读” starts from
@@ -116,9 +126,8 @@ context, not a substitute for inspecting the current code and Git history.
 - Page-turn controller caches compare retained `ReaderPage` content, not only
   page locations. Repagination can keep the same chapter/page IDs while changing
   their text boundaries, and stale cached text must never diverge from speech.
-- Natural completion at the end of the book clears the narration session
-  without re-entering `AVSpeechSynthesizer.stopSpeaking` from its utterance
-  completion callback.
+- Natural completion at the end of the book clears the narration session after
+  the final local PCM buffer reports completion.
 
 ### Shelf and covers
 
@@ -151,5 +160,5 @@ context, not a substitute for inspecting the current code and Git history.
 ## Real-device checks still matter
 
 Actions proves compilation and automated tests, not touch feel, page-curl visual
-quality, AVSpeech behavior under iOS interruptions, background playback, or crash
-freedom. Report those as requiring the user's signed IPA/iPhone verification.
+quality, real-device model speed/memory, audio interruptions, background playback,
+or crash freedom. Report those as requiring signed IPA/iPhone verification.

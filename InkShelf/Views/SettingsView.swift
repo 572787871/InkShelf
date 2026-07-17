@@ -67,7 +67,9 @@ struct SettingsView: View {
                             Image(systemName: "waveform")
                         }
                     }
-                    Text("分角色识别与系统语音合成都在设备本机完成。")
+                    Text(readAloud.localVoicePackages.isEmpty
+                        ? "尚未导入本地音色；朗读不会使用苹果系统声音。"
+                        : "分角色识别与 Kokoro/VITS 语音合成都完全在设备本机完成。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -451,7 +453,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("当前分角色朗读只使用本机文本规则和系统语音，不会把小说正文发送到网络服务。未来如接入在线语音，应用会先明确展示服务、数据范围和隐私条款并再次征得同意。")
+            Text("当前分角色朗读只使用本机文本规则、用户导入的 Kokoro/VITS 模型和本地音频播放，不使用系统音色，也不会把小说正文或音色模型发送到网络服务。")
         }.navigationTitle("隐私说明")
     }
 }
