@@ -541,6 +541,14 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 1)])
     }
 
+    func testSpeakingVerbsInsideDialogueDoNotCreateCharacterNames() {
+        let page = page(index: 0, text: "“先别问，跟我走。”")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.unknownDialogue(turn: 0)])
+    }
+
     func testUnknownDialogueDoesNotAlternateWhenDisabled() {
         let pages = [
             page(index: 0, text: "“第一句。”"),

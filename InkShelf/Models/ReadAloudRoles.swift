@@ -156,10 +156,30 @@ struct ReadAloudRoleAnalyzer {
         let matches = expression.matches(in: text, range: NSRange(location: 0, length: nsText.length))
         for match in matches.reversed() {
             guard match.numberOfRanges > 1 else { continue }
+            guard !isInsideDialogue(atUTF16Location: match.range.location, in: nsText) else { continue }
             let candidate = normalizedSpeakerName(nsText.substring(with: match.range(at: 1)))
             if let candidate { return candidate }
         }
         return nil
+    }
+
+    private static func isInsideDialogue(atUTF16Location location: Int, in text: NSString) -> Bool {
+        let prefix = text.substring(to: min(max(0, location), text.length))
+        var closingQuotes: [Character] = []
+        var straightQuoteIsOpen = false
+
+        for character in prefix {
+            switch character {
+            case "“": closingQuotes.append("”")
+            case "「": closingQuotes.append("」")
+            case "『": closingQuotes.append("』")
+            case "”", "」", "』":
+                if closingQuotes.last == character { closingQuotes.removeLast() }
+            case "\"": straightQuoteIsOpen.toggle()
+            default: break
+            }
+        }
+        return !closingQuotes.isEmpty || straightQuoteIsOpen
     }
 
     private static func normalizedSpeakerName(_ rawName: String) -> String? {
