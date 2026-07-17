@@ -94,9 +94,15 @@ context, not a substitute for inspecting the current code and Git history.
   before the visual page-turn animation completes. The animation can therefore
   never block the next utterance; its reader-level fallback still commits the
   visible page after 0.85 seconds when UIKit does not report completion.
-- Reader pages are split with the same TextKit width, height, font, line spacing,
-  chapter-title styling, and read-aloud paragraph indent used by the visible
-  page. Narration must never consume text clipped below the page before a turn.
+- Reader page capacity uses a lightweight line-aware pass over the source with
+  the visible text area, actual font metrics, line spacing, explicit newlines,
+  chapter-title allowance, the read-aloud paragraph indent, and a safety row.
+  Do not run TextKit once per page: imported books can exceed 20,000 pages and
+  reader opening must remain responsive. Narration must never consume text
+  clipped below the page before a turn.
+- Page-turn controller caches compare retained `ReaderPage` content, not only
+  page locations. Repagination can keep the same chapter/page IDs while changing
+  their text boundaries, and stale cached text must never diverge from speech.
 - Natural completion at the end of the book clears the narration session
   without re-entering `AVSpeechSynthesizer.stopSpeaking` from its utterance
   completion callback.

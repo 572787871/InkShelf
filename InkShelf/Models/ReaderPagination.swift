@@ -28,10 +28,8 @@ struct ReaderPage: Identifiable, Equatable, Sendable {
     var displayText: String { chapterHeadingPrefix + text }
 }
 
-/// The same TextKit geometry used by the reader page. Pagination must be based
-/// on laid-out glyphs instead of an estimated character count; otherwise a page
-/// can contain text below the visible text view and narration appears to skip
-/// that hidden text when it eventually advances.
+/// Conservative layout metrics shared by fast whole-book pagination and the
+/// visible reader page.
 struct ReaderPaginationLayout: Hashable, Sendable {
     let textWidth: CGFloat
     let textHeight: CGFloat
@@ -45,42 +43,106 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         chapterTitle: String?
     ) -> [String] {
         guard !text.isEmpty else { return [text] }
-        let source = text as NSString
-        let textStorage = NSTextStorage(
-            attributedString: attributedText(text, chapterTitle: chapterTitle)
-        )
-        let layoutManager = NSLayoutManager()
-        textStorage.addLayoutManager(layoutManager)
+        let columns = estimatedColumns
+        let rows = estimatedRows
         var result: [String] = []
-        var cursor = 0
+        var cursor = text.startIndex
 
-        while cursor < source.length {
-            let textContainer = NSTextContainer(
-                size: CGSize(width: max(1, textWidth), height: max(1, textHeight))
-            )
-            textContainer.lineFragmentPadding = 0
-            textContainer.lineBreakMode = .byWordWrapping
-            layoutManager.addTextContainer(textContainer)
-            layoutManager.ensureLayout(for: textContainer)
-            let glyphRange = layoutManager.glyphRange(for: textContainer)
-            guard glyphRange.length > 0 else {
-                let fallbackRange = source.rangeOfComposedCharacterSequence(
-                    at: min(cursor, source.length - 1)
-                )
-                result.append(source.substring(with: fallbackRange))
-                cursor = NSMaxRange(fallbackRange)
-                continue
+        if let chapterTitle {
+            let headingPrefix = "\(chapterTitle)\n\n"
+            if text.hasPrefix(headingPrefix) {
+                let bodyStart = text.index(cursor, offsetBy: headingPrefix.count)
+                let bodyRows = max(1, rows - estimatedHeadingRows(for: chapterTitle))
+                let proposed = pageEnd(in: text, from: bodyStart, rows: bodyRows, columns: columns)
+                let end = preferredBoundary(in: text, from: bodyStart, proposed: proposed)
+                result.append(String(text[cursor..<end]))
+                cursor = end
             }
-            let characterRange = layoutManager.characterRange(
-                forGlyphRange: glyphRange,
-                actualGlyphRange: nil
-            )
-            let pageEnd = min(source.length, max(cursor + 1, NSMaxRange(characterRange)))
-            let pageRange = NSRange(location: cursor, length: pageEnd - cursor)
-            result.append(source.substring(with: pageRange))
-            cursor = pageEnd
+        }
+
+        while cursor < text.endIndex {
+            let proposed = pageEnd(in: text, from: cursor, rows: rows, columns: columns)
+            let end = preferredBoundary(in: text, from: cursor, proposed: proposed)
+            result.append(String(text[cursor..<end]))
+            cursor = end
         }
         return result
+    }
+
+    /// Fast, conservative capacity math. It reserves the paragraph-control
+    /// indent on every line plus one complete safety row, and counts explicit
+    /// newlines while walking the source exactly once.
+    private var estimatedColumns: Int {
+        let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
+            ?? UIFont.systemFont(ofSize: fontSize)
+        let ideographWidth = ("汉" as NSString).size(withAttributes: [.font: font]).width
+        let characterWidth = max(1, max(fontSize, ideographWidth))
+        let availableWidth = max(1, textWidth - paragraphFirstLineIndent - 4)
+        return max(1, Int(floor(availableWidth / characterWidth)))
+    }
+
+    private var estimatedRows: Int {
+        let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
+            ?? UIFont.systemFont(ofSize: fontSize)
+        let lineHeight = max(1, font.lineHeight + lineSpacing)
+        return max(1, Int(floor(textHeight / lineHeight)) - 1)
+    }
+
+    private func estimatedHeadingRows(for chapterTitle: String) -> Int {
+        let titleFont = fontName.flatMap { UIFont(name: $0, size: fontSize + 6) }
+            ?? UIFont.systemFont(ofSize: fontSize + 6, weight: .semibold)
+        let availableWidth = max(1, textWidth - 4)
+        let titleWidth = (chapterTitle as NSString).size(withAttributes: [.font: titleFont]).width
+        let titleRows = max(1, Int(ceil(titleWidth / availableWidth)))
+        // One blank line from the heading prefix and one row for the larger
+        // title paragraph's extra spacing.
+        return titleRows + 2
+    }
+
+    private func pageEnd(
+        in text: String,
+        from start: String.Index,
+        rows maximumRows: Int,
+        columns: Int
+    ) -> String.Index {
+        guard start < text.endIndex else { return text.endIndex }
+        var index = start
+        var row = 1
+        var column = 0
+
+        while index < text.endIndex {
+            let character = text[index]
+            let next = text.index(after: index)
+            if character == "\n" {
+                index = next
+                guard row < maximumRows else { break }
+                row += 1
+                column = 0
+                continue
+            }
+            if column == columns {
+                guard row < maximumRows else { break }
+                row += 1
+                column = 0
+            }
+            column += 1
+            index = next
+        }
+        return index
+    }
+
+    private func preferredBoundary(
+        in text: String,
+        from start: String.Index,
+        proposed: String.Index
+    ) -> String.Index {
+        guard proposed < text.endIndex else { return proposed }
+        let slice = text[start..<proposed]
+        guard let boundary = slice.lastIndex(where: { "。！？；\n".contains($0) }),
+              text.distance(from: boundary, to: proposed) < 80 else {
+            return proposed
+        }
+        return text.index(after: boundary)
     }
 
     func fits(_ text: String, chapterTitle: String?) -> Bool {

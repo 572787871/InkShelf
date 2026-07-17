@@ -811,6 +811,18 @@ private struct EngineConfiguration {
     let appearance: ReaderPageAppearance
 }
 
+func readerPageContentChanged(
+    from oldPages: [ReaderPage],
+    to newPages: [ReaderPage],
+    retainedIndices: Set<Int>
+) -> Bool {
+    guard oldPages.count == newPages.count else { return true }
+    return retainedIndices.contains { index in
+        guard oldPages.indices.contains(index), newPages.indices.contains(index) else { return true }
+        return oldPages[index] != newPages[index]
+    }
+}
+
 private final class CurlPageTurnController: UIPageViewController, PageTurnEngine, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
     var onCommit: ((ReaderPageLocation) -> Void)?
     var onPlayParagraph: ((ReaderPage, NSRange) -> Void)? {
@@ -850,7 +862,12 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance) {
         let configuration = EngineConfiguration(pages: pages, index: index, appearance: appearance)
         guard !transaction.isLocked else { pendingConfiguration = configuration; return }
-        let contentChanged = self.pages.map(\.id) != pages.map(\.id)
+        let retainedIndices = Set(frontCache.keys).union(backCache.keys)
+        let contentChanged = readerPageContentChanged(
+            from: self.pages,
+            to: pages,
+            retainedIndices: retainedIndices
+        )
         let appearanceChanged = self.appearance != appearance
         let layoutChanged = self.appearance.map { !$0.hasSameLayout(as: appearance) } ?? true
         if contentChanged || layoutChanged {
@@ -1079,7 +1096,11 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance) {
         let configuration = EngineConfiguration(pages: pages, index: index, appearance: appearance)
         guard !transaction.isLocked else { pendingConfiguration = configuration; return }
-        let contentChanged = self.pages.map(\.id) != pages.map(\.id)
+        let contentChanged = readerPageContentChanged(
+            from: self.pages,
+            to: pages,
+            retainedIndices: Set(controllerCache.keys)
+        )
         let appearanceChanged = self.appearance != appearance
         let layoutChanged = self.appearance.map { !$0.hasSameLayout(as: appearance) } ?? true
         let safeIndex = min(max(index, 0), max(pages.count - 1, 0))

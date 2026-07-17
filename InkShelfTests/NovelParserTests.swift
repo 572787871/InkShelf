@@ -152,6 +152,24 @@ final class NovelParserTests: XCTestCase {
         }
     }
 
+    func testLayoutPaginationRemainsFastForVeryLongBooks() {
+        let body = String(repeating: "这是用于验证长篇小说快速分页且上下文连续的一段正文。\n", count: 20_000)
+        let book = NovelBook(title: "长篇分页测试", content: "第一章 开始\n\(body)")
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+
+        XCTAssertGreaterThan(catalog.pages.count, 1_000)
+        XCTAssertEqual(catalog.pages.map(\.text).joined(), book.chapters[0].content)
+    }
+
     func testGB18030TextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
         let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
@@ -296,6 +314,36 @@ final class NovelParserTests: XCTestCase {
 }
 
 final class ReaderPaginationTests: XCTestCase {
+    func testPageCacheDetectsChangedTextAtTheSameLocation() {
+        let location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
+        let oldPage = ReaderPage(
+            location: location,
+            chapterTitle: "第一章",
+            text: "旧分页正文。",
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+        let newPage = ReaderPage(
+            location: location,
+            chapterTitle: "第一章",
+            text: "重新分页后的连续正文。",
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+
+        XCTAssertTrue(
+            readerPageContentChanged(
+                from: [oldPage],
+                to: [newPage],
+                retainedIndices: [0]
+            )
+        )
+    }
+
     func testCatalogPreloadsAcrossChapterBoundary() {
         let book = NovelBook(
             title: "Test",
