@@ -444,7 +444,14 @@ struct ReaderView: View {
             readAloud.finishAtEndOfBook()
             return
         }
+        let shouldContinuePlaying = readAloud.isPlaying
         automatedTurnTarget = nextPage.location
+        // Speech owns its own page progression. Do not make the next
+        // utterance wait for UIKit's visual page-turn completion callback.
+        readAloud.advanceSession(
+            to: nextPage.location,
+            continuePlaying: shouldContinuePlaying
+        )
         if turnStyle == .vertical {
             commit(nextPage.location)
         } else {
@@ -453,9 +460,8 @@ struct ReaderView: View {
     }
 
     private func scheduleAutomatedTurnFallback(to target: ReaderPageLocation) {
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 850_000_000)
-            guard automatedTurnTarget == target, location != target else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+            guard automatedTurnTarget == target else { return }
             // Programmatic UIPageViewController animations can occasionally
             // finish without a completion callback. Commit only after the
             // normal animation window has elapsed so narration never stalls.

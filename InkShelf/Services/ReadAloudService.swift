@@ -323,10 +323,37 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     func moveSession(to location: ReaderPageLocation, continuePlaying: Bool) {
-        guard let pageIndex = sessionPages.firstIndex(where: { $0.location == location }) else { return }
+        _ = updateSession(
+            to: location,
+            continuePlaying: continuePlaying,
+            stoppingCurrentSpeech: true
+        )
+    }
+
+    @discardableResult
+    func advanceSession(to location: ReaderPageLocation, continuePlaying: Bool) -> Bool {
+        updateSession(
+            to: location,
+            continuePlaying: continuePlaying,
+            stoppingCurrentSpeech: false
+        )
+    }
+
+    private func updateSession(
+        to location: ReaderPageLocation,
+        continuePlaying: Bool,
+        stoppingCurrentSpeech: Bool
+    ) -> Bool {
+        guard let pageIndex = sessionPages.firstIndex(where: { $0.location == location }) else {
+            return false
+        }
         sessionPageIndex = pageIndex
         let page = sessionPages[pageIndex]
-        setPage(text: page.text, location: page.location)
+        setPage(
+            text: page.text,
+            location: page.location,
+            stoppingCurrentSpeech: stoppingCurrentSpeech
+        )
         if continuePlaying {
             play()
         } else {
@@ -334,6 +361,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             state = .paused(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
         }
+        return true
     }
 
     func continueAfterPageFinishedWithoutTurningReader() {
@@ -361,8 +389,15 @@ final class ReadAloudService: NSObject, ObservableObject {
         updateNowPlayingInfo()
     }
 
-    func setPage(text: String, location: ReaderPageLocation, startAtUTF16Location: Int = 0) {
-        synthesizer.stopSpeaking(at: .immediate)
+    func setPage(
+        text: String,
+        location: ReaderPageLocation,
+        startAtUTF16Location: Int = 0,
+        stoppingCurrentSpeech: Bool = true
+    ) {
+        if stoppingCurrentSpeech {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
         queuedSentenceIndices.removeAll(keepingCapacity: true)
         ensureRolePlan(forChapter: location.chapterIndex)
         plan = ReadAloudTextPlan(
@@ -405,6 +440,9 @@ final class ReadAloudService: NSObject, ObservableObject {
             return
         }
         guard !synthesizer.isSpeaking else {
+            if queuedSentenceIndices.isEmpty {
+                enqueueSentence(at: nextSentenceIndex)
+            }
             state = .playing(sentence: currentSentenceIndex)
             updateNowPlayingInfo()
             return
@@ -674,7 +712,11 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         sessionPageIndex = nextIndex
         let nextPage = sessionPages[nextIndex]
-        setPage(text: nextPage.text, location: nextPage.location)
+        setPage(
+            text: nextPage.text,
+            location: nextPage.location,
+            stoppingCurrentSpeech: false
+        )
         play()
     }
 

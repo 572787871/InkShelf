@@ -90,6 +90,10 @@ context, not a substitute for inspecting the current code and Git history.
   engines. Programmatic turns have engine and reader-level completion fallbacks
   so a missing UIKit animation callback cannot leave narration waiting at the
   end of a page or keep the page-turn transaction locked.
+- At a narrated page boundary, the speech session advances to the next page
+  before the visual page-turn animation completes. The animation can therefore
+  never block the next utterance; its reader-level fallback still commits the
+  visible page after 0.85 seconds when UIKit does not report completion.
 - Natural completion at the end of the book clears the narration session
   without re-entering `AVSpeechSynthesizer.stopSpeaking` from its utterance
   completion callback.
