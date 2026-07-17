@@ -28,8 +28,9 @@ context, not a substitute for inspecting the current code and Git history.
   - imported Kokoro/VITS session, local PCM playback, sentence highlighting,
     background audio, chapter timeline, MediaPlayer metadata and remote commands
 - `InkShelf/Services/LocalVoiceKit.swift` and `LocalTTSBridge.mm`
-  - secure ZIP voice-package storage, sherpa-onnx model loading and offline PCM
-    generation through a narrow Objective-C++ boundary
+  - secure ZIP voice-package storage, official model catalog download/install,
+    sherpa-onnx model loading and offline PCM generation through a narrow
+    Objective-C++ boundary
 - `InkShelf/Models/ReadAloudRoles.swift`
   - local dialogue attribution, stable character/unknown speaker assignments,
     and persisted read-aloud voice preferences
@@ -87,6 +88,11 @@ context, not a substitute for inspecting the current code and Git history.
 - Apple system voices are not enumerated or used as a fallback. Reading is
   unavailable until a validated Kokoro or VITS ZIP package is imported. Every
   package contains `voice.json`, model/token assets and explicit speaker IDs.
+- The model store downloads a pinned Kokoro Chinese/English INT8 archive from
+  the official sherpa-onnx release, reports progress/cancellation/retry, verifies
+  its fixed SHA-256, safely installs its 103-speaker manifest, and removes the
+  temporary archive. Network access is used only for an explicit model download;
+  installed inference remains offline.
 - Model inference runs through pinned sherpa-onnx iOS binaries and AVAudioEngine
   plays copied Float32 PCM. Models, novel text and generated audio stay on the
   device. Package import rejects traversal paths/symlinks and caps expansion at

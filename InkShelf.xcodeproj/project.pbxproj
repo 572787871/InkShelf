@@ -30,6 +30,7 @@
 		10000000000000000000001B /* LocalTTSBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* LocalTTSBridge.mm */; };
 		10000000000000000000001C /* sherpa-onnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001F /* sherpa-onnx.xcframework */; };
 		10000000000000000000001D /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* onnxruntime.xcframework */; };
+		10000000000000000000001E /* SWCompression in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000004 /* SWCompression */; };
 		100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */; };
 		100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */; };
 		100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* LXGWWenKai-Regular.ttf */; };
@@ -83,7 +84,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */, 10000000000000000000001C /* sherpa-onnx.xcframework in Frameworks */, 10000000000000000000001D /* onnxruntime.xcframework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */, 10000000000000000000001E /* SWCompression in Frameworks */, 10000000000000000000001C /* sherpa-onnx.xcframework in Frameworks */, 10000000000000000000001D /* onnxruntime.xcframework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 		400000000000000000000004 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
@@ -109,7 +110,7 @@
 			buildRules = ();
 			dependencies = ();
 			name = InkShelf;
-			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */,);
+			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */, 900000000000000000000004 /* SWCompression */,);
 			productName = InkShelf;
 			productReference = 200000000000000000000010 /* InkShelf.app */;
 			productType = "com.apple.product-type.application";
@@ -137,7 +138,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (en, Base, zh_Hans,);
 			mainGroup = 300000000000000000000001;
-			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,);
+			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */, 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */,);
 			productRefGroup = 30000000000000000000000A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -176,10 +177,12 @@
 
 /* Begin XCRemoteSwiftPackageReference section */
 		900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/weichsel/ZIPFoundation.git"; requirement = {kind = exactVersion; version = 0.9.20; }; };
+		900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/tsolomko/SWCompression.git"; requirement = {kind = exactVersion; version = 4.9.0; }; };
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		900000000000000000000002 /* ZIPFoundation */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */; productName = ZIPFoundation; };
+		900000000000000000000004 /* SWCompression */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */; productName = SWCompression; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 600000000000000000000001 /* Project object */;

@@ -218,6 +218,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var applicationIsActive = true
     @Published private(set) var playbackRequested = false
     @Published private(set) var localVoicePackages: [LocalVoicePackage]
+    @Published private(set) var localVoiceCatalogStates: [String: LocalVoiceCatalogState]
     @Published var settings: ReadAloudSettings {
         didSet {
             if oldValue.alternatesUnattributedDialogue != settings.alternatesUnattributedDialogue {
@@ -244,6 +245,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var analyzedRoleChapters: Set<Int> = []
     private var synthesisTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    private var catalogDownloadTasks: [String: URLSessionDownloadTask] = [:]
+    private var catalogProgressTasks: [String: Task<Void, Never>] = [:]
     private var playbackToken = UUID()
     private var previewToken = UUID()
     private var activeSentenceIndex: Int?
@@ -263,9 +266,18 @@ final class ReadAloudService: NSObject, ObservableObject {
     override init() {
         let voiceStore = LocalVoicePackageStore()
         self.voiceStore = voiceStore
-        localVoicePackages = voiceStore.installedPackages()
+        let installedPackages = voiceStore.installedPackages()
+        localVoicePackages = installedPackages
+        var catalogStates = Dictionary(
+            uniqueKeysWithValues: LocalVoiceCatalog.models.map { ($0.id, LocalVoiceCatalogState.available) }
+        )
+        for package in installedPackages {
+            if let catalogID = package.catalogID { catalogStates[catalogID] = .installed }
+        }
+        localVoiceCatalogStates = catalogStates
         settings = Self.loadSettings()
         super.init()
+        Self.cleanAbandonedCatalogDownloads()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
@@ -310,6 +322,12 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     var canStartLocalReading: Bool { !availableLocalVoices.isEmpty }
 
+    var localVoiceCatalog: [LocalVoiceCatalogModel] { LocalVoiceCatalog.models }
+
+    func catalogState(for model: LocalVoiceCatalogModel) -> LocalVoiceCatalogState {
+        localVoiceCatalogStates[model.id] ?? .available
+    }
+
     func importLocalVoicePackage(from url: URL) async throws {
         let package = try await voiceStore.importPackage(from: url)
         localVoicePackages.append(package)
@@ -320,12 +338,73 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
+    func downloadCatalogModel(_ model: LocalVoiceCatalogModel) {
+        guard catalogDownloadTasks[model.id] == nil,
+              catalogState(for: model) != .installed,
+              catalogState(for: model) != .installing else { return }
+
+        let destination: URL
+        do {
+            destination = try Self.catalogDownloadURL(for: model)
+        } catch {
+            localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
+            return
+        }
+        localVoiceCatalogStates[model.id] = .downloading(progress: 0)
+
+        let task = URLSession.shared.downloadTask(with: model.downloadURL) { [weak self] temporaryURL, response, error in
+            let result: Result<URL, Error>
+            do {
+                if let error { throw error }
+                guard let response = response as? HTTPURLResponse,
+                      (200...299).contains(response.statusCode) else {
+                    throw LocalVoicePackageError.downloadFailed("服务器没有返回有效文件")
+                }
+                guard let temporaryURL else {
+                    throw LocalVoicePackageError.downloadFailed("下载文件不存在")
+                }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.moveItem(at: temporaryURL, to: destination)
+                result = .success(destination)
+            } catch {
+                result = .failure(error)
+            }
+            Task { @MainActor [weak self] in
+                self?.catalogDownloadFinished(model, result: result)
+            }
+        }
+        catalogDownloadTasks[model.id] = task
+        catalogProgressTasks[model.id] = Task { [weak self, weak task] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, let task,
+                      self.catalogDownloadTasks[model.id] === task else { return }
+                let expected = task.countOfBytesExpectedToReceive > 0
+                    ? task.countOfBytesExpectedToReceive
+                    : model.downloadBytes
+                let progress = min(1, max(0, Double(task.countOfBytesReceived) / Double(expected)))
+                self.localVoiceCatalogStates[model.id] = .downloading(progress: progress)
+            }
+        }
+        task.resume()
+    }
+
+    func cancelCatalogModelDownload(_ model: LocalVoiceCatalogModel) {
+        catalogDownloadTasks.removeValue(forKey: model.id)?.cancel()
+        catalogProgressTasks.removeValue(forKey: model.id)?.cancel()
+        localVoiceCatalogStates[model.id] = .available
+        if let url = try? Self.catalogDownloadURL(for: model) { try? FileManager.default.removeItem(at: url) }
+    }
+
     func removeLocalVoicePackage(_ package: LocalVoicePackage) throws {
         let removedVoiceIDs = Set(availableLocalVoices.filter { $0.packageID == package.id }.map(\.id))
         stopVoicePreview()
         if activeVoiceUses(packageID: package.id) || currentSentenceUses(packageID: package.id) { stop() }
         try voiceStore.remove(package)
         localVoicePackages.removeAll { $0.id == package.id }
+        if let catalogID = package.catalogID { localVoiceCatalogStates[catalogID] = .available }
         Task { await localSynthesizer.unload(packageID: package.id) }
         if removedVoiceIDs.contains(settings.narratorVoiceIdentifier) {
             settings.narratorVoiceIdentifier = availableLocalVoices.first?.id ?? ""
@@ -333,6 +412,59 @@ final class ReadAloudService: NSObject, ObservableObject {
         settings.roleVoiceIdentifiers = settings.roleVoiceIdentifiers.map {
             removedVoiceIDs.contains($0) ? "" : $0
         }
+    }
+
+    private func catalogDownloadFinished(
+        _ model: LocalVoiceCatalogModel,
+        result: Result<URL, Error>
+    ) {
+        guard catalogDownloadTasks.removeValue(forKey: model.id) != nil else {
+            if case let .success(url) = result { try? FileManager.default.removeItem(at: url) }
+            return
+        }
+        catalogProgressTasks.removeValue(forKey: model.id)?.cancel()
+        switch result {
+        case let .failure(error):
+            if (error as? URLError)?.code == .cancelled {
+                localVoiceCatalogStates[model.id] = .available
+            } else {
+                localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
+            }
+        case let .success(archiveURL):
+            localVoiceCatalogStates[model.id] = .installing
+            Task { [weak self] in
+                guard let self else { return }
+                defer { try? FileManager.default.removeItem(at: archiveURL) }
+                do {
+                    let package = try await voiceStore.installCatalogModel(model, from: archiveURL)
+                    localVoicePackages.removeAll { $0.catalogID == model.id }
+                    localVoicePackages.append(package)
+                    localVoicePackages.sort {
+                        $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                    }
+                    localVoiceCatalogStates[model.id] = .installed
+                    if resolvedVoice(identifier: settings.narratorVoiceIdentifier) == nil,
+                       let first = availableLocalVoices.first(where: { $0.packageID == package.id }) {
+                        settings.narratorVoiceIdentifier = first.id
+                    }
+                } catch {
+                    localVoiceCatalogStates[model.id] = .failed(message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private static func catalogDownloadURL(for model: LocalVoiceCatalogModel) throws -> URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let directory = caches.appendingPathComponent("VoiceModelDownloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(model.id).appendingPathExtension("tar.bz2")
+    }
+
+    private static func cleanAbandonedCatalogDownloads() {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let directory = caches.appendingPathComponent("VoiceModelDownloads", isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
     }
 
     func startSession(

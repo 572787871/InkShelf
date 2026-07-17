@@ -16,13 +16,13 @@
 - 羊皮纸、纯白、护眼、夜间主题；宋体、楷体、系统字体
 - 字号、行距、页边距、屏幕亮度和阅读常亮
 - 正文/封面独立文件存储、轻量元数据原子持久化、隐私清单、单元测试
-- 完全离线的 Kokoro/VITS 分角色配音、模型包导入、试听、后台与锁屏控制
+- 下载后完全离线的 Kokoro/VITS 分角色配音、模型商店、音色包导入、试听、后台与锁屏控制
 
 ## 运行
 
 1. 使用 Xcode 16 或更新版本打开 `InkShelf.xcodeproj`。
 2. 运行 `bash scripts/bootstrap-local-tts.sh`，下载并校验固定版本的 sherpa-onnx iOS 运行库。
-3. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20。
+3. 首次打开等待 Swift Package Manager 拉取 ZIPFoundation 0.9.20 和 SWCompression 4.9.0。
 4. 在 Signing & Capabilities 中选择你的开发团队。
 5. 选择 iOS 17+ 模拟器或真机运行。
 
@@ -30,7 +30,9 @@
 
 ## 本地音色包
 
-朗读不使用 `AVSpeechSynthesizer`，也不会回退到苹果系统音色。请在“设置 → 朗读 → 功能设置”导入 ZIP 音色包。ZIP 内可有一层目录，但模型根目录必须包含 `voice.json`：
+朗读不使用 `AVSpeechSynthesizer`，也不会回退到苹果系统音色。在“设置 → 朗读 → 功能设置 → 模型商店”可以下载官方 Kokoro 中文多音色模型；应用会显示进度、支持取消和重试，并在安装前校验固定 SHA-256。模型安装完成后删除下载缓存，后续语音生成不需要网络。
+
+也可以从文件 App 导入自定义 ZIP 音色包。ZIP 内可有一层目录，但模型根目录必须包含 `voice.json`：
 
 ```json
 {
@@ -54,4 +56,5 @@
 ## 第三方依赖
 
 - [ZIPFoundation](https://github.com/weichsel/ZIPFoundation)（MIT）：EPUB ZIP 容器读取。
+- [SWCompression](https://github.com/tsolomko/SWCompression)（MIT）：官方模型 `.tar.bz2` 解压。
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)（Apache-2.0）：Kokoro/VITS 离线语音合成。

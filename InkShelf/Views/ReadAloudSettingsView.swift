@@ -47,6 +47,21 @@ struct ReadAloudSettingsView: View {
     var body: some View {
         Form {
             Section("本地音色模型") {
+                NavigationLink {
+                    LocalVoiceModelStoreView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.grid.2x2.fill")
+                            .foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("模型商店")
+                            Text("下载官方 Kokoro/VITS 离线模型")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 Button {
                     showingVoiceImporter = true
                 } label: {
@@ -298,6 +313,160 @@ struct ReadAloudSettingsView: View {
                 guard readAloud.settings.roleVoiceIdentifiers.indices.contains(index) else { return }
                 readAloud.settings.roleVoiceIdentifiers[index] = identifier
             }
+        )
+    }
+}
+
+private struct LocalVoiceModelStoreView: View {
+    @EnvironmentObject private var readAloud: ReadAloudService
+    @State private var pendingDownload: LocalVoiceCatalogModel?
+
+    var body: some View {
+        List {
+            Section {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("下载后完全离线")
+                            .font(.headline)
+                        Text("只有下载模型时需要网络。小说正文、角色分析和语音生成始终留在设备上。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "iphone.and.arrow.forward")
+                        .font(.title2)
+                        .foregroundStyle(.tint)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("可下载模型") {
+                ForEach(readAloud.localVoiceCatalog) { model in
+                    modelRow(model)
+                }
+            } footer: {
+                Text("模型由原作者或 sherpa-onnx 官方发布。墨架会校验完整性，安装完成后删除下载缓存。建议使用 Wi-Fi，并在安装完成前保持应用开启。")
+            }
+
+            if !readAloud.localVoicePackages.isEmpty {
+                Section("已安装") {
+                    ForEach(readAloud.localVoicePackages) { package in
+                        LabeledContent(package.name) {
+                            Text("\(package.voiceCount) 个音色")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("返回朗读设置可试听、分配声线或删除模型。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("模型商店")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "下载离线模型？",
+            isPresented: pendingDownloadIsPresented,
+            titleVisibility: .visible
+        ) {
+            if let pendingDownload {
+                Button("下载 \(pendingDownload.downloadSizeDescription)") {
+                    readAloud.downloadCatalogModel(pendingDownload)
+                    self.pendingDownload = nil
+                }
+            }
+            Button("取消", role: .cancel) { pendingDownload = nil }
+        } message: {
+            if let pendingDownload {
+                Text("\(pendingDownload.name) 下载后会自动校验并安装。")
+            }
+        }
+    }
+
+    private func modelRow(_ model: LocalVoiceCatalogModel) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.name)
+                        .font(.headline)
+                    Text("\(model.language) · \(model.manifest.speakers.count) 个音色 · \(model.downloadSizeDescription)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Text(model.summary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 16) {
+                Link("\(model.licenseName) 许可", destination: model.licenseURL)
+                Link("模型来源", destination: model.sourceURL)
+            }
+            .font(.caption)
+
+            stateControls(for: model)
+        }
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func stateControls(for model: LocalVoiceCatalogModel) -> some View {
+        switch readAloud.catalogState(for: model) {
+        case .available:
+            Button {
+                pendingDownload = model
+            } label: {
+                Label("下载并安装", systemImage: "arrow.down.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+
+        case let .downloading(progress):
+            VStack(alignment: .leading, spacing: 8) {
+                ProgressView(value: progress) {
+                    Text("正在下载 \(Int((progress * 100).rounded()))%")
+                        .font(.caption)
+                }
+                Button("取消下载", role: .cancel) {
+                    readAloud.cancelCatalogModelDownload(model)
+                }
+                .font(.caption)
+            }
+
+        case .installing:
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("正在校验并安装…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .installed:
+            Label("已安装，可以离线试听和朗读", systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.green)
+
+        case let .failed(message):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("下载或安装失败", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("重新下载") { pendingDownload = model }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var pendingDownloadIsPresented: Binding<Bool> {
+        Binding(
+            get: { pendingDownload != nil },
+            set: { if !$0 { pendingDownload = nil } }
         )
     }
 }

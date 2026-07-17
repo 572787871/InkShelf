@@ -716,6 +716,32 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         )
     }
 
+    func testBuiltInVoiceCatalogHasCompleteKokoroSpeakerMap() throws {
+        let model = try XCTUnwrap(LocalVoiceCatalog.models.first)
+
+        XCTAssertEqual(model.id, "kokoro-int8-multi-lang-v1_1")
+        XCTAssertEqual(model.manifest.engine, .kokoro)
+        XCTAssertEqual(model.manifest.model, "model.int8.onnx")
+        XCTAssertEqual(model.manifest.speakers.count, 103)
+        XCTAssertEqual(model.manifest.speakers.map(\.id), Array(0...102))
+        XCTAssertEqual(model.manifest.speakers[3].name, "中文女声 001")
+        XCTAssertEqual(model.manifest.speakers[58].name, "中文男声 009")
+        XCTAssertEqual(model.archiveSHA256.count, 64)
+        XCTAssertEqual(model.downloadURL.scheme, "https")
+    }
+
+    func testLocalVoiceArchiveSHA256UsesStreamingFileHash() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-hash-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("InkShelf".utf8).write(to: url)
+
+        XCTAssertEqual(
+            try LocalVoicePackageStore.sha256(of: url),
+            "5899151d811a8a3a1aa7fc71b52f40c76cf262b4680473d96f414f960df1a726"
+        )
+    }
+
     func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
         let pages = [
             page(index: 0, text: "张三说：“我们出发。”"),
