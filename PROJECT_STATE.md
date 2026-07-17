@@ -1,0 +1,107 @@
+# InkShelf project state
+
+This file is a compact, version-controlled handoff for new Codex sessions. It is
+context, not a substitute for inspecting the current code and Git history.
+
+## Product and repository
+
+- Product: 墨架 InkShelf, a production-oriented SwiftUI local novel reader.
+- Repository: `https://github.com/572787871/InkShelf` (public).
+- Active integration branch: `agent/unsigned-ipa-artifact`.
+- Existing draft PR: PR #1 into `main`.
+- CI workflow: `.github/workflows/ios.yml`; it runs the project build/tests,
+  builds an unsigned device app, packages an unsigned IPA, and uploads it as an
+  Actions artifact.
+- The remote Linux workspace cannot run Xcode or perform iPhone validation.
+
+## Important implementation map
+
+- `InkShelf/Views/BookshelfView.swift`
+  - shelf grid/list UI, import entry, reader presentation and close gesture
+  - persistent narration floater integration
+- `InkShelf/Views/ReaderView.swift`
+  - reader state, pagination integration, chrome/settings, narration UI and
+    visible-page/narration-page coordination
+- `InkShelf/Views/InteractivePageTurnView.swift`
+  - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
+- `InkShelf/Services/ReadAloudService.swift`
+  - AVSpeechSynthesizer session, sentence highlighting, background audio,
+    chapter timeline, MediaPlayer now-playing metadata and remote commands
+- `InkShelf/Services/LibraryStore.swift`
+  - books, reading progress, persistence, import result/error state
+- `InkShelf/Services/NovelImporter.swift`
+  - security-scoped import, sandbox copying, encoding detection and parsing
+- `InkShelf/Views/BookCoverView.swift`
+  - shelf cover rendering; the App must not overlay title text or decorative
+    words/symbols inside the default cover image
+- `InkShelfTests/NovelParserTests.swift`
+  - parser, pagination transactions, navigation decisions, timeline and related
+    regression tests
+
+## Current behavior contracts
+
+### Reader presentation
+
+- Reader opens upward from the bottom and closes downward.
+- Open and close use `.easeInOut(duration: 0.34)` and release their transition
+  lock after 0.36 seconds.
+- Every presentation receives a new identity so stale `@State` from the previous
+  reader instance is not reused.
+- The initial pagination pass prioritizes the live narration location when the
+  opened book owns the active narration session.
+- Left-edge dismissal uses a narrow pure-SwiftUI drag target below the top bar;
+  the prior `UIScreenEdgePanGestureRecognizer` bridge was removed after a
+  reported real-device crash.
+
+### Narration and page browsing
+
+- Narration and manual browsing are deliberately decoupled.
+- A manual page turn, directory jump, or progress browsing action does not move
+  the speech queue to that page.
+- “从本页听” starts the visible page. A paragraph play button starts that
+  paragraph.
+- “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
+  current sentence playing.
+- If the user browses away, narration continues through its own subsequent
+  pages without forcing the visible page back.
+- If the visible page still matches narration, finishing a page can perform the
+  normal automatic page-turn animation.
+- Opening the active book from either its shelf card or the floating cover must
+  land on the current narration page.
+- The floating circular cover opens the narrated book. It rotates while playing,
+  freezes at its current angle while paused, and resumes from that angle.
+- Background audio and Apple lock-screen/Control Center controls are supported.
+
+### Shelf and covers
+
+- Shelf supports grid and list layouts.
+- Grid chapter progress uses the compact complete form such as
+  `2058章/2631章` and must not truncate behind the ellipsis menu.
+- The plus button directly opens the document picker.
+- Default cover images are shown without App-rendered title, author, “墨架典藏”,
+  lines, dots, or decorative symbol overlays. The title remains below the cover.
+
+### Import
+
+- Import supports TXT/Markdown/EPUB according to `NovelImporter.supportedTypes`.
+- Selected provider URLs must be accessed as security-scoped resources, copied
+  into the sandbox while access is valid, then parsed from the sandbox copy.
+- TXT decoding includes UTF-8/BOM, UTF-16 LE/BE, GBK and GB18030 fallbacks.
+- Import failures must be visible to the user and must not silently return to the
+  shelf.
+
+## Verification workflow
+
+1. Run `git diff --check` and inspect the exact diff.
+2. Commit only request-related files and push the active branch.
+3. Find the run with:
+   `gh run list --branch agent/unsigned-ipa-artifact --limit 3 --json databaseId,headSha,status,conclusion,url`.
+4. Use bounded `gh run view <id> --json status,conclusion,jobs,url` checks.
+5. On success, report the run and unsigned IPA artifact. On failure, inspect the
+   failed step logs and fix before reporting completion.
+
+## Real-device checks still matter
+
+Actions proves compilation and automated tests, not touch feel, page-curl visual
+quality, AVSpeech behavior under iOS interruptions, background playback, or crash
+freedom. Report those as requiring the user's signed IPA/iPhone verification.
