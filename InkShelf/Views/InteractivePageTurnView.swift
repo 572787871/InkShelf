@@ -890,10 +890,10 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
             previousIndex: current
         )
         setViewControllers(transitionControllers, direction: direction, animated: true) { [weak self] finished in
+            guard finished else { return }
             self?.finishAutomatedTurn(
                 at: index,
-                targetLocation: targetLocation,
-                committed: finished
+                targetLocation: targetLocation
             )
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
@@ -920,11 +920,10 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
 
     private func finishAutomatedTurn(
         at index: Int,
-        targetLocation: ReaderPageLocation,
-        committed: Bool
+        targetLocation: ReaderPageLocation
     ) {
         guard transaction.targetIndex == index else { return }
-        let committedIndex = transaction.finish(committed: committed)
+        let committedIndex = transaction.finish(committed: true)
         if let committedIndex, pages.indices.contains(committedIndex) {
             preloadPages(around: committedIndex)
             onCommit?(targetLocation)
