@@ -746,7 +746,7 @@ final class ReaderRuntimeTests: XCTestCase {
         }
     }
 
-    func testAutomatedCurlTurnProvidesBothPageSides() {
+    func testAutomatedCurlTurnCommitsTheNextPage() {
         let pages = (0..<2).map { index in
             ReaderPage(
                 location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
@@ -778,6 +778,12 @@ final class ReaderRuntimeTests: XCTestCase {
             isReadAloudPlaying: true
         )
         let host = ReaderPageTurnHostController()
+        let committed = expectation(description: "自动翻页提交下一页")
+        var committedLocation: ReaderPageLocation?
+        host.onCommit = { location in
+            committedLocation = location
+            committed.fulfill()
+        }
         host.loadViewIfNeeded()
         host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
 
@@ -790,13 +796,7 @@ final class ReaderRuntimeTests: XCTestCase {
         )
         host.view.layoutIfNeeded()
 
-        guard let curl = host.children.first as? UIPageViewController else {
-            return XCTFail("仿真翻页引擎没有正确安装")
-        }
-        XCTAssertEqual(
-            curl.viewControllers?.count,
-            2,
-            "双面仿真自动翻页必须同时提供目标正面与上一页背面"
-        )
+        wait(for: [committed], timeout: 2)
+        XCTAssertEqual(committedLocation, pages[1].location)
     }
 }

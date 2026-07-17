@@ -900,10 +900,9 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
             guard let self,
                   self.transaction.targetIndex == index,
                   self.pages.indices.contains(index) else { return }
-            let controllers = self.automatedTransitionControllers(
-                index: index,
-                previousIndex: current
-            )
+            // This is a nonanimated replacement, not another curl transition;
+            // UIKit requires only the destination front for an edge spine.
+            let controllers = self.visibleControllers(index: index)
             let committedIndex = self.transaction.finish(committed: true)
             self.setViewControllers(
                 controllers,
