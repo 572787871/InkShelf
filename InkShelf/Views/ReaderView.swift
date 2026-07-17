@@ -322,7 +322,7 @@ struct ReaderView: View {
             width: max(1, size.width - margin * 2),
             height: max(1, footerY - headerY - 64)
         )
-        PaginationLayout(
+        return PaginationLayout(
             bookID: book.id,
             readerLayout: ReaderPaginationLayout(
                 textWidth: textSize.width,
