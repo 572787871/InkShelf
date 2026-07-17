@@ -122,6 +122,36 @@ final class NovelParserTests: XCTestCase {
         )
     }
 
+    func testLayoutPaginationKeepsEveryPageVisibleAndTextContinuous() {
+        let body = String(repeating: "杨飞见识了许多风景，故事仍在继续。\n", count: 30)
+        let book = NovelBook(
+            title: "排版分页测试",
+            content: "第2063章 我要生男孩啊！\n\(body)"
+        )
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+        let chapterPages = catalog.pages.filter { $0.location.chapterIndex == 0 }
+
+        XCTAssertGreaterThan(chapterPages.count, 1)
+        XCTAssertEqual(chapterPages.map(\.text).joined(), book.chapters[0].content)
+        for page in chapterPages {
+            XCTAssertTrue(
+                layout.fits(
+                    page.displayText,
+                    chapterTitle: page.pageInChapter == 1 ? page.chapterTitle : nil
+                ),
+                "第 \(page.pageInChapter) 页存在屏幕下方不可见正文"
+            )
+        }
+    }
+
     func testGB18030TextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
         let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(

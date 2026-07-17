@@ -100,8 +100,11 @@ struct ReaderView: View {
             if let book {
                 GeometryReader { proxy in
                     let chapter = safeChapter(in: book)
-                    let capacity = charactersPerPage(in: proxy.size)
-                    let layout = paginationLayout(for: book, size: proxy.size)
+                    let layout = paginationLayout(
+                        for: book,
+                        size: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    )
                     ZStack {
                         ReaderBackgroundSurface(
                             theme: theme,
@@ -142,7 +145,9 @@ struct ReaderView: View {
                         }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-                    .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
+                    .task(id: layout) {
+                        await rebuildCatalog(for: book, paginationLayout: layout.readerLayout)
+                    }
                     .allowsHitTesting(!interactionDisabled)
                 }
                 .statusBarHidden(!chromeVisible)
@@ -274,14 +279,6 @@ struct ReaderView: View {
         return chapters[min(max(location.chapterIndex, 0), max(chapters.count - 1, 0))]
     }
 
-    private func charactersPerPage(in size: CGSize) -> Int {
-        let usableWidth = max(180, size.width - margin * 2)
-        let usableHeight = max(240, size.height - 112)
-        let columns = usableWidth / max(fontSize * 1.04, 1)
-        let rows = usableHeight / max(fontSize + lineSpacing, 1)
-        return max(180, Int(columns * rows * 0.92))
-    }
-
     private var pageTurnMode: InteractivePageTurnMode {
         switch turnStyle {
         case .curl: return .curl
@@ -314,21 +311,36 @@ struct ReaderView: View {
         )
     }
 
-    private func paginationLayout(for book: NovelBook, size: CGSize) -> PaginationLayout {
+    private func paginationLayout(
+        for book: NovelBook,
+        size: CGSize,
+        safeAreaInsets: EdgeInsets
+    ) -> PaginationLayout {
+        let headerY = max(16, safeAreaInsets.top + 12)
+        let footerY = size.height - max(28, safeAreaInsets.bottom + 18)
+        let textSize = CGSize(
+            width: max(1, size.width - margin * 2),
+            height: max(1, footerY - headerY - 64)
+        )
         PaginationLayout(
             bookID: book.id,
-            width: Int(size.width.rounded()),
-            height: Int(size.height.rounded()),
-            fontSize: Int((fontSize * 10).rounded()),
-            lineSpacing: Int((lineSpacing * 10).rounded()),
-            margin: Int((margin * 10).rounded()),
-            fontName: readerFont.name ?? "system"
+            readerLayout: ReaderPaginationLayout(
+                textWidth: textSize.width,
+                textHeight: textSize.height,
+                fontName: readerFont.name,
+                fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                paragraphFirstLineIndent: 26
+            )
         )
     }
 
-    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) async {
+    private func rebuildCatalog(
+        for book: NovelBook,
+        paginationLayout: ReaderPaginationLayout
+    ) async {
         let rebuilt = await Task.detached(priority: .userInitiated) {
-            ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
+            ReaderPageCatalog(book: book, paginationLayout: paginationLayout)
         }.value
         guard !Task.isCancelled else { return }
         let openingNarrationLocation: ReaderPageLocation?
@@ -1301,12 +1313,7 @@ private final class ReaderFloaterPaletteBox: NSObject {
 
 private struct PaginationLayout: Hashable {
     let bookID: UUID
-    let width: Int
-    let height: Int
-    let fontSize: Int
-    let lineSpacing: Int
-    let margin: Int
-    let fontName: String
+    let readerLayout: ReaderPaginationLayout
 }
 
 private struct ChromeAction: View {
