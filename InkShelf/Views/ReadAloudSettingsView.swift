@@ -340,10 +340,12 @@ private struct LocalVoiceModelStoreView: View {
                 .padding(.vertical, 4)
             }
 
-            Section("可下载模型") {
+            Section {
                 ForEach(readAloud.localVoiceCatalog) { model in
                     modelRow(model)
                 }
+            } header: {
+                Text("可下载模型")
             } footer: {
                 Text("模型由原作者或 sherpa-onnx 官方发布。墨架会校验完整性，安装完成后删除下载缓存。建议使用 Wi-Fi，并在安装完成前保持应用开启。")
             }
