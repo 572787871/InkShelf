@@ -53,16 +53,14 @@ struct ReaderPaginationLayout: Hashable, Sendable {
             if text.hasPrefix(headingPrefix) {
                 let bodyStart = text.index(cursor, offsetBy: headingPrefix.count)
                 let bodyRows = max(1, rows - estimatedHeadingRows(for: chapterTitle))
-                let proposed = pageEnd(in: text, from: bodyStart, rows: bodyRows, columns: columns)
-                let end = preferredBoundary(in: text, from: bodyStart, proposed: proposed)
+                let end = pageEnd(in: text, from: bodyStart, rows: bodyRows, columns: columns)
                 result.append(String(text[cursor..<end]))
                 cursor = end
             }
         }
 
         while cursor < text.endIndex {
-            let proposed = pageEnd(in: text, from: cursor, rows: rows, columns: columns)
-            let end = preferredBoundary(in: text, from: cursor, proposed: proposed)
+            let end = pageEnd(in: text, from: cursor, rows: rows, columns: columns)
             result.append(String(text[cursor..<end]))
             cursor = end
         }
@@ -70,7 +68,7 @@ struct ReaderPaginationLayout: Hashable, Sendable {
     }
 
     /// Fast, conservative capacity math. It reserves the paragraph-control
-    /// indent on every line plus one complete safety row, and counts explicit
+    /// indent on every line plus three complete safety rows, and counts explicit
     /// newlines while walking the source exactly once.
     private var estimatedColumns: Int {
         let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
@@ -85,7 +83,7 @@ struct ReaderPaginationLayout: Hashable, Sendable {
         let font = fontName.flatMap { UIFont(name: $0, size: fontSize) }
             ?? UIFont.systemFont(ofSize: fontSize)
         let lineHeight = max(1, font.lineHeight + lineSpacing)
-        return max(1, Int(floor(textHeight / lineHeight)) - 1)
+        return max(1, Int(floor(textHeight / lineHeight)) - 3)
     }
 
     private func estimatedHeadingRows(for chapterTitle: String) -> Int {
@@ -129,20 +127,6 @@ struct ReaderPaginationLayout: Hashable, Sendable {
             index = next
         }
         return index
-    }
-
-    private func preferredBoundary(
-        in text: String,
-        from start: String.Index,
-        proposed: String.Index
-    ) -> String.Index {
-        guard proposed < text.endIndex else { return proposed }
-        let slice = text[start..<proposed]
-        guard let boundary = slice.lastIndex(where: { "。！？；\n".contains($0) }),
-              text.distance(from: boundary, to: proposed) < 80 else {
-            return proposed
-        }
-        return text.index(after: boundary)
     }
 
     func fits(_ text: String, chapterTitle: String?) -> Bool {

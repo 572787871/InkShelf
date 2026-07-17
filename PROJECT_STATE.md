@@ -96,10 +96,13 @@ context, not a substitute for inspecting the current code and Git history.
   visible page after 0.85 seconds when UIKit does not report completion.
 - Reader page capacity uses a lightweight line-aware pass over the source with
   the visible text area, actual font metrics, line spacing, explicit newlines,
-  chapter-title allowance, the read-aloud paragraph indent, and a safety row.
+  chapter-title allowance, the read-aloud paragraph indent, and three safety rows.
   Do not run TextKit once per page: imported books can exceed 20,000 pages and
   reader opening must remain responsive. Narration must never consume text
   clipped below the page before a turn.
+- Pagination never snaps backward to a paragraph or punctuation boundary. A
+  paragraph may span pages, and every character that does not fit on the current
+  page must continue at the beginning of the next page.
 - Page-turn controller caches compare retained `ReaderPage` content, not only
   page locations. Repagination can keep the same chapter/page IDs while changing
   their text boundaries, and stale cached text must never diverge from speech.

@@ -170,6 +170,39 @@ final class NovelParserTests: XCTestCase {
         XCTAssertEqual(catalog.pages.map(\.text).joined(), book.chapters[0].content)
     }
 
+    func testLayoutPaginationContinuesAParagraphOnTheNextPage() throws {
+        let uninterruptedParagraph = String(repeating: "这一段正文必须逐字跨页继续", count: 120)
+        let book = NovelBook(
+            title: "跨页续段测试",
+            content: "第一章 开始\n\(uninterruptedParagraph)"
+        )
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+        let pages = catalog.pages.filter { $0.location.chapterIndex == 0 }
+
+        XCTAssertGreaterThan(pages.count, 2)
+        XCTAssertTrue(pages.dropLast().contains { page in
+            guard let last = page.text.last else { return false }
+            return !"。！？；\n".contains(last)
+        })
+        XCTAssertEqual(pages.map(\.text).joined(), uninterruptedParagraph)
+        for page in pages {
+            XCTAssertTrue(
+                layout.fits(
+                    page.displayText,
+                    chapterTitle: page.pageInChapter == 1 ? page.chapterTitle : nil
+                )
+            )
+        }
+    }
+
     func testGB18030TextImportKeepsChineseContent() throws {
         let source = "第一章 风起\n这是一段使用 GB18030 编码的中文小说正文。"
         let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
