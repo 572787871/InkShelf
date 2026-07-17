@@ -103,6 +103,9 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
+- Pages retain those conservative text boundaries but distribute unused vertical
+  space into capped per-page line spacing, so short pages visually reach toward
+  the footer without pulling hidden text back from the following page.
 - Page-turn controller caches compare retained `ReaderPage` content, not only
   page locations. Repagination can keep the same chapter/page IDs while changing
   their text boundaries, and stale cached text must never diverge from speech.

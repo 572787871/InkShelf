@@ -347,6 +347,29 @@ final class NovelParserTests: XCTestCase {
 }
 
 final class ReaderPaginationTests: XCTestCase {
+    func testVerticalFillDistributesUnusedPageHeightAcrossLines() {
+        let spacing = ReaderPageVerticalFill.lineSpacing(
+            base: 9,
+            availableHeight: 620,
+            usedHeight: 420,
+            lineCount: 15,
+            fontSize: 26
+        )
+
+        XCTAssertGreaterThan(spacing, 9)
+        XCTAssertLessThanOrEqual(spacing, 9 + 26 * 0.8)
+        XCTAssertEqual(
+            ReaderPageVerticalFill.lineSpacing(
+                base: 9,
+                availableHeight: 420,
+                usedHeight: 420,
+                lineCount: 15,
+                fontSize: 26
+            ),
+            9
+        )
+    }
+
     func testPageCacheDetectsChangedTextAtTheSameLocation() {
         let location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
         let oldPage = ReaderPage(

@@ -55,6 +55,24 @@ struct ReaderPageAppearance: Equatable {
     }
 }
 
+struct ReaderPageVerticalFill {
+    static func lineSpacing(
+        base: CGFloat,
+        availableHeight: CGFloat,
+        usedHeight: CGFloat,
+        lineCount: Int,
+        fontSize: CGFloat
+    ) -> CGFloat {
+        guard lineCount > 1 else { return base }
+        let slack = max(0, availableHeight - usedHeight - 4)
+        let additional = min(
+            max(0, fontSize * 0.8),
+            slack / CGFloat(lineCount - 1)
+        )
+        return base + additional
+    }
+}
+
 struct InteractivePageTurnView: UIViewControllerRepresentable {
     let pages: [ReaderPage]
     let location: ReaderPageLocation
@@ -325,11 +343,14 @@ private final class ReaderPageContentView: UIView {
     private var appearance: ReaderPageAppearance
     private let paragraphRanges: [NSRange]
     private var paragraphButtons: [UIButton] = []
+    private var fittedTextSize = CGSize.zero
+    private var fittedLineSpacing: CGFloat
     var onPlayParagraph: ((ReaderPage, NSRange) -> Void)?
 
     init(page: ReaderPage, appearance: ReaderPageAppearance) {
         self.page = page
         self.appearance = appearance
+        fittedLineSpacing = appearance.lineSpacing
         paragraphRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
         super.init(frame: .zero)
         isOpaque = true
@@ -365,7 +386,10 @@ private final class ReaderPageContentView: UIView {
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
         textView.textContainer.lineBreakMode = .byWordWrapping
-        textView.attributedText = attributedBody(page.displayText)
+        textView.attributedText = attributedBody(
+            page.displayText,
+            lineSpacing: fittedLineSpacing
+        )
 
         pageLabel.text = "\(page.overallIndex + 1) / \(page.overallCount)"
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
@@ -403,12 +427,18 @@ private final class ReaderPageContentView: UIView {
         clockLabel.frame = CGRect(x: margin + width * 0.5, y: footerY, width: width * 0.5 - 29, height: 18)
         clockLabel.text = ReaderPageStatus.clockFormatter.string(from: .now)
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
+        fitTextVerticallyIfNeeded()
         layoutSentenceHighlight()
         layoutParagraphButtons()
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
+        let needsRefit = self.appearance.showsReadAloudControls != appearance.showsReadAloudControls
         self.appearance = appearance
+        if needsRefit {
+            fittedTextSize = .zero
+            fittedLineSpacing = appearance.lineSpacing
+        }
         backgroundColor = appearance.backgroundColor
         backgroundDecoration.configure(
             style: appearance.backgroundStyle,
@@ -417,7 +447,10 @@ private final class ReaderPageContentView: UIView {
             overlayOpacity: appearance.backgroundOverlayOpacity,
             blur: appearance.backgroundBlur
         )
-        textView.attributedText = attributedBody(page.displayText)
+        textView.attributedText = attributedBody(
+            page.displayText,
+            lineSpacing: fittedLineSpacing
+        )
         titleLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
         brandLabel.textColor = appearance.textColor.withAlphaComponent(0.62)
         pageLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
@@ -427,11 +460,11 @@ private final class ReaderPageContentView: UIView {
         setNeedsLayout()
     }
 
-    private func attributedBody(_ text: String) -> NSAttributedString {
+    private func attributedBody(_ text: String, lineSpacing: CGFloat) -> NSAttributedString {
         let font = appearance.fontName.flatMap { UIFont(name: $0, size: appearance.fontSize) }
             ?? UIFont.systemFont(ofSize: appearance.fontSize)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = appearance.lineSpacing
+        paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
         paragraph.firstLineHeadIndent = appearance.showsReadAloudControls && !paragraphRanges.isEmpty ? 26 : 0
         let attributed = NSMutableAttributedString(
@@ -442,24 +475,78 @@ private final class ReaderPageContentView: UIView {
                 .paragraphStyle: paragraph
             ]
         )
-        styleChapterTitle(in: attributed)
+        styleChapterTitle(in: attributed, lineSpacing: lineSpacing)
         return attributed
     }
 
-    private func styleChapterTitle(in attributed: NSMutableAttributedString) {
+    private func styleChapterTitle(
+        in attributed: NSMutableAttributedString,
+        lineSpacing: CGFloat
+    ) {
         guard !page.chapterHeadingPrefix.isEmpty,
               page.displayText.hasPrefix(page.chapterTitle) else { return }
         let titleRange = NSRange(location: 0, length: (page.chapterTitle as NSString).length)
         let titleFont = appearance.fontName.flatMap { UIFont(name: $0, size: appearance.fontSize + 6) }
             ?? UIFont.systemFont(ofSize: appearance.fontSize + 6, weight: .semibold)
         let titleParagraph = NSMutableParagraphStyle()
-        titleParagraph.lineSpacing = appearance.lineSpacing
-        titleParagraph.paragraphSpacing = appearance.lineSpacing + 8
+        titleParagraph.lineSpacing = lineSpacing
+        titleParagraph.paragraphSpacing = lineSpacing + 8
         titleParagraph.firstLineHeadIndent = 0
         attributed.addAttributes([
             .font: titleFont,
             .paragraphStyle: titleParagraph
         ], range: titleRange)
+    }
+
+    private func fitTextVerticallyIfNeeded() {
+        let size = textView.bounds.size
+        guard size.width > 0, size.height > 0, size != fittedTextSize else { return }
+        fittedTextSize = size
+        let baseSpacing = appearance.lineSpacing
+        textView.attributedText = attributedBody(page.displayText, lineSpacing: baseSpacing)
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let glyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        guard glyphRange.length > 0 else {
+            fittedLineSpacing = baseSpacing
+            return
+        }
+        var lineCount = 0
+        textView.layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) {
+            _, _, _, _, _ in lineCount += 1
+        }
+        let usedHeight = textView.layoutManager.usedRect(for: textView.textContainer).height
+        var targetSpacing = ReaderPageVerticalFill.lineSpacing(
+            base: baseSpacing,
+            availableHeight: size.height,
+            usedHeight: usedHeight,
+            lineCount: lineCount,
+            fontSize: appearance.fontSize
+        )
+        guard targetSpacing > baseSpacing + 0.1 else {
+            fittedLineSpacing = baseSpacing
+            return
+        }
+
+        var lowerBound = baseSpacing
+        var upperBound = targetSpacing
+        for _ in 0..<7 {
+            let candidate = (lowerBound + upperBound) / 2
+            textView.attributedText = attributedBody(page.displayText, lineSpacing: candidate)
+            textView.layoutManager.ensureLayout(for: textView.textContainer)
+            let candidateGlyphs = textView.layoutManager.glyphRange(for: textView.textContainer)
+            let candidateCharacters = textView.layoutManager.characterRange(
+                forGlyphRange: candidateGlyphs,
+                actualGlyphRange: nil
+            )
+            if NSMaxRange(candidateCharacters) >= textView.attributedText.length {
+                lowerBound = candidate
+            } else {
+                upperBound = candidate
+            }
+        }
+        targetSpacing = lowerBound
+        textView.attributedText = attributedBody(page.displayText, lineSpacing: targetSpacing)
+        fittedLineSpacing = targetSpacing
     }
 
     private func configureParagraphButtons() {
