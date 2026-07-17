@@ -885,7 +885,11 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
               transaction.begin(targetIndex: index, pageCount: pages.count) else { return false }
         let direction: UIPageViewController.NavigationDirection = index > current ? .forward : .reverse
         let targetLocation = pages[index].location
-        setViewControllers(visibleControllers(index: index), direction: direction, animated: true) { [weak self] finished in
+        let transitionControllers = automatedTransitionControllers(
+            index: index,
+            previousIndex: current
+        )
+        setViewControllers(transitionControllers, direction: direction, animated: true) { [weak self] finished in
             self?.finishAutomatedTurn(
                 at: index,
                 targetLocation: targetLocation,
@@ -896,7 +900,10 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
             guard let self,
                   self.transaction.targetIndex == index,
                   self.pages.indices.contains(index) else { return }
-            let controllers = self.visibleControllers(index: index)
+            let controllers = self.automatedTransitionControllers(
+                index: index,
+                previousIndex: current
+            )
             let committedIndex = self.transaction.finish(committed: true)
             self.setViewControllers(
                 controllers,
@@ -973,6 +980,16 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
 
     private func visibleControllers(index: Int) -> [UIViewController] {
         [makeFrontController(index: index)]
+    }
+
+    private func automatedTransitionControllers(
+        index: Int,
+        previousIndex: Int
+    ) -> [UIViewController] {
+        // A page-curl controller with an edge spine and double-sided pages
+        // requires both the destination front and the previously displayed
+        // page's back for a programmatic animated transition.
+        [makeFrontController(index: index), makeBackController(index: previousIndex)]
     }
 
     private func controller(physicalIndex: Int) -> UIViewController? {
