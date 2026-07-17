@@ -234,6 +234,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private let synthesizer = AVSpeechSynthesizer()
+    private let previewSynthesizer = AVSpeechSynthesizer()
     private var plan = ReadAloudTextPlan(text: "")
     private var rolePlan = ReadAloudRolePlan.empty
     private var analyzedRoleChapters: Set<Int> = []
@@ -389,6 +390,7 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func play() {
         guard hasSession else { return }
+        stopVoicePreview()
         playbackRequested = true
         guard configureAudioSession() else {
             playbackRequested = false
@@ -432,8 +434,50 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     func stop() {
+        resetSession(stoppingSpeech: true)
+    }
+
+    /// Finishes a naturally completed book without asking AVSpeechSynthesizer
+    /// to stop again from inside its utterance-completion callback chain.
+    func finishAtEndOfBook() {
+        resetSession(stoppingSpeech: false)
+    }
+
+    func previewVoice(roleSlot: Int?) {
+        if isPlaying { pause() }
+        previewSynthesizer.stopSpeaking(at: .immediate)
+        guard configureAudioSession() else { return }
+
+        let speaker: ReadAloudSpeaker
+        let sample: String
+        if let roleSlot {
+            let safeSlot = min(max(0, roleSlot), ReadAloudSettings.roleVoiceCount - 1)
+            speaker = .unknownDialogue(turn: safeSlot)
+            sample = "你好，这是角色声线 \(safeSlot + 1) 的试听。"
+        } else {
+            speaker = .narrator
+            sample = "夜色渐深，故事从这里缓缓开始。"
+        }
+        let utterance = AVSpeechUtterance(string: sample)
+        utterance.voice = preferredPreviewVoice(for: speaker)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * Float(settings.rateMultiplier)
+        utterance.pitchMultiplier = previewPitchMultiplier(for: speaker)
+        previewSynthesizer.speak(utterance)
+    }
+
+    func stopVoicePreview() {
+        if previewSynthesizer.isSpeaking || previewSynthesizer.isPaused {
+            previewSynthesizer.stopSpeaking(at: .immediate)
+        }
+        if !hasSession { deactivateAudioSession() }
+    }
+
+    private func resetSession(stoppingSpeech: Bool) {
         playbackRequested = false
-        synthesizer.stopSpeaking(at: .immediate)
+        stopVoicePreview()
+        if stoppingSpeech {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
         queuedSentenceIndices.removeAll()
         plan = ReadAloudTextPlan(text: "")
         rolePlan = .empty
@@ -457,6 +501,17 @@ final class ReadAloudService: NSObject, ObservableObject {
         state = .unavailable
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         updateRemoteCommandAvailability()
+        if stoppingSpeech {
+            deactivateAudioSession()
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard self?.hasSession == false else { return }
+                self?.deactivateAudioSession()
+            }
+        }
+    }
+
+    private func deactivateAudioSession() {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -521,6 +576,26 @@ final class ReadAloudService: NSObject, ObservableObject {
         let alternatives = Self.chineseVoices.filter { $0.identifier != narratorIdentifier }
         guard !alternatives.isEmpty else { return narrator }
         return alternatives[slot % alternatives.count]
+    }
+
+    private func preferredPreviewVoice(for speaker: ReadAloudSpeaker) -> AVSpeechSynthesisVoice? {
+        guard speaker.isDialogue else { return preferredVoice(for: .narrator) }
+        let narrator = configuredVoice(identifier: settings.narratorVoiceIdentifier)
+            ?? AVSpeechSynthesisVoice(language: "zh-CN")
+            ?? Self.chineseVoices.first
+        let slot = voiceSlot(for: speaker)
+        let configuredIdentifier = settings.roleVoiceIdentifiers.indices.contains(slot)
+            ? settings.roleVoiceIdentifiers[slot]
+            : ""
+        if let configured = configuredVoice(identifier: configuredIdentifier) { return configured }
+        let alternatives = Self.chineseVoices.filter { $0.identifier != narrator?.identifier }
+        return alternatives.isEmpty ? narrator : alternatives[slot % alternatives.count]
+    }
+
+    private func previewPitchMultiplier(for speaker: ReadAloudSpeaker) -> Float {
+        guard speaker.isDialogue else { return 1 }
+        let pitchValues: [Float] = [0.94, 1.06, 1]
+        return pitchValues[voiceSlot(for: speaker)]
     }
 
     private func pitchMultiplier(for speaker: ReadAloudSpeaker) -> Float {
@@ -594,7 +669,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         let nextIndex = currentIndex + 1
         guard sessionPages.indices.contains(nextIndex) else {
-            stop()
+            finishAtEndOfBook()
             return
         }
         sessionPageIndex = nextIndex

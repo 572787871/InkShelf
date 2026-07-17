@@ -745,4 +745,58 @@ final class ReaderRuntimeTests: XCTestCase {
             XCTAssertEqual(curl.viewControllers?.count, 1)
         }
     }
+
+    func testAutomatedCurlTurnCommitsTheNextPage() {
+        let pages = (0..<2).map { index in
+            ReaderPage(
+                location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
+                chapterTitle: "第一章",
+                text: "自动朗读第\(index + 1)页。",
+                pageInChapter: index + 1,
+                pageCountInChapter: 2,
+                overallIndex: index,
+                overallCount: 2
+            )
+        }
+        let appearance = ReaderPageAppearance(
+            themeID: ReaderTheme.paper.rawValue,
+            bookTitle: "自动翻页测试",
+            backgroundColor: UIColor(ReaderTheme.paper.background),
+            backsideColor: UIColor(ReaderTheme.paper.pageBack),
+            textColor: UIColor(ReaderTheme.paper.foreground),
+            backgroundStyle: .plain,
+            backgroundImage: nil,
+            backgroundOverlayOpacity: 0,
+            backgroundBlur: .none,
+            fontName: nil,
+            fontSize: 19,
+            lineSpacing: 9,
+            horizontalMargin: 22,
+            highlightedLocation: pages[0].location,
+            highlightedRange: NSRange(location: 0, length: 2),
+            showsReadAloudControls: true,
+            isReadAloudPlaying: true
+        )
+        let host = ReaderPageTurnHostController()
+        let committed = expectation(description: "自动翻页提交下一页")
+        var committedLocation: ReaderPageLocation?
+        host.onCommit = { location in
+            committedLocation = location
+            committed.fulfill()
+        }
+        host.loadViewIfNeeded()
+        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+
+        host.configure(
+            pages: pages,
+            location: pages[0].location,
+            appearance: appearance,
+            mode: .curl,
+            automatedTurnTarget: pages[1].location
+        )
+        host.view.layoutIfNeeded()
+
+        wait(for: [committed], timeout: 2)
+        XCTAssertEqual(committedLocation, pages[1].location)
+    }
 }

@@ -240,7 +240,7 @@ struct ReaderView: View {
             }
         }
         .sheet(isPresented: $showingReadAloudSettings) {
-            ReadAloudSettingsSheet()
+            ReadAloudSettingsSheet(onStart: startReadingFromSettings)
         }
         .alert(
             "朗读失败",
@@ -397,6 +397,13 @@ struct ReaderView: View {
         beginReading(book: book, page: page, paragraphLocation: nil)
     }
 
+    private func startReadingFromSettings() {
+        showingReadAloudSettings = false
+        showingAppearance = false
+        chromeVisible = false
+        startReadingCurrentPage()
+    }
+
     private func playParagraph(_ page: ReaderPage, range: NSRange) {
         if isCurrentReadAloudSession,
            readAloud.currentPageLocation == page.location,
@@ -434,12 +441,25 @@ struct ReaderView: View {
             return
         }
         guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
-            readAloud.stop()
+            readAloud.finishAtEndOfBook()
             return
         }
         automatedTurnTarget = nextPage.location
         if turnStyle == .vertical {
             commit(nextPage.location)
+        } else {
+            scheduleAutomatedTurnFallback(to: nextPage.location)
+        }
+    }
+
+    private func scheduleAutomatedTurnFallback(to target: ReaderPageLocation) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 850_000_000)
+            guard automatedTurnTarget == target, location != target else { return }
+            // Programmatic UIPageViewController animations can occasionally
+            // finish without a completion callback. Commit only after the
+            // normal animation window has elapsed so narration never stalls.
+            commit(target)
         }
     }
 
@@ -557,11 +577,7 @@ struct ReaderView: View {
                         toggleNightMode()
                     }
                     ChromeAction(icon: "waveform", label: "朗读") {
-                        if isCurrentReadAloudSession {
-                            if !readAloud.isPlaying { readAloud.play() }
-                        } else {
-                            startReadingCurrentPage()
-                        }
+                        showingReadAloudSettings = true
                     }
                     ChromeAction(
                         icon: showingAppearance ? "chevron.down.circle.fill" : "paintpalette",
@@ -917,20 +933,6 @@ struct ReaderView: View {
                 Slider(value: $margin, in: 14...38, step: 2)
             }
 
-            Button {
-                showingReadAloudSettings = true
-            } label: {
-                HStack {
-                    Label("朗读功能设置", systemImage: "waveform")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("设置自动分角色、朗读速度和角色声线")
         }
         .font(.caption)
     }

@@ -8,7 +8,7 @@ context, not a substitute for inspecting the current code and Git history.
 - Product: 墨架 InkShelf, a production-oriented SwiftUI local novel reader.
 - Repository: `https://github.com/572787871/InkShelf` (public).
 - Active integration branch: `agent/unsigned-ipa-artifact`.
-- Existing draft PR: PR #1 into `main`.
+- Existing draft PR: PR #2 into `main`.
 - CI workflow: `.github/workflows/ios.yml`; it runs the project build/tests,
   builds an unsigned device app, packages an unsigned IPA, and uploads it as an
   Actions artifact.
@@ -82,9 +82,17 @@ context, not a substitute for inspecting the current code and Git history.
   are assigned stable voice slots. Ambiguous dialogue can alternate between
   fallback slots without inventing a character identity.
 - Read-aloud settings are available from the app Settings screen and persist on
-  device; the same page is reachable from the reader appearance controls.
-  Voice and speed changes apply to subsequent utterances without retargeting
-  the active narration session.
+  device. In the reader, the bottom “朗读” action first opens the settings sheet;
+  narrator and role voices can be previewed there, and “开始朗读” starts from
+  the visible page. Voice and speed changes apply to subsequent utterances
+  without retargeting the active narration session.
+- Automatic visible-page turns are accepted transactionally by the curl/cover
+  engines. Programmatic turns have engine and reader-level completion fallbacks
+  so a missing UIKit animation callback cannot leave narration waiting at the
+  end of a page or keep the page-turn transaction locked.
+- Natural completion at the end of the book clears the narration session
+  without re-entering `AVSpeechSynthesizer.stopSpeaking` from its utterance
+  completion callback.
 
 ### Shelf and covers
 

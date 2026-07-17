@@ -103,7 +103,8 @@ private protocol PageTurnEngine: AnyObject {
     var isTransitioning: Bool { get }
     func configure(pages: [ReaderPage], index: Int, appearance: ReaderPageAppearance)
     func setInteractionEnabled(_ enabled: Bool)
-    func performAutomatedTurn(to index: Int)
+    @discardableResult
+    func performAutomatedTurn(to index: Int) -> Bool
 }
 
 final class ReaderPageTurnHostController: UIViewController, UIGestureRecognizerDelegate {
@@ -146,8 +147,9 @@ final class ReaderPageTurnHostController: UIViewController, UIGestureRecognizerD
         if let automatedTurnTarget,
            handledAutomatedTarget != automatedTurnTarget,
            let targetIndex = pages.firstIndex(where: { $0.location == automatedTurnTarget }) {
-            handledAutomatedTarget = automatedTurnTarget
-            engine?.performAutomatedTurn(to: targetIndex)
+            if engine?.performAutomatedTurn(to: targetIndex) == true {
+                handledAutomatedTarget = automatedTurnTarget
+            }
         } else if automatedTurnTarget == nil {
             handledAutomatedTarget = nil
         }
@@ -875,20 +877,53 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         }
     }
 
-    func performAutomatedTurn(to index: Int) {
+    @discardableResult
+    func performAutomatedTurn(to index: Int) -> Bool {
         let current = transaction.currentIndex
-        guard abs(index - current) == 1,
-              transaction.begin(targetIndex: index, pageCount: pages.count) else { return }
+        guard pages.indices.contains(index),
+              abs(index - current) == 1,
+              transaction.begin(targetIndex: index, pageCount: pages.count) else { return false }
         let direction: UIPageViewController.NavigationDirection = index > current ? .forward : .reverse
+        let targetLocation = pages[index].location
         setViewControllers(visibleControllers(index: index), direction: direction, animated: true) { [weak self] finished in
-            guard let self else { return }
-            let committed = self.transaction.finish(committed: finished)
-            if let committed {
-                self.preloadPages(around: committed)
-                self.onCommit?(self.pages[committed].location)
+            self?.finishAutomatedTurn(
+                at: index,
+                targetLocation: targetLocation,
+                committed: finished
+            )
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            guard let self,
+                  self.transaction.targetIndex == index,
+                  self.pages.indices.contains(index) else { return }
+            let controllers = self.visibleControllers(index: index)
+            let committedIndex = self.transaction.finish(committed: true)
+            self.setViewControllers(
+                controllers,
+                direction: direction,
+                animated: false
+            )
+            if let committedIndex, self.pages.indices.contains(committedIndex) {
+                self.preloadPages(around: committedIndex)
+                self.onCommit?(targetLocation)
             }
             self.applyPendingConfigurationIfNeeded()
         }
+        return true
+    }
+
+    private func finishAutomatedTurn(
+        at index: Int,
+        targetLocation: ReaderPageLocation,
+        committed: Bool
+    ) {
+        guard transaction.targetIndex == index else { return }
+        let committedIndex = transaction.finish(committed: committed)
+        if let committedIndex, pages.indices.contains(committedIndex) {
+            preloadPages(around: committedIndex)
+            onCommit?(targetLocation)
+        }
+        applyPendingConfigurationIfNeeded()
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -925,7 +960,7 @@ private final class CurlPageTurnController: UIPageViewController, PageTurnEngine
         transitionCompleted completed: Bool
     ) {
         let committed = transaction.finish(committed: completed)
-        if let committed {
+        if let committed, pages.indices.contains(committed) {
             preloadPages(around: committed)
             onCommit?(pages[committed].location)
         }
@@ -1050,16 +1085,27 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         panGesture?.isEnabled = enabled
     }
 
-    func performAutomatedTurn(to index: Int) {
+    @discardableResult
+    func performAutomatedTurn(to index: Int) -> Bool {
         let current = transaction.currentIndex
-        guard abs(index - current) == 1,
-              transaction.begin(targetIndex: index, pageCount: pages.count) else { return }
+        guard pages.indices.contains(index),
+              abs(index - current) == 1,
+              transaction.begin(targetIndex: index, pageCount: pages.count) else { return false }
         let direction: PageTurnDirection = index > current ? .forward : .backward
         interactionDirection = direction
-        prepareAdjacent(index: index, direction: direction)
+        guard prepareAdjacent(index: index, direction: direction) else {
+            _ = transaction.finish(committed: false)
+            interactionDirection = nil
+            return false
+        }
         DispatchQueue.main.async { [weak self] in
             self?.settle(commit: true, direction: direction)
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.4) { [weak self] in
+            guard let self, self.transaction.targetIndex == index else { return }
+            self.finishSettlement(committed: true, direction: direction)
+        }
+        return true
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -1087,7 +1133,10 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
             if let target = transaction.begin(direction: direction, pageCount: pages.count) {
                 // The adjacent controller is attached before the first changed
                 // frame, including the last page of the previous chapter.
-                prepareAdjacent(index: target, direction: direction)
+                if !prepareAdjacent(index: target, direction: direction) {
+                    _ = transaction.finish(committed: false)
+                    interactionDirection = nil
+                }
             }
         case .changed:
             updateInteractivePosition(translation: translation)
@@ -1126,21 +1175,25 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         }
     }
 
-    private func prepareAdjacent(index: Int, direction: PageTurnDirection) {
-        guard adjacentController == nil else { return }
+    @discardableResult
+    private func prepareAdjacent(index: Int, direction: PageTurnDirection) -> Bool {
+        guard adjacentController == nil,
+              pages.indices.contains(index),
+              let currentController else { return false }
         let controller = makeController(index: index)
         adjacentController = controller
         addChild(controller)
         if direction == .forward {
-            view.insertSubview(controller.view, belowSubview: currentController!.view)
+            view.insertSubview(controller.view, belowSubview: currentController.view)
             controller.view.frame = view.bounds
-            applyPageShadow(to: currentController!.view, leading: false)
+            applyPageShadow(to: currentController.view, leading: false)
         } else {
-            view.insertSubview(controller.view, belowSubview: currentController!.view)
+            view.insertSubview(controller.view, belowSubview: currentController.view)
             controller.view.frame = view.bounds.offsetBy(dx: -view.bounds.width, dy: 0)
-            applyPageShadow(to: currentController!.view, leading: false)
+            applyPageShadow(to: currentController.view, leading: false)
         }
         controller.didMove(toParent: self)
+        return true
     }
 
     private func settle(commit: Bool, direction: PageTurnDirection) {
@@ -1186,7 +1239,7 @@ private final class CoverPageTurnController: UIViewController, PageTurnEngine, U
         adjacentController = nil
         interactionDirection = nil
         let committedIndex = transaction.finish(committed: committed)
-        if let committedIndex {
+        if let committedIndex, pages.indices.contains(committedIndex) {
             preloadNeighbors(around: committedIndex)
             onCommit?(pages[committedIndex].location)
         }
