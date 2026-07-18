@@ -1,6 +1,7 @@
 import Foundation
 
 enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
+    case localZipVoice
     case mimo
     case openAICompatible
 
@@ -8,6 +9,7 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
+        case .localZipVoice: "本地 ZipVoice"
         case .mimo: "小米 MiMo"
         case .openAICompatible: "OpenAI 兼容"
         }
@@ -15,6 +17,7 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var defaultBaseURL: String {
         switch self {
+        case .localZipVoice: ""
         case .mimo: "https://api.xiaomimimo.com/v1"
         case .openAICompatible: "https://api.openai.com/v1"
         }
@@ -22,23 +25,59 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var defaultModel: String {
         switch self {
+        case .localZipVoice: "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia"
         case .mimo: "mimo-v2.5-tts"
         case .openAICompatible: "gpt-4o-mini-tts"
         }
     }
 }
 
-/// Only connection and playback preferences are user configurable. Character
-/// casting is automatic and intentionally has no manual voice slots.
+enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case ai
+    case localRules
+
+    var id: String { rawValue }
+    var title: String { self == .ai ? "AI 识别" : "本地规则" }
+}
+
+enum ReadAloudAIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
+    case mimo
+    case openAICompatible
+
+    var id: String { rawValue }
+    var title: String { self == .mimo ? "小米 MiMo" : "OpenAI 兼容" }
+    var defaultBaseURL: String {
+        self == .mimo ? "https://api.xiaomimimo.com/v1" : "https://api.openai.com/v1"
+    }
+    var defaultModel: String { self == .mimo ? "mimo-v2-flash" : "gpt-4.1-mini" }
+}
+
+enum ReadAloudVoiceSelectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case single
+
+    var id: String { rawValue }
+    var title: String { self == .automatic ? "自动选择" : "指定音色" }
+}
+
+/// Persisted engine, role-detection, voice-selection and playback preferences.
 struct ReadAloudSettings: Codable, Equatable, Sendable {
     var provider = ReadAloudProvider.mimo
     var baseURL = ReadAloudProvider.mimo.defaultBaseURL
     var model = ReadAloudProvider.mimo.defaultModel
     var rateMultiplier = 0.9
     var allowsTextUpload = false
+    var roleDetectionMode = ReadAloudRoleDetectionMode.ai
+    var analysisProvider = ReadAloudAIProvider.mimo
+    var analysisBaseURL = ReadAloudAIProvider.mimo.defaultBaseURL
+    var analysisModel = ReadAloudAIProvider.mimo.defaultModel
+    var voiceSelectionMode = ReadAloudVoiceSelectionMode.automatic
+    var selectedVoiceIdentifier = ""
 
     private enum CodingKeys: String, CodingKey {
         case provider, baseURL, model, rateMultiplier, allowsTextUpload
+        case roleDetectionMode, analysisProvider, analysisBaseURL, analysisModel
+        case voiceSelectionMode, selectedVoiceIdentifier
     }
 
     init() {}
@@ -52,12 +91,22 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
             ?? provider.defaultModel
         rateMultiplier = try container.decodeIfPresent(Double.self, forKey: .rateMultiplier) ?? 0.9
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
+        roleDetectionMode = try container.decodeIfPresent(ReadAloudRoleDetectionMode.self, forKey: .roleDetectionMode) ?? .ai
+        analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
+        analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
+            ?? analysisProvider.defaultBaseURL
+        analysisModel = try container.decodeIfPresent(String.self, forKey: .analysisModel)
+            ?? analysisProvider.defaultModel
+        voiceSelectionMode = try container.decodeIfPresent(ReadAloudVoiceSelectionMode.self, forKey: .voiceSelectionMode) ?? .automatic
+        selectedVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedVoiceIdentifier) ?? ""
     }
 
     var normalized: ReadAloudSettings {
         var copy = self
         copy.baseURL = copy.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.model = copy.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.analysisBaseURL = copy.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.analysisModel = copy.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines)
         copy.rateMultiplier = min(1.2, max(0.7, copy.rateMultiplier))
         return copy
     }

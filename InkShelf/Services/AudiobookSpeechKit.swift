@@ -34,14 +34,43 @@ struct AudiobookVoiceDirection: Equatable, Sendable {
     let instruction: String
 }
 
-/// Stable automatic casting inspired by mimo-tts. No voice identifiers are
-/// persisted or exposed in UI; the same named character keeps the same role.
+struct AudiobookVoiceChoice: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+
+/// Stable automatic casting inspired by mimo-tts. Manual mode intentionally
+/// selects one voice for the whole book; automatic mode keeps character roles.
 enum AudiobookVoiceDirector {
+    static func choices(for provider: ReadAloudProvider) -> [AudiobookVoiceChoice] {
+        switch provider {
+        case .localZipVoice:
+            return []
+        case .mimo:
+            return [
+                .init(id: "白桦", name: "白桦 · 男声"),
+                .init(id: "苏打", name: "苏打 · 男声"),
+                .init(id: "冰糖", name: "冰糖 · 女声"),
+                .init(id: "茉莉", name: "茉莉 · 女声")
+            ]
+        case .openAICompatible:
+            return ["alloy", "nova", "echo", "shimmer", "onyx", "fable"].map {
+                .init(id: $0, name: $0)
+            }
+        }
+    }
+
     static func direction(
         for speaker: ReadAloudSpeaker,
-        provider: ReadAloudProvider
+        settings: ReadAloudSettings
     ) -> AudiobookVoiceDirection {
-        switch provider {
+        if settings.voiceSelectionMode == .single,
+           choices(for: settings.provider).contains(where: { $0.id == settings.selectedVoiceIdentifier }) {
+            return .init(voiceID: settings.selectedVoiceIdentifier, instruction: instruction(for: speaker))
+        }
+        switch settings.provider {
+        case .localZipVoice:
+            return .init(voiceID: "", instruction: instruction(for: speaker))
         case .mimo:
             switch speaker {
             case .narrator:
@@ -76,6 +105,14 @@ enum AudiobookVoiceDirector {
                     instruction: "Keep a consistent audiobook character performance for \(name). Do not add words."
                 )
             }
+        }
+    }
+
+    private static func instruction(for speaker: ReadAloudSpeaker) -> String {
+        switch speaker {
+        case .narrator: "沉稳、自然地进行有声书旁白，吐字清晰。"
+        case let .character(name): "保持人物“\(name)”的声音稳定，以自然的角色口吻朗读对白。"
+        case .unknownDialogue: "以自然的角色口吻朗读对白，不要读出额外说明。"
         }
     }
 
@@ -159,9 +196,14 @@ actor AudiobookSpeechClient {
             throw AudiobookSpeechError.invalidConfiguration("服务地址必须是 HTTPS 地址")
         }
 
-        let direction = AudiobookVoiceDirector.direction(for: speaker, provider: configuration.provider)
+        guard configuration.provider != .localZipVoice else {
+            throw AudiobookSpeechError.invalidConfiguration("本地 ZipVoice 不使用网络语音接口")
+        }
+        let direction = AudiobookVoiceDirector.direction(for: speaker, settings: configuration)
         var request: URLRequest
         switch configuration.provider {
+        case .localZipVoice:
+            throw AudiobookSpeechError.invalidConfiguration("本地 ZipVoice 不使用网络语音接口")
         case .mimo:
             request = try mimoRequest(
                 baseURL: baseURL,
@@ -193,6 +235,8 @@ actor AudiobookSpeechClient {
 
         let audio: Data
         switch configuration.provider {
+        case .localZipVoice:
+            throw AudiobookSpeechError.invalidConfiguration("本地 ZipVoice 不使用网络语音接口")
         case .mimo:
             audio = try Self.decodeMiMoAudio(from: data)
         case .openAICompatible:
@@ -286,6 +330,108 @@ actor AudiobookSpeechClient {
             return String(message.prefix(240))
         }
         return "请求失败，请检查地址、模型和密钥"
+    }
+}
+
+actor AICharacterRoleClient {
+    func analyze(
+        pages: [ReaderPage],
+        settings: ReadAloudSettings,
+        apiKey: String,
+        fallback: ReadAloudRolePlan
+    ) async throws -> ReadAloudRolePlan {
+        guard settings.allowsTextUpload else { throw AudiobookSpeechError.textUploadNotAllowed }
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw AudiobookSpeechError.missingAPIKey }
+        guard !settings.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AudiobookSpeechError.invalidConfiguration("角色分析模型不能为空")
+        }
+        guard let baseURL = URL(string: settings.analysisBaseURL),
+              baseURL.scheme?.lowercased() == "https" else {
+            throw AudiobookSpeechError.invalidConfiguration("角色分析地址必须是 HTTPS 地址")
+        }
+
+        var sentenceLookup: [String: (ReaderPageLocation, Int)] = [:]
+        var sourceLines: [String] = []
+        for (pageOffset, page) in pages.enumerated() {
+            let sentences = ReadAloudTextPlan(text: page.text).sentences
+            for (sentenceIndex, sentence) in sentences.enumerated() {
+                let id = "p\(pageOffset)s\(sentenceIndex)"
+                sentenceLookup[id] = (page.location, sentenceIndex)
+                sourceLines.append("\(id)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))")
+            }
+        }
+        let source = String(sourceLines.joined(separator: "\n").prefix(48_000))
+        let instruction = """
+        你是小说有声书导演。判断每句是旁白还是哪位人物说话。不得改写原文，不得虚构姓名。
+        只返回 JSON：{"assignments":[{"id":"p0s0","speaker":"旁白"},{"id":"p0s1","speaker":"人物名"}]}。
+        不确定说话人时 speaker 写“未知”。句子如下：
+        \(source)
+        """
+        let body: [String: Any] = [
+            "model": settings.analysisModel,
+            "messages": [
+                ["role": "system", "content": "你只输出严格 JSON。"],
+                ["role": "user", "content": instruction]
+            ],
+            "temperature": 0
+        ]
+        var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AudiobookSpeechError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw AudiobookSpeechError.service(
+                statusCode: http.statusCode,
+                message: Self.serviceMessage(from: data)
+            )
+        }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String,
+              let jsonData = Self.jsonObjectData(in: content),
+              let result = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let assignments = result["assignments"] as? [[String: Any]] else {
+            throw AudiobookSpeechError.invalidResponse
+        }
+
+        var combined = fallback.speakersByPage
+        for assignment in assignments {
+            guard let id = assignment["id"] as? String,
+                  let rawSpeaker = assignment["speaker"] as? String,
+                  let (location, index) = sentenceLookup[id],
+                  var speakers = combined[location], speakers.indices.contains(index) else { continue }
+            let speaker = rawSpeaker.trimmingCharacters(in: .whitespacesAndNewlines)
+            if speaker == "旁白" {
+                speakers[index] = .narrator
+            } else if !speaker.isEmpty, speaker != "未知", speaker.count <= 12 {
+                speakers[index] = .character(speaker)
+            }
+            combined[location] = speakers
+        }
+        return ReadAloudRolePlan(speakersByPage: combined)
+    }
+
+    private static func jsonObjectData(in content: String) -> Data? {
+        guard let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"), start <= end else {
+            return nil
+        }
+        return Data(content[start...end].utf8)
+    }
+
+    private static func serviceMessage(from data: Data) -> String {
+        if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = root["error"] as? [String: Any],
+           let message = error["message"] as? String {
+            return String(message.prefix(240))
+        }
+        return "AI 角色分析请求失败"
     }
 }
 

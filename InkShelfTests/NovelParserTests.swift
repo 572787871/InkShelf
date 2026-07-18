@@ -664,9 +664,10 @@ final class ReaderThemeTests: XCTestCase {
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
     func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
-        let first = AudiobookVoiceDirector.direction(for: .character("张三"), provider: .mimo)
-        let second = AudiobookVoiceDirector.direction(for: .character("张三"), provider: .mimo)
-        let narrator = AudiobookVoiceDirector.direction(for: .narrator, provider: .mimo)
+        let settings = ReadAloudSettings()
+        let first = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+        let second = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+        let narrator = AudiobookVoiceDirector.direction(for: .narrator, settings: settings)
 
         XCTAssertEqual(first, second)
         XCTAssertEqual(narrator.voiceID, "白桦")
@@ -674,10 +675,33 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
     }
 
     func testUnknownDialogueAlternatesAutomaticVoices() {
-        let first = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 0), provider: .mimo)
-        let second = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 1), provider: .mimo)
+        let settings = ReadAloudSettings()
+        let first = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 0), settings: settings)
+        let second = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 1), settings: settings)
 
         XCTAssertNotEqual(first.voiceID, second.voiceID)
+    }
+
+    func testManualVoiceSelectionUsesOneVoiceForEveryRole() {
+        var settings = ReadAloudSettings()
+        settings.voiceSelectionMode = .single
+        settings.selectedVoiceIdentifier = "茉莉"
+
+        let narrator = AudiobookVoiceDirector.direction(for: .narrator, settings: settings)
+        let character = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+
+        XCTAssertEqual(narrator.voiceID, "茉莉")
+        XCTAssertEqual(character.voiceID, "茉莉")
+    }
+
+    func testZipVoiceFloatPCMCanBeWrappedAsWAV() {
+        let pcm = Data(repeating: 0, count: 16)
+        let audio = ZipVoiceSynthesizedAudio(pcmFloat32: pcm, sampleRate: 24_000)
+        let wav = audio.wavData
+
+        XCTAssertEqual(String(data: wav.prefix(4), encoding: .ascii), "RIFF")
+        XCTAssertEqual(String(data: wav.dropFirst(8).prefix(4), encoding: .ascii), "WAVE")
+        XCTAssertEqual(wav.count, 44 + pcm.count)
     }
 
     func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
@@ -740,12 +764,16 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         settings.rateMultiplier = 3
         settings.baseURL = "  https://example.com/v1  "
         settings.model = "  speech-model "
+        settings.analysisBaseURL = "  https://example.com/analysis  "
+        settings.analysisModel = "  role-model "
 
         let normalized = settings.normalized
 
         XCTAssertEqual(normalized.rateMultiplier, 1.2)
         XCTAssertEqual(normalized.baseURL, "https://example.com/v1")
         XCTAssertEqual(normalized.model, "speech-model")
+        XCTAssertEqual(normalized.analysisBaseURL, "https://example.com/analysis")
+        XCTAssertEqual(normalized.analysisModel, "role-model")
     }
 
     func testLegacySettingsMigrateToSafeMiMoDefaults() throws {
@@ -757,6 +785,8 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(settings.baseURL, ReadAloudProvider.mimo.defaultBaseURL)
         XCTAssertEqual(settings.model, ReadAloudProvider.mimo.defaultModel)
         XCTAssertFalse(settings.allowsTextUpload)
+        XCTAssertEqual(settings.roleDetectionMode, .ai)
+        XCTAssertEqual(settings.voiceSelectionMode, .automatic)
     }
 
     private func page(index: Int, text: String) -> ReaderPage {

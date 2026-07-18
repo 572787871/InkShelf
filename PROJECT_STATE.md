@@ -25,17 +25,21 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Views/InteractivePageTurnView.swift`
   - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
 - `InkShelf/Services/ReadAloudService.swift`
-  - automatic audiobook session, network TTS orchestration, sentence
-    highlighting, background audio, chapter timeline and MediaPlayer controls
+  - automatic audiobook session, AI/local casting, cloud/local TTS
+    orchestration, next-sentence pre-generation, sentence highlighting,
+    background audio, chapter timeline and MediaPlayer controls
 - `InkShelf/Services/AudiobookSpeechKit.swift`
-  - MiMo and OpenAI-compatible clients, automatic role casting, Keychain
-    credential storage and generated-audio playback
+  - MiMo and OpenAI-compatible speech clients, AI chapter role analysis,
+    automatic role casting, Keychain credential storage and audio playback
+- `InkShelf/Services/ZipVoiceKit.swift` and `ZipVoiceTTSBridge.{h,mm}`
+  - official ZipVoice model download/install, reference-voice profiles,
+    Swift-to-sherpa-onnx bridge and iPhone ONNX inference
 - `InkShelf/Models/ReadAloudRoles.swift`
   - local dialogue attribution, stable character/unknown speaker assignments,
     and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
-  - homepage-only provider, endpoint, model, API key, privacy consent, speed and
-    connection-test UI; no manual voice settings
+  - homepage-only engine, AI/local role detection, automatic/single voice,
+    ZipVoice model/profile, API key, privacy, speed and test UI
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -79,15 +83,23 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Character attribution remains local: the current chapter is analyzed lazily
-  for quoted dialogue and explicit speaking verbs. The automatic director gives
-  named characters stable provider roles and alternates ambiguous dialogue
-  without exposing manual voice slots.
+- Role attribution can use an OpenAI-compatible chapter analysis request or the
+  local quoted-dialogue/speaking-verb rules. AI assignments merge onto the local
+  fallback, so an unavailable analysis service does not stop narration.
+- Automatic voice selection keeps the narrator and named characters stable;
+  users can instead select one voice for the whole book. Local ZipVoice profiles
+  are reference WAV/precise-transcript pairs rather than bundled real-person
+  samples.
 - Apple system voices, Kokoro/VITS packages and the old model store are not used.
-  Short sentence units are synthesized through either MiMo chat audio or a
-  configurable OpenAI-compatible `/audio/speech` service. The API key is stored
-  in the iOS Keychain and text upload is disabled until the user explicitly
-  consents.
+  Speech can use MiMo chat audio, a configurable OpenAI-compatible
+  `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
+  iPhone. The official bilingual INT8 model/vocoder is downloaded from the
+  sherpa-onnx release and checksum-verified instead of being bundled in the IPA.
+- While a sentence is playing, the next sentence is synthesized concurrently
+  and consumed from the pre-generation slot. If it is not ready at completion,
+  playback waits for that in-flight request instead of launching a duplicate.
+- API keys are stored in the iOS Keychain and text upload is disabled until the
+  user explicitly consents. Local rules plus local ZipVoice needs no network.
 - Read-aloud settings are available only from the homepage top-right Settings
   screen. The reader's bottom “朗读” action starts or pauses immediately; when
   configuration is incomplete it only directs the user back to homepage
