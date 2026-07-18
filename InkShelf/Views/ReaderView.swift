@@ -327,7 +327,12 @@ struct ReaderView: View {
                 fontName: readerFont.name,
                 fontSize: fontSize,
                 lineSpacing: lineSpacing,
-                paragraphFirstLineIndent: 0
+                // Pagination reserves the same segment-control gutter used
+                // during narration, so activating playback never clips text
+                // below the visible page.
+                paragraphFirstLineIndent: ReaderParagraphControlLayout.firstLineIndent(
+                    for: fontSize
+                )
             )
         )
     }

@@ -74,6 +74,20 @@ struct ReaderPageVerticalFill {
     }
 }
 
+/// A compact first-line gutter keeps the segment control visually attached to
+/// its paragraph without stealing width from continuation lines.
+enum ReaderParagraphControlLayout {
+    static let buttonSize = CGSize(width: 30, height: 21)
+
+    static func firstLineIndent(for fontSize: CGFloat) -> CGFloat {
+        min(64, max(52, fontSize * 2 + 4))
+    }
+
+    static func buttonLeadingInset(for fontSize: CGFloat) -> CGFloat {
+        max(10, (firstLineIndent(for: fontSize) - buttonSize.width) / 2)
+    }
+}
+
 struct InteractivePageTurnView: UIViewControllerRepresentable {
     let pages: [ReaderPage]
     let location: ReaderPageLocation
@@ -446,7 +460,10 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
-        paragraph.firstLineHeadIndent = 0
+        paragraph.firstLineHeadIndent = appearance.showsParagraphControls
+            ? ReaderParagraphControlLayout.firstLineIndent(for: appearance.fontSize)
+            : 0
+        paragraph.headIndent = 0
         let attributed = NSMutableAttributedString(
             string: text,
             attributes: [
@@ -667,9 +684,13 @@ private final class ReaderPageContentView: UIView {
                 button.isHidden = true
                 continue
             }
-            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 21) / 2)
-            button.frame = CGRect(x: max(3, appearance.horizontalMargin - 34), y: y, width: 30, height: 21)
-            button.isHidden = !textView.frame.insetBy(dx: -36, dy: -2).contains(button.frame)
+            let buttonSize = ReaderParagraphControlLayout.buttonSize
+            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - buttonSize.height) / 2)
+            let x = textView.frame.minX + ReaderParagraphControlLayout.buttonLeadingInset(
+                for: appearance.fontSize
+            )
+            button.frame = CGRect(origin: CGPoint(x: x, y: y), size: buttonSize)
+            button.isHidden = !textView.frame.insetBy(dx: -2, dy: -2).contains(button.frame)
         }
     }
 

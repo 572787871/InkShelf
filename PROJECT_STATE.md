@@ -154,8 +154,10 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
-- Reader pagination keeps the full text width. Narration controls sit in the
-  existing left margin and therefore do not alter page text boundaries.
+- Reader pagination reserves the narration segment-control first-line gutter.
+  During narration, each paragraph's first line is indented around its control
+  while continuation lines keep the full text width; the paginator uses the
+  same metric so enabling playback cannot clip text below the page.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
