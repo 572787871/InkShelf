@@ -620,7 +620,7 @@ actor ZipVoiceSynthesizer {
     }
 
     func releaseReferenceAudioCache(keeping audioURL: URL?) throws {
-        bridge?.clearReferenceAudioCache(keepingPath: audioURL?.path)
+        bridge?.clearReferenceAudioCacheKeepingPath(audioURL?.path)
     }
 
     func synthesize(

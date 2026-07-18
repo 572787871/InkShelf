@@ -14,7 +14,9 @@ struct LocalVoiceDocumentPicker: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(onCompletion: onCompletion) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types = ["wav", "m4a", "mp3", "aac", "caf"].compactMap(UTType.init(filenameExtension:))
+        let types = ["wav", "m4a", "mp3", "aac", "caf"].compactMap {
+            UTType(filenameExtension: $0)
+        }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.delegate = context.coordinator
         picker.allowsMultipleSelection = false

@@ -473,7 +473,7 @@ final class LocalVoiceRecorder: NSObject, ObservableObject, AVAudioRecorderDeleg
     }
 
     func requestPermissionAndStart() {
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
+        AVAudioApplication.requestRecordPermission { [weak self] allowed in
             Task { @MainActor in
                 guard let self else { return }
                 if allowed {
@@ -561,17 +561,25 @@ final class LocalVoiceRecorder: NSObject, ObservableObject, AVAudioRecorderDeleg
         state = .idle
     }
 
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        stopMetering()
-        duration = max(duration, recorder.currentTime)
-        state = flag ? .stopped : .failed("录音文件没有正确写入")
-        deactivateAudioSession()
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        let finishedDuration = recorder.currentTime
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            stopMetering()
+            duration = max(duration, finishedDuration)
+            state = flag ? .stopped : .failed("录音文件没有正确写入")
+            deactivateAudioSession()
+        }
     }
 
-    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        stopMetering()
-        state = .failed(error?.localizedDescription ?? "音频编码失败")
-        deactivateAudioSession()
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        let message = error?.localizedDescription ?? "音频编码失败"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            stopMetering()
+            state = .failed(message)
+            deactivateAudioSession()
+        }
     }
 
     private func configureAudioSession() throws {
@@ -579,7 +587,7 @@ final class LocalVoiceRecorder: NSObject, ObservableObject, AVAudioRecorderDeleg
         try session.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
         )
         try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
@@ -693,9 +701,11 @@ final class LocalVoiceAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDele
         isPlaying = false
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        self.player = nil
-        isPlaying = false
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            self?.player = nil
+            self?.isPlaying = false
+        }
     }
 }
 

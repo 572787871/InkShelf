@@ -768,15 +768,19 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func removeZipVoiceProfile(_ profile: ZipVoiceProfile) throws {
         try zipVoiceStore.removeProfile(profile)
-        try localVoiceDiskCache.invalidate(profileID: profile.id)
+        do {
+            try localVoiceDiskCache.invalidate(profileID: profile.id)
+        } catch {
+            NSLog("已删除音色，但关联音频缓存清理失败：%@", error.localizedDescription)
+        }
         localAudioCache.removeAllObjects()
-        zipVoiceProfiles = try zipVoiceStore.profiles()
         if settings.narratorVoiceIdentifier == profile.voiceIdentifier { settings.narratorVoiceIdentifier = "" }
         if settings.thirdPersonVoiceIdentifier == profile.voiceIdentifier { settings.thirdPersonVoiceIdentifier = "" }
         if settings.characterVoiceIdentifier == profile.voiceIdentifier { settings.characterVoiceIdentifier = "" }
         settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.filter {
             $0.value != profile.voiceIdentifier
         }
+        zipVoiceProfiles = try zipVoiceStore.profiles()
     }
 
     func renameVoiceProfile(_ profile: VoiceProfile, to name: String) throws {
