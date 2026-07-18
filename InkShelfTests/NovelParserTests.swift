@@ -15,6 +15,10 @@ final class NovelParserTests: XCTestCase {
             "第二句！",
             "第二段内容。"
         ])
+        XCTAssertEqual(plan.paragraphRanges.map { nsText.substring(with: $0) }, [
+            "第一段😀第一句。第二句！",
+            "第二段内容。"
+        ])
     }
 
     func testBookGridCoverSizeKeepsAStablePortraitRatio() {
@@ -663,6 +667,11 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
+    func testOnlyAIAndLocalModelRoleDetectionModesRemain() {
+        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["ai", "localModel"])
+        XCTAssertEqual(ReadAloudVoiceSelectionMode.allCases.map(\.rawValue), ["automatic", "roleBased"])
+    }
+
     func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
         let settings = ReadAloudSettings()
         let first = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
@@ -682,16 +691,25 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertNotEqual(first.voiceID, second.voiceID)
     }
 
-    func testManualVoiceSelectionUsesOneVoiceForEveryRole() {
-        var settings = ReadAloudSettings()
-        settings.voiceSelectionMode = .single
-        settings.selectedVoiceIdentifier = "茉莉"
+    func testRemovedSingleVoiceSettingMigratesToRoleBasedAssignments() throws {
+        let data = #"{"voiceSelectionMode":"single","selectedVoiceIdentifier":"茉莉"}"#
+            .data(using: .utf8)!
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
 
         let narrator = AudiobookVoiceDirector.direction(for: .narrator, settings: settings)
         let character = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
 
+        XCTAssertEqual(settings.voiceSelectionMode, .roleBased)
         XCTAssertEqual(narrator.voiceID, "茉莉")
         XCTAssertEqual(character.voiceID, "茉莉")
+    }
+
+    func testRemovedLocalRulesSettingMigratesToLocalModel() throws {
+        let data = #"{"roleDetectionMode":"localRules"}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
+
+        XCTAssertEqual(settings.roleDetectionMode, .localModel)
     }
 
     func testRoleBasedVoiceSelectionSeparatesNarrationTypesAndCharacters() {
@@ -704,6 +722,17 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(AudiobookVoiceDirector.direction(for: .narrator, settings: settings).voiceID, "白桦")
         XCTAssertEqual(AudiobookVoiceDirector.direction(for: .thirdPersonNarrator, settings: settings).voiceID, "苏打")
         XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings).voiceID, "冰糖")
+    }
+
+    func testRoleBasedVoiceSelectionUsesNamedCharacterOverride() {
+        var settings = ReadAloudSettings()
+        settings.voiceSelectionMode = .roleBased
+        settings.characterVoiceIdentifier = "冰糖"
+        settings.characterVoiceIdentifiers = ["张三": "苏打", "李四": "茉莉"]
+
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings).voiceID, "苏打")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("李四"), settings: settings).voiceID, "茉莉")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("王五"), settings: settings).voiceID, "冰糖")
     }
 
     func testMiMoCatalogIncludesAllPublishedPresetVoiceIdentifiers() {
@@ -969,7 +998,9 @@ final class ReaderRuntimeTests: XCTestCase {
                 horizontalMargin: 22,
                 highlightedLocation: nil,
                 highlightedRange: nil,
-                isReadAloudPlaying: false
+                isReadAloudPlaying: false,
+                showsParagraphControls: false,
+                onParagraphControl: nil
             )
             let host = ReaderPageTurnHostController()
             var bodyTapCount = 0
@@ -1030,7 +1061,9 @@ final class ReaderRuntimeTests: XCTestCase {
             horizontalMargin: 22,
             highlightedLocation: pages[0].location,
             highlightedRange: NSRange(location: 0, length: 2),
-            isReadAloudPlaying: true
+            isReadAloudPlaying: true,
+            showsParagraphControls: true,
+            onParagraphControl: nil
         )
         let host = ReaderPageTurnHostController()
         let committed = expectation(description: "自动翻页提交下一页")

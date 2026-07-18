@@ -81,7 +81,7 @@ struct ReadAloudSettingsView: View {
                     TextField("角色分析模型", text: settingBinding(\.analysisModel))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("AI 会按章节判断每句话属于旁白还是具体人物；接口失败时自动回退到本地引号和说话动词规则，不中断朗读。")
+                    Text("AI 会按章节判断每句话属于旁白还是具体人物；接口失败时保留基础解析结果，不中断朗读。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else if readAloud.settings.roleDetectionMode == .localModel {
@@ -91,11 +91,16 @@ struct ReadAloudSettingsView: View {
                         }
                     }
                     localRoleModelRow
-                    Text("模型下载后完全在 iPhone 上理解章节上下文，不上传小说；会区分第一人称旁白、第三人称旁白和具体角色。内存不足或分析失败时自动使用本地规则继续朗读。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("完全离线识别引号对白和“某某说、问、答”等提示语。")
+                    Button(action: readAloud.testLocalRoleModelOnCurrentChapter) {
+                        Label("识别当前章节角色", systemImage: "person.2.wave.2")
+                    }
+                    .disabled(readAloud.localRoleModelState == .analyzing)
+                    if let message = readAloud.localRoleAnalysisMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(message.hasPrefix("识别失败") ? .red : .secondary)
+                    }
+                    Text("模型下载后完全在 iPhone 上理解章节上下文，不上传小说；会区分第一人称旁白、第三人称旁白和具体角色。分析失败时会使用基础解析结果继续朗读。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -109,17 +114,18 @@ struct ReadAloudSettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                if readAloud.settings.voiceSelectionMode == .single {
-                    Picker("指定音色", selection: settingBinding(\.selectedVoiceIdentifier)) {
-                        Text("请选择").tag("")
-                        ForEach(readAloud.availableVoiceChoices) { voice in
-                            Text(voice.name).tag(voice.id)
-                        }
-                    }
-                } else if readAloud.settings.voiceSelectionMode == .roleBased {
+                if readAloud.settings.voiceSelectionMode == .roleBased {
                     voicePicker("第一人称旁白", selection: settingBinding(\.narratorVoiceIdentifier))
                     voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
-                    voicePicker("默认角色", selection: settingBinding(\.characterVoiceIdentifier))
+                    voicePicker("未识别角色", selection: settingBinding(\.characterVoiceIdentifier))
+                    ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
+                        voicePicker("角色 · \(name)", selection: characterVoiceBinding(name))
+                    }
+                    if readAloud.detectedCharacterNames.isEmpty {
+                        Text("先使用“识别当前章节角色”，识别出的每个人物会在这里单独出现。多人连续对话时也会按人物分别保持声线。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Text(voiceSelectionHelp)
                     .font(.footnote)
@@ -152,7 +158,7 @@ struct ReadAloudSettingsView: View {
                         connectionIndicator
                     }
                 }
-                .disabled(!readAloud.canStartReading || readAloud.connectionState == .testing)
+                .disabled(!readAloud.canPreviewVoice || readAloud.connectionState == .testing)
 
                 if case let .failed(message) = readAloud.connectionState {
                     Text(message).font(.footnote).foregroundStyle(.red)
@@ -174,22 +180,20 @@ struct ReadAloudSettingsView: View {
         .onDisappear { readAloud.stopVoicePreview() }
         .fileImporter(
             isPresented: $showingVoiceImporter,
-            allowedContentTypes: [.wav],
+            allowedContentTypes: [.audio],
             allowsMultipleSelection: false
         ) { result in
             switch result {
             case let .success(urls):
                 guard let url = urls.first else { return }
-                pendingVoiceURL = url
-                draftVoiceName = url.deletingPathExtension().lastPathComponent
-                draftVoiceGender = .unspecified
-                draftReferenceText = ""
-                showingVoiceEditor = true
+                stageImportedAudio(url)
             case let .failure(error):
                 localError = error.localizedDescription
             }
         }
-        .sheet(isPresented: $showingVoiceEditor) { voiceEditor }
+        .sheet(isPresented: $showingVoiceEditor, onDismiss: discardStagedAudio) {
+            voiceEditor
+        }
         .alert("本地朗读设置失败", isPresented: Binding(
             get: { localError != nil },
             set: { if !$0 { localError = nil } }
@@ -214,7 +218,7 @@ struct ReadAloudSettingsView: View {
         }
 
         Button { showingVoiceImporter = true } label: {
-            Label("导入参考音色 WAV", systemImage: "waveform.badge.plus")
+            Label("导入参考音频", systemImage: "waveform.badge.plus")
         }
         .disabled(readAloud.zipVoiceInstallState != .installed)
 
@@ -222,22 +226,32 @@ struct ReadAloudSettingsView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(profile.name)
-                    Text("\(profile.gender.title) · \(profile.referenceText.prefix(24))")
+                    Text("\(ZipVoiceBuiltInProfiles.contains(profile) ? "内置原创合成" : profile.gender.title) · \(profile.referenceText.prefix(24))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(role: .destructive) {
-                    do { try readAloud.removeZipVoiceProfile(profile) }
-                    catch { localError = error.localizedDescription }
+                Button {
+                    readAloud.previewVoice(profile.voiceIdentifier)
                 } label: {
-                    Image(systemName: "trash")
+                    Image(systemName: "play.circle.fill")
                 }
                 .buttonStyle(.borderless)
+                .disabled(readAloud.connectionState == .testing)
+                .accessibilityLabel("试听\(profile.name)")
+                if !ZipVoiceBuiltInProfiles.contains(profile) {
+                    Button(role: .destructive) {
+                        do { try readAloud.removeZipVoiceProfile(profile) }
+                        catch { localError = error.localizedDescription }
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
         }
 
-        Text("ZipVoice 是零样本声音复刻：参考文字必须与 WAV 中实际说出的内容完全一致。请只导入你有权使用的声音。模型和音色均保存在本机。")
+        Text("支持 WAV、M4A、MP3、AAC 等系统可读取的音频，导入后统一转为 24kHz 单声道 WAV。参考文字必须与音频逐字一致；请只导入你有权使用的声音。")
             .font(.footnote)
             .foregroundStyle(.secondary)
 
@@ -288,7 +302,7 @@ struct ReadAloudSettingsView: View {
                 Section("参考音频逐字稿") {
                     TextEditor(text: $draftReferenceText)
                         .frame(minHeight: 130)
-                    Text("必须逐字对应 WAV 中的语音，标点可以不同，但不要漏字或添加说明。音频需为单声道 16-bit PCM WAV。")
+                    Text("必须逐字对应音频中的语音，标点可以不同，但不要漏字或添加说明。App 会自动转换音频格式。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -372,9 +386,7 @@ struct ReadAloudSettingsView: View {
         case .automatic:
             "自动模式会为旁白使用稳定音色，并按人物名称稳定分配角色音色。"
         case .roleBased:
-            "可以分别设置第一人称旁白、第三人称旁白和普通角色；具体人物仍会保持稳定分配。"
-        case .single:
-            "统一音色会让旁白和所有角色使用同一个声音。"
+            "第一人称、第三人称、未知人物以及每个已识别角色都能分别选择音色。"
         }
     }
 
@@ -409,6 +421,33 @@ struct ReadAloudSettingsView: View {
         )
     }
 
+    private func characterVoiceBinding(_ name: String) -> Binding<String> {
+        Binding(
+            get: { readAloud.settings.characterVoiceIdentifiers[name] ?? "" },
+            set: { readAloud.settings.characterVoiceIdentifiers[name] = $0 }
+        )
+    }
+
+    private func stageImportedAudio(_ url: URL) {
+        let hasScope = url.startAccessingSecurityScopedResource()
+        defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("InkShelfVoiceImports", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let fileName = "\(UUID().uuidString).\(url.pathExtension.isEmpty ? "audio" : url.pathExtension)"
+            let staged = directory.appendingPathComponent(fileName)
+            try FileManager.default.copyItem(at: url, to: staged)
+            pendingVoiceURL = staged
+            draftVoiceName = url.deletingPathExtension().lastPathComponent
+            draftVoiceGender = .unspecified
+            draftReferenceText = ""
+            showingVoiceEditor = true
+        } catch {
+            localError = "无法读取所选音频：\(error.localizedDescription)"
+        }
+    }
+
     private func saveVoiceProfile() {
         guard let pendingVoiceURL else { return }
         isSavingVoice = true
@@ -422,10 +461,17 @@ struct ReadAloudSettingsView: View {
                     referenceText: draftReferenceText
                 )
                 showingVoiceEditor = false
+                try? FileManager.default.removeItem(at: pendingVoiceURL)
                 self.pendingVoiceURL = nil
             } catch {
                 localError = error.localizedDescription
             }
         }
+    }
+
+    private func discardStagedAudio() {
+        guard let pendingVoiceURL else { return }
+        try? FileManager.default.removeItem(at: pendingVoiceURL)
+        self.pendingVoiceURL = nil
     }
 }

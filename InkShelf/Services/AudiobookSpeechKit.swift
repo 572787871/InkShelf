@@ -133,15 +133,15 @@ enum AudiobookVoiceDirector {
         switch settings.voiceSelectionMode {
         case .automatic:
             return nil
-        case .single:
-            return settings.selectedVoiceIdentifier
         case .roleBased:
             switch speaker {
             case .narrator:
                 return settings.narratorVoiceIdentifier
             case .thirdPersonNarrator:
                 return settings.thirdPersonVoiceIdentifier
-            case .character, .unknownDialogue:
+            case let .character(name):
+                return settings.characterVoiceIdentifiers[name] ?? settings.characterVoiceIdentifier
+            case .unknownDialogue:
                 return settings.characterVoiceIdentifier
             }
         }

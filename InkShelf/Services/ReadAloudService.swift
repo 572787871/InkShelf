@@ -140,7 +140,7 @@ struct ReadAloudChapterNavigator {
     }
 }
 
-/// A stable UTF-16 text plan shared by speech and highlighting.
+/// A stable UTF-16 text plan shared by speech, highlighting and paragraph controls.
 /// UIKit text ranges are UTF-16 based, so keeping one coordinate system prevents
 /// Chinese punctuation and emoji from shifting the highlight.
 struct ReadAloudTextPlan: Equatable {
@@ -151,6 +151,7 @@ struct ReadAloudTextPlan: Equatable {
     }
 
     let sentences: [Sentence]
+    let paragraphRanges: [NSRange]
 
     init(text: String, speakers: [ReadAloudSpeaker]? = nil) {
         sentences = Self.units(in: text, option: .bySentences).enumerated().map { index, range in
@@ -160,6 +161,7 @@ struct ReadAloudTextPlan: Equatable {
                 speaker: speakers.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? .narrator
             )
         }
+        paragraphRanges = Self.units(in: text, option: .byParagraphs)
     }
 
     func sentenceIndex(atOrAfterUTF16Location location: Int) -> Int? {
@@ -246,6 +248,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var zipVoiceInstallState = ZipVoiceInstallState.notInstalled
     @Published private(set) var zipVoiceProfiles: [ZipVoiceProfile] = []
     @Published private(set) var localRoleModelState = LocalRoleModelState.notInstalled
+    @Published private(set) var detectedCharacterNames: [String] = []
+    @Published private(set) var localRoleAnalysisMessage: String?
     @Published var apiKey: String {
         didSet {
             guard apiKey != oldValue else { return }
@@ -311,6 +315,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var nextSentenceIndex = 0
     private var sessionPages: [ReaderPage] = []
     private var sessionPageIndex: Int?
+    private var lastReaderPages: [ReaderPage] = []
+    private var lastReaderLocation: ReaderPageLocation?
     private var sessionChapterIndices: [Int] = []
     private var currentChapterPageIndices: [Int] = []
     private var timelineChapterIndex: Int?
@@ -325,8 +331,9 @@ final class ReadAloudService: NSObject, ObservableObject {
         apiKey = AudiobookCredentialStore.loadAPIKey()
         settings = Self.loadSettings()
         super.init()
-        zipVoiceProfiles = zipVoiceStore.profiles()
         zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
+        if zipVoiceInstallState == .installed { try? zipVoiceStore.ensureBuiltInProfiles() }
+        zipVoiceProfiles = zipVoiceStore.profiles()
         refreshLocalRoleModelState()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
@@ -347,6 +354,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         onPageFinished = nil
     }
 
+    func rememberRoleAnalysisContext(pages: [ReaderPage], location: ReaderPageLocation) {
+        guard !pages.isEmpty else { return }
+        lastReaderPages = pages
+        lastReaderLocation = pages.contains(where: { $0.location == location })
+            ? location
+            : pages.first?.location
+    }
+
     func applicationActivityChanged(isActive: Bool) {
         applicationIsActive = isActive
     }
@@ -356,19 +371,9 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     var canStartReading: Bool {
-        let synthesisReady: Bool
-        switch settings.provider {
-        case .localZipVoice:
-            synthesisReady = zipVoiceStore.modelPaths() != nil && !zipVoiceProfiles.isEmpty
-        case .mimo, .openAICompatible:
-            synthesisReady = networkCredentialsReady
-                && !settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        let synthesisReady = canPreviewVoice
         let analysisReady: Bool
         switch settings.roleDetectionMode {
-        case .localRules:
-            analysisReady = true
         case .localModel:
             analysisReady = LocalNovelRoleModel.isInstalled(settings.localRoleModel)
         case .ai:
@@ -377,6 +382,17 @@ final class ReadAloudService: NSObject, ObservableObject {
                 && !settings.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         return synthesisReady && analysisReady
+    }
+
+    var canPreviewVoice: Bool {
+        switch settings.provider {
+        case .localZipVoice:
+            return zipVoiceStore.modelPaths() != nil && !zipVoiceProfiles.isEmpty
+        case .mimo, .openAICompatible:
+            return networkCredentialsReady
+                && !settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     var availableVoiceChoices: [AudiobookVoiceChoice] {
@@ -395,9 +411,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         settings.provider = provider
         settings.baseURL = provider.defaultBaseURL
         settings.model = provider.defaultModel
-        if !availableVoiceChoices.contains(where: { $0.id == settings.selectedVoiceIdentifier }) {
-            settings.selectedVoiceIdentifier = ""
-        }
         if !availableVoiceChoices.contains(where: { $0.id == settings.narratorVoiceIdentifier }) {
             settings.narratorVoiceIdentifier = ""
         }
@@ -406,6 +419,9 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         if !availableVoiceChoices.contains(where: { $0.id == settings.characterVoiceIdentifier }) {
             settings.characterVoiceIdentifier = ""
+        }
+        settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.filter { _, identifier in
+            availableVoiceChoices.contains(where: { $0.id == identifier })
         }
         connectionState = .idle
     }
@@ -462,6 +478,67 @@ final class ReadAloudService: NSObject, ObservableObject {
         refreshLocalRoleModelState()
     }
 
+    func testLocalRoleModelOnCurrentChapter() {
+        guard roleAnalysisTask == nil else { return }
+        guard LocalNovelRoleModel.isInstalled(settings.localRoleModel) else {
+            localRoleAnalysisMessage = "请先下载本地角色模型"
+            return
+        }
+        guard let targetLocation = currentPageLocation ?? lastReaderLocation else {
+            localRoleAnalysisMessage = "请先打开一本本地小说，再返回这里识别当前章节"
+            return
+        }
+        let chapterIndex = targetLocation.chapterIndex
+        let analyzesActiveSession = currentPageLocation != nil
+        let sourcePages = analyzesActiveSession ? sessionPages : lastReaderPages
+        let pages = sourcePages.filter { $0.location.chapterIndex == chapterIndex }
+        guard !pages.isEmpty else {
+            localRoleAnalysisMessage = "当前章节没有可分析的正文"
+            return
+        }
+        let fallback: ReadAloudRolePlan
+        if analyzesActiveSession {
+            ensureRolePlan(forChapter: chapterIndex)
+            fallback = rolePlan
+        } else {
+            fallback = ReadAloudRoleAnalyzer.plan(
+                for: pages,
+                alternatesUnattributedDialogue: true
+            )
+        }
+        let variant = settings.localRoleModel
+        localRoleModelState = .analyzing
+        localRoleAnalysisMessage = nil
+        roleAnalysisTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let analyzed = try await localRoleModel.analyze(
+                    pages: pages,
+                    fallback: fallback,
+                    variant: variant
+                )
+                try Task.checkCancellation()
+                if analyzesActiveSession {
+                    mergeRolePlan(analyzed)
+                } else {
+                    rolePlan = analyzed
+                    refreshDetectedCharacterNames()
+                }
+                localAnalyzedRoleChapters.insert(chapterIndex)
+                localRoleModelState = .installed
+                localRoleAnalysisMessage = detectedCharacterNames.isEmpty
+                    ? "分析完成：本章没有识别到明确姓名的对话角色"
+                    : "分析完成：\(detectedCharacterNames.joined(separator: "、"))"
+            } catch is CancellationError {
+                refreshLocalRoleModelState()
+            } catch {
+                localRoleModelState = .failed(error.localizedDescription)
+                localRoleAnalysisMessage = "识别失败：\(error.localizedDescription)"
+            }
+            roleAnalysisTask = nil
+        }
+    }
+
     func downloadZipVoiceModel() {
         guard modelDownloadTask == nil else { return }
         zipVoiceInstallState = .downloading(progress: 0)
@@ -484,6 +561,8 @@ final class ReadAloudService: NSObject, ObservableObject {
                 zipVoiceInstallState = .installing
                 try await zipVoiceStore.installModel(archiveURL: archive, vocoderURL: vocoder)
                 try? FileManager.default.removeItem(at: cache)
+                try zipVoiceStore.ensureBuiltInProfiles()
+                zipVoiceProfiles = zipVoiceStore.profiles()
                 zipVoiceInstallState = .installed
             } catch is CancellationError {
                 zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
@@ -518,8 +597,11 @@ final class ReadAloudService: NSObject, ObservableObject {
     func removeZipVoiceProfile(_ profile: ZipVoiceProfile) throws {
         try zipVoiceStore.removeProfile(profile)
         zipVoiceProfiles = zipVoiceStore.profiles()
-        if settings.selectedVoiceIdentifier == profile.voiceIdentifier {
-            settings.selectedVoiceIdentifier = ""
+        if settings.narratorVoiceIdentifier == profile.voiceIdentifier { settings.narratorVoiceIdentifier = "" }
+        if settings.thirdPersonVoiceIdentifier == profile.voiceIdentifier { settings.thirdPersonVoiceIdentifier = "" }
+        if settings.characterVoiceIdentifier == profile.voiceIdentifier { settings.characterVoiceIdentifier = "" }
+        settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.filter {
+            $0.value != profile.voiceIdentifier
         }
     }
 
@@ -534,10 +616,18 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     func testConnection() {
+        previewVoice(nil)
+    }
+
+    func previewVoice(_ voiceIdentifier: String?) {
         guard connectionState != .testing else { return }
         stopVoicePreview()
         connectionState = .testing
-        let configuration = settings
+        var configuration = settings
+        if let voiceIdentifier {
+            configuration.voiceSelectionMode = .roleBased
+            configuration.narratorVoiceIdentifier = voiceIdentifier
+        }
         let key = apiKey
         let token = UUID()
         previewToken = token
@@ -571,7 +661,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     func startSession(
         book: NovelBook,
         pages: [ReaderPage],
-        location: ReaderPageLocation
+        location: ReaderPageLocation,
+        startAtUTF16Location: Int = 0
     ) {
         guard let pageIndex = pages.firstIndex(where: { $0.location == location }) else {
             state = .failed(message: "当前朗读页面不存在")
@@ -580,6 +671,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         sessionPages = pages
         sessionPageIndex = pageIndex
         rolePlan = .empty
+        detectedCharacterNames = []
+        localRoleAnalysisMessage = nil
         analyzedRoleChapters.removeAll()
         aiAnalyzedRoleChapters.removeAll()
         localAnalyzedRoleChapters.removeAll()
@@ -596,7 +689,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         nowPlayingArtwork = makeNowPlayingArtwork(for: context)
         setPage(
             text: pages[pageIndex].text,
-            location: pages[pageIndex].location
+            location: pages[pageIndex].location,
+            startAtUTF16Location: startAtUTF16Location
         )
         analyzeCurrentChapterThenPlayIfNeeded()
     }
@@ -652,6 +746,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard bookContext?.id == bookID, let currentPageLocation else { return }
         sessionPages = pages
         rolePlan = .empty
+        detectedCharacterNames = []
         analyzedRoleChapters.removeAll()
         aiAnalyzedRoleChapters.removeAll()
         localAnalyzedRoleChapters.removeAll()
@@ -795,6 +890,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         plan = ReadAloudTextPlan(text: "")
         rolePlan = .empty
+        detectedCharacterNames = []
         analyzedRoleChapters.removeAll()
         aiAnalyzedRoleChapters.removeAll()
         localAnalyzedRoleChapters.removeAll()
@@ -960,8 +1056,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard let pageIndex = sessionPages.firstIndex(where: { $0.location == request.position.location }),
               sessionPages.indices.contains(pageIndex + 1) else { return nil }
         let nextPage = sessionPages[pageIndex + 1]
-        if nextPage.location.chapterIndex != request.position.location.chapterIndex,
-           settings.roleDetectionMode != .localRules {
+        if nextPage.location.chapterIndex != request.position.location.chapterIndex {
             return nil
         }
         return speechRequest(at: .init(location: nextPage.location, sentenceIndex: 0))
@@ -1064,16 +1159,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         settings: ReadAloudSettings
     ) -> ZipVoiceProfile? {
         guard !zipVoiceProfiles.isEmpty else { return nil }
-        if settings.voiceSelectionMode == .single,
-           let selected = zipVoiceProfiles.first(where: { $0.voiceIdentifier == settings.selectedVoiceIdentifier }) {
-            return selected
-        }
         if settings.voiceSelectionMode == .roleBased {
             let identifier: String
             switch speaker {
             case .narrator: identifier = settings.narratorVoiceIdentifier
             case .thirdPersonNarrator: identifier = settings.thirdPersonVoiceIdentifier
-            case .character, .unknownDialogue: identifier = settings.characterVoiceIdentifier
+            case let .character(name):
+                identifier = settings.characterVoiceIdentifiers[name] ?? settings.characterVoiceIdentifier
+            case .unknownDialogue: identifier = settings.characterVoiceIdentifier
             }
             if let selected = zipVoiceProfiles.first(where: { $0.voiceIdentifier == identifier }) {
                 return selected
@@ -1217,6 +1310,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         var combined = rolePlan.speakersByPage
         combined.merge(chapterPlan.speakersByPage) { _, new in new }
         rolePlan = ReadAloudRolePlan(speakersByPage: combined)
+        refreshDetectedCharacterNames()
         analyzedRoleChapters.insert(chapterIndex)
     }
 
@@ -1227,8 +1321,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         let needsAnalysis: Bool
         switch settings.roleDetectionMode {
-        case .localRules:
-            needsAnalysis = false
         case .ai:
             needsAnalysis = !aiAnalyzedRoleChapters.contains(chapterIndex) && networkCredentialsReady
         case .localModel:
@@ -1267,13 +1359,12 @@ final class ReadAloudService: NSObject, ObservableObject {
                         fallback: fallback,
                         variant: configuration.localRoleModel
                     )
-                case .localRules:
-                    analyzed = fallback
                 }
                 try Task.checkCancellation()
                 var combined = rolePlan.speakersByPage
                 combined.merge(analyzed.speakersByPage) { _, new in new }
                 rolePlan = ReadAloudRolePlan(speakersByPage: combined)
+                refreshDetectedCharacterNames()
                 if configuration.roleDetectionMode == .ai {
                     aiAnalyzedRoleChapters.insert(chapterIndex)
                 } else if configuration.roleDetectionMode == .localModel {
@@ -1283,8 +1374,8 @@ final class ReadAloudService: NSObject, ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                // Model analysis is an enhancement. Preserve uninterrupted
-                // local-rule attribution if the selected model is unavailable.
+                // Model analysis is an enhancement. Preserve the baseline
+                // attribution plan if the selected model is unavailable.
                 if configuration.roleDetectionMode == .ai {
                     aiAnalyzedRoleChapters.insert(chapterIndex)
                 } else {
@@ -1299,6 +1390,22 @@ final class ReadAloudService: NSObject, ObservableObject {
             setPage(text: page.text, location: page.location, stoppingCurrentSpeech: false)
             if playbackRequested { play() }
         }
+    }
+
+    private func mergeRolePlan(_ plan: ReadAloudRolePlan) {
+        var combined = rolePlan.speakersByPage
+        combined.merge(plan.speakersByPage) { _, new in new }
+        rolePlan = ReadAloudRolePlan(speakersByPage: combined)
+        refreshDetectedCharacterNames()
+    }
+
+    private func refreshDetectedCharacterNames() {
+        detectedCharacterNames = Array(Set(rolePlan.speakersByPage.values.flatMap { speakers in
+            speakers.compactMap { speaker -> String? in
+                if case let .character(name) = speaker { return name }
+                return nil
+            }
+        })).sorted()
     }
 
     private func persistSettings() {

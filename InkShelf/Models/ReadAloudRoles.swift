@@ -35,14 +35,12 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case ai
     case localModel
-    case localRules
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .ai: "云端 AI"
         case .localModel: "本地大模型"
-        case .localRules: "本地规则"
         }
     }
 }
@@ -82,14 +80,12 @@ enum ReadAloudAIProvider: String, Codable, CaseIterable, Identifiable, Sendable 
 enum ReadAloudVoiceSelectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case automatic
     case roleBased
-    case single
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .automatic: "自动选择"
-        case .roleBased: "按类型指定"
-        case .single: "统一音色"
+        case .roleBased: "逐角色指定"
         }
     }
 }
@@ -107,16 +103,20 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
     var analysisBaseURL = ReadAloudAIProvider.mimo.defaultBaseURL
     var analysisModel = ReadAloudAIProvider.mimo.defaultModel
     var voiceSelectionMode = ReadAloudVoiceSelectionMode.automatic
-    var selectedVoiceIdentifier = ""
     var narratorVoiceIdentifier = ""
     var thirdPersonVoiceIdentifier = ""
     var characterVoiceIdentifier = ""
+    var characterVoiceIdentifiers: [String: String] = [:]
 
     private enum CodingKeys: String, CodingKey {
         case provider, baseURL, model, rateMultiplier, allowsTextUpload
         case roleDetectionMode, localRoleModel, analysisProvider, analysisBaseURL, analysisModel
-        case voiceSelectionMode, selectedVoiceIdentifier, narratorVoiceIdentifier
-        case thirdPersonVoiceIdentifier, characterVoiceIdentifier
+        case voiceSelectionMode, narratorVoiceIdentifier
+        case thirdPersonVoiceIdentifier, characterVoiceIdentifier, characterVoiceIdentifiers
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case selectedVoiceIdentifier
     }
 
     init() {}
@@ -130,18 +130,35 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
             ?? provider.defaultModel
         rateMultiplier = try container.decodeIfPresent(Double.self, forKey: .rateMultiplier) ?? 0.9
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
-        roleDetectionMode = try container.decodeIfPresent(ReadAloudRoleDetectionMode.self, forKey: .roleDetectionMode) ?? .ai
+        let roleModeRaw = try container.decodeIfPresent(String.self, forKey: .roleDetectionMode)
+        roleDetectionMode = roleModeRaw.flatMap(ReadAloudRoleDetectionMode.init(rawValue:))
+            ?? (roleModeRaw == nil ? .ai : .localModel)
         localRoleModel = try container.decodeIfPresent(LocalRoleModelVariant.self, forKey: .localRoleModel) ?? .qwen3_0_6B
         analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
         analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
             ?? analysisProvider.defaultBaseURL
         analysisModel = try container.decodeIfPresent(String.self, forKey: .analysisModel)
             ?? analysisProvider.defaultModel
-        voiceSelectionMode = try container.decodeIfPresent(ReadAloudVoiceSelectionMode.self, forKey: .voiceSelectionMode) ?? .automatic
-        selectedVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedVoiceIdentifier) ?? ""
+        let voiceModeRaw = try container.decodeIfPresent(String.self, forKey: .voiceSelectionMode)
+        voiceSelectionMode = ReadAloudVoiceSelectionMode(rawValue: voiceModeRaw ?? "")
+            ?? (voiceModeRaw == "single" ? .roleBased : .automatic)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        let legacySelectedVoice = try legacyContainer.decodeIfPresent(
+            String.self,
+            forKey: .selectedVoiceIdentifier
+        ) ?? ""
         narratorVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .narratorVoiceIdentifier) ?? ""
         thirdPersonVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .thirdPersonVoiceIdentifier) ?? ""
         characterVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .characterVoiceIdentifier) ?? ""
+        characterVoiceIdentifiers = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .characterVoiceIdentifiers
+        ) ?? [:]
+        if voiceModeRaw == "single", !legacySelectedVoice.isEmpty {
+            if narratorVoiceIdentifier.isEmpty { narratorVoiceIdentifier = legacySelectedVoice }
+            if thirdPersonVoiceIdentifier.isEmpty { thirdPersonVoiceIdentifier = legacySelectedVoice }
+            if characterVoiceIdentifier.isEmpty { characterVoiceIdentifier = legacySelectedVoice }
+        }
     }
 
     var normalized: ReadAloudSettings {

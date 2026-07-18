@@ -40,8 +40,8 @@ context, not a substitute for inspecting the current code and Git history.
   - local dialogue attribution, stable character/unknown speaker assignments,
     and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
-  - homepage-only engine, AI/local role detection, automatic/single voice,
-    ZipVoice model/profile, API key, privacy, speed and test UI
+  - homepage-only engine, AI/local-model role detection, automatic/per-character
+    voices, ZipVoice model/profile, API key, privacy, speed and preview UI
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -73,7 +73,9 @@ context, not a substitute for inspecting the current code and Git history.
 - Narration and manual browsing are deliberately decoupled.
 - A manual page turn, directory jump, or progress browsing action does not move
   the speech queue to that page.
-- “从本页听” starts the visible page. Paragraph play buttons have been removed.
+- “从本页听” starts the visible page. While that book owns an active narration
+  session, each visible speech segment has a play/pause control; selecting a
+  different segment explicitly retargets narration to that exact text range.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -85,15 +87,19 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Role attribution can use an OpenAI-compatible request, a downloaded local
-  MLX/Qwen3 model, or quoted-dialogue/speaking-verb rules. Model assignments
-  distinguish first-person narration, third-person narration and named roles,
-  then merge onto the local fallback so analysis failure does not stop speech.
+- Role attribution can use an OpenAI-compatible request or a downloaded local
+  MLX/Qwen3 model. There is no user-selectable local-rules mode. Model
+  assignments distinguish first-person narration, third-person narration and
+  named roles, and a baseline parse keeps speech running if model analysis fails.
+  The settings test can analyze the active narration chapter or the most recently
+  opened local-book chapter and exposes detected names for per-character voices.
 - Automatic voice selection keeps narration and named characters stable. Users
-  can instead select one voice for the whole book or separately choose
-  first-person narrator, third-person narrator and default-character voices.
-  MiMo exposes its eight published preset IDs; local ZipVoice profiles remain
-  user-authorized reference WAV/precise-transcript pairs, not copied presets.
+  can instead separately choose first-person narrator, third-person narrator,
+  unknown-character and every detected named-character voice; the old unified
+  voice mode is removed. MiMo exposes its eight published preset IDs. Local
+  ZipVoice accepts system-readable audio formats, converts them to its reference
+  WAV format, and includes three original synthetic reference prompts alongside
+  user-authorized audio/transcript pairs.
 - Apple system voices, Kokoro/VITS packages and the old model store are not used.
   Speech can use MiMo chat audio, a configurable OpenAI-compatible
   `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
@@ -105,7 +111,8 @@ context, not a substitute for inspecting the current code and Git history.
   request and the visible/session page advances during that audio instead of
   inserting a new utterance boundary.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
-  user explicitly consents. Local rules plus local ZipVoice needs no network.
+  user explicitly consents. The local role model plus local ZipVoice needs no
+  network after both model downloads finish.
 - Read-aloud settings are available only from the homepage top-right Settings
   screen. The reader's bottom “朗读” action starts or pauses immediately; when
   configuration is incomplete it only directs the user back to homepage
@@ -127,11 +134,13 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
-- Reader pagination uses the full text width because paragraph narration
-  controls and their first-line indent were removed.
+- Reader pagination keeps the full text width. Narration controls sit in the
+  existing left margin and therefore do not alter page text boundaries.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
+- The current spoken range uses a soft translucent marker and leading accent;
+  the immersive “原进度 / 从本页听” capsule sits closer to the bottom status row.
 - Reader appearance controls use grouped cards with coordinated theme/background
   previews, brightness, precise font-size controls, named line-spacing presets
   plus numeric sliders, page margins, font, page-turn style, and screen-awake

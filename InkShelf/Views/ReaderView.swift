@@ -122,7 +122,7 @@ struct ReaderView: View {
                             InteractivePageTurnView(
                                 pages: catalog.pages,
                                 location: location,
-                                appearance: pageAppearance(bookTitle: book.title),
+                                appearance: pageAppearance(book: book),
                                 mode: pageTurnMode,
                                 isInteractionEnabled: !showingAppearance
                                     && !isScrubbingWholeBookProgress
@@ -176,6 +176,7 @@ struct ReaderView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             UIScreen.main.brightness = originalBrightness
+            readAloud.rememberRoleAnalysisContext(pages: catalog.pages, location: location)
             readAloud.readerDidDisappear(bookID: bookID)
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
@@ -282,11 +283,11 @@ struct ReaderView: View {
         }
     }
 
-    private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
+    private func pageAppearance(book: NovelBook) -> ReaderPageAppearance {
         let ownsReadAloudSession = isCurrentReadAloudSession
         return ReaderPageAppearance(
             themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)|\(customToneRaw)|\(customBlurRaw)|\(customTransparency)",
-            bookTitle: bookTitle,
+            bookTitle: book.title,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
@@ -300,7 +301,11 @@ struct ReaderView: View {
             horizontalMargin: margin,
             highlightedLocation: ownsReadAloudSession ? readAloud.currentPageLocation : nil,
             highlightedRange: ownsReadAloudSession ? readAloud.currentSentenceRange : nil,
-            isReadAloudPlaying: ownsReadAloudSession && readAloud.isPlaying
+            isReadAloudPlaying: ownsReadAloudSession && readAloud.isPlaying,
+            showsParagraphControls: ownsReadAloudSession,
+            onParagraphControl: { pageLocation, range in
+                toggleSentenceReadAloud(book: book, pageLocation: pageLocation, range: range)
+            }
         )
     }
 
@@ -354,6 +359,7 @@ struct ReaderView: View {
         }
         hasResolvedInitialLocation = true
         catalog = rebuilt
+        readAloud.rememberRoleAnalysisContext(pages: rebuilt.pages, location: settledLocation)
         readAloud.refreshSessionPages(rebuilt.pages, for: book.id)
         onReady()
     }
@@ -413,6 +419,28 @@ struct ReaderView: View {
             book: book,
             pages: catalog.pages,
             location: page.location
+        )
+    }
+
+    private func toggleSentenceReadAloud(
+        book: NovelBook,
+        pageLocation: ReaderPageLocation,
+        range: NSRange
+    ) {
+        if isCurrentReadAloudSession,
+           readAloud.currentPageLocation == pageLocation,
+           let currentRange = readAloud.currentSentenceRange,
+           NSIntersectionRange(currentRange, range).length > 0 {
+            readAloud.togglePlayback()
+            return
+        }
+        isBrowsingAwayFromReadAloud = false
+        attachPageFinishHandler()
+        readAloud.startSession(
+            book: book,
+            pages: catalog.pages,
+            location: pageLocation,
+            startAtUTF16Location: range.location
         )
     }
 
@@ -653,7 +681,7 @@ struct ReaderView: View {
             .frame(height: 38)
             .background(immersiveBarBackground, in: Capsule())
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-            .padding(.bottom, 38)
+            .padding(.bottom, 24)
         }
         .allowsHitTesting(true)
         .transition(.opacity)

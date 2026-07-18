@@ -24,6 +24,8 @@ struct ReaderPageAppearance: Equatable {
     let highlightedLocation: ReaderPageLocation?
     let highlightedRange: NSRange?
     let isReadAloudPlaying: Bool
+    let showsParagraphControls: Bool
+    let onParagraphControl: ((ReaderPageLocation, NSRange) -> Void)?
 
     static func == (lhs: ReaderPageAppearance, rhs: ReaderPageAppearance) -> Bool {
         lhs.themeID == rhs.themeID &&
@@ -40,7 +42,8 @@ struct ReaderPageAppearance: Equatable {
         lhs.horizontalMargin == rhs.horizontalMargin &&
         lhs.highlightedLocation == rhs.highlightedLocation &&
         lhs.highlightedRange == rhs.highlightedRange &&
-        lhs.isReadAloudPlaying == rhs.isReadAloudPlaying
+        lhs.isReadAloudPlaying == rhs.isReadAloudPlaying &&
+        lhs.showsParagraphControls == rhs.showsParagraphControls
     }
 
     func hasSameLayout(as other: ReaderPageAppearance) -> Bool {
@@ -322,6 +325,8 @@ private final class ReaderPageContentView: UIView {
     private let pageLabel = UILabel()
     private let clockLabel = UILabel()
     private let batteryImageView = UIImageView()
+    private var paragraphButtons: [UIButton] = []
+    private var paragraphButtonRanges: [NSRange] = []
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
     private var fittedTextSize = CGSize.zero
@@ -383,6 +388,7 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
+        rebuildParagraphControls()
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
     }
 
@@ -407,6 +413,7 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
         fitTextVerticallyIfNeeded()
         layoutSentenceHighlight()
+        layoutParagraphControls()
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
@@ -428,6 +435,7 @@ private final class ReaderPageContentView: UIView {
         pageLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         clockLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.6)
+        rebuildParagraphControls()
         setNeedsLayout()
     }
 
@@ -521,7 +529,7 @@ private final class ReaderPageContentView: UIView {
     }
 
     private var readingHighlightColor: UIColor {
-        appearance.textColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.12 : 0.075)
+        UIColor.systemOrange.withAlphaComponent(appearance.backgroundColor.isDark ? 0.20 : 0.13)
     }
 
     private func layoutSentenceHighlight() {
@@ -545,6 +553,8 @@ private final class ReaderPageContentView: UIView {
         let visibleHighlightRange = NSIntersectionRange(highlightGlyphRange, laidOutGlyphRange)
         guard visibleHighlightRange.length > 0 else { return }
 
+        let combinedPath = UIBezierPath()
+        var firstRect: CGRect?
         textView.layoutManager.enumerateLineFragments(forGlyphRange: visibleHighlightRange) {
             [weak self] _, _, _, lineGlyphRange, _ in
             guard let self else { return }
@@ -561,13 +571,82 @@ private final class ReaderPageContentView: UIView {
             rect = rect.intersection(self.textView.frame.insetBy(dx: -2, dy: -1))
             guard !rect.isNull, rect.width > 1, rect.height > 1 else { return }
 
-            let marker = CAShapeLayer()
-            marker.path = UIBezierPath(roundedRect: rect, cornerRadius: 5).cgPath
-            marker.fillColor = self.readingHighlightColor.cgColor
-            marker.strokeColor = self.appearance.textColor.withAlphaComponent(0.04).cgColor
-            marker.lineWidth = 0.5
-            self.highlightDecoration.layer.addSublayer(marker)
+            if firstRect == nil { firstRect = rect }
+            combinedPath.append(UIBezierPath(roundedRect: rect, cornerRadius: 4))
         }
+        let marker = CAShapeLayer()
+        marker.path = combinedPath.cgPath
+        marker.fillColor = readingHighlightColor.cgColor
+        highlightDecoration.layer.addSublayer(marker)
+        if let firstRect {
+            let accent = CAShapeLayer()
+            let bar = CGRect(x: firstRect.minX - 1.5, y: firstRect.minY + 2, width: 2.5, height: max(5, firstRect.height - 4))
+            accent.path = UIBezierPath(roundedRect: bar, cornerRadius: 1.25).cgPath
+            accent.fillColor = UIColor.systemOrange.withAlphaComponent(0.72).cgColor
+            highlightDecoration.layer.addSublayer(accent)
+        }
+    }
+
+    private func rebuildParagraphControls() {
+        paragraphButtons.forEach { $0.removeFromSuperview() }
+        paragraphButtons.removeAll()
+        paragraphButtonRanges.removeAll()
+        guard appearance.showsParagraphControls else { return }
+        paragraphButtonRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
+        for index in paragraphButtonRanges.indices {
+            let button = UIButton(type: .system)
+            button.tag = index
+            button.addTarget(self, action: #selector(paragraphControlTapped(_:)), for: .touchUpInside)
+            button.accessibilityLabel = "从这一段开始朗读或暂停当前段"
+            addSubview(button)
+            paragraphButtons.append(button)
+        }
+        updateParagraphControlAppearance()
+    }
+
+    private func updateParagraphControlAppearance() {
+        for (index, button) in paragraphButtons.enumerated() {
+            guard paragraphButtonRanges.indices.contains(index) else { continue }
+            let isCurrent = appearance.highlightedLocation == page.location
+                && appearance.highlightedRange.map {
+                    NSIntersectionRange($0, paragraphButtonRanges[index]).length > 0
+                } == true
+            var configuration = UIButton.Configuration.plain()
+            configuration.image = UIImage(systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill")
+            configuration.baseForegroundColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.82 : 0.32)
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+            configuration.background.backgroundColor = isCurrent
+                ? UIColor.systemOrange.withAlphaComponent(0.13)
+                : appearance.textColor.withAlphaComponent(0.035)
+            configuration.background.cornerRadius = 11
+            button.configuration = configuration
+        }
+    }
+
+    private func layoutParagraphControls() {
+        guard appearance.showsParagraphControls else { return }
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let headingLength = page.chapterHeadingPrefix.utf16.count
+        for (index, range) in paragraphButtonRanges.enumerated() where paragraphButtons.indices.contains(index) {
+            let displayRange = NSRange(location: range.location + headingLength, length: max(1, range.length))
+            let glyphRange = textView.layoutManager.glyphRange(
+                forCharacterRange: displayRange,
+                actualCharacterRange: nil
+            )
+            var rect = textView.layoutManager.boundingRect(
+                forGlyphRange: NSRange(location: glyphRange.location, length: min(1, glyphRange.length)),
+                in: textView.textContainer
+            )
+            rect.origin.y += textView.frame.minY
+            let x = max(3, appearance.horizontalMargin - 26)
+            paragraphButtons[index].frame = CGRect(x: x, y: rect.midY - 11, width: 22, height: 22)
+        }
+        updateParagraphControlAppearance()
+    }
+
+    @objc private func paragraphControlTapped(_ sender: UIButton) {
+        guard paragraphButtonRanges.indices.contains(sender.tag) else { return }
+        appearance.onParagraphControl?(page.location, paragraphButtonRanges[sender.tag])
     }
 
 }

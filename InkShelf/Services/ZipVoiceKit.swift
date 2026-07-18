@@ -61,7 +61,7 @@ enum ZipVoiceError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .inaccessibleAudio: "无法访问参考音频"
-        case .invalidAudio: "参考音频必须是可读取的单声道 16-bit PCM WAV 文件"
+        case .invalidAudio: "无法读取该音频，请选择 WAV、M4A、MP3、AAC 或其他系统支持的音频文件"
         case .invalidTranscript: "请填写与参考音频完全一致的文字"
         case let .downloadFailed(message): "ZipVoice 下载失败：\(message)"
         case .checksumMismatch: "ZipVoice 文件校验失败，请重新下载"
@@ -72,6 +72,19 @@ enum ZipVoiceError: LocalizedError, Equatable {
         case .noVoiceProfile: "请先导入至少一个本地参考音色"
         case let .synthesisFailed(message): "ZipVoice 生成失败：\(message)"
         }
+    }
+}
+
+enum ZipVoiceBuiltInProfiles {
+    static let transcript = "欢迎来到墨架，愿每一个故事，都有属于自己的声音。"
+    static let definitions: [(id: UUID, resource: String, name: String, gender: ZipVoiceProfileGender)] = [
+        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459101")!, "ink_stable", "墨沉 · 沉稳", .male),
+        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459102")!, "ink_warm", "墨暖 · 温和", .female),
+        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459103")!, "ink_clear", "墨清 · 清亮", .female)
+    ]
+
+    static func contains(_ profile: ZipVoiceProfile) -> Bool {
+        definitions.contains { $0.id == profile.id }
     }
 }
 
@@ -144,6 +157,30 @@ struct ZipVoiceStore: Sendable {
         }.value
     }
 
+    func ensureBuiltInProfiles(bundle: Bundle = .main) throws {
+        try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
+        var all = profiles()
+        for definition in ZipVoiceBuiltInProfiles.definitions where !all.contains(where: { $0.id == definition.id }) {
+            guard let source = bundle.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? bundle.url(forResource: definition.resource, withExtension: "wav") else { continue }
+            let fileName = "\(definition.id.uuidString.lowercased()).wav"
+            let destination = profilesDirectory.appendingPathComponent(fileName)
+            try? FileManager.default.removeItem(at: destination)
+            try convertToReferenceWAV(source, destination: destination)
+            all.append(ZipVoiceProfile(
+                id: definition.id,
+                name: definition.name,
+                gender: definition.gender,
+                referenceText: ZipVoiceBuiltInProfiles.transcript,
+                audioFileName: fileName
+            ))
+        }
+        try persist(all)
+    }
+
     func removeProfile(_ profile: ZipVoiceProfile) throws {
         var all = profiles()
         all.removeAll { $0.id == profile.id }
@@ -182,24 +219,16 @@ struct ZipVoiceStore: Sendable {
         guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
             throw ZipVoiceError.inaccessibleAudio
         }
-        do {
-            let file = try AVAudioFile(forReading: sourceURL)
-            guard sourceURL.pathExtension.lowercased() == "wav",
-                  file.length > 0,
-                  file.fileFormat.channelCount == 1,
-                  file.fileFormat.sampleRate >= 8_000,
-                  file.fileFormat.commonFormat == .pcmFormatInt16 else {
-                throw ZipVoiceError.invalidAudio
-            }
-        } catch {
-            throw ZipVoiceError.invalidAudio
-        }
-
         try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
         let id = UUID()
         let fileName = "\(id.uuidString.lowercased()).wav"
         let destination = profilesDirectory.appendingPathComponent(fileName)
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        do {
+            try convertToReferenceWAV(sourceURL, destination: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw ZipVoiceError.invalidAudio
+        }
         let profile = ZipVoiceProfile(
             id: id,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "本地音色" : name,
@@ -211,6 +240,64 @@ struct ZipVoiceStore: Sendable {
         all.append(profile)
         try persist(all)
         return profile
+    }
+
+    private func convertToReferenceWAV(_ source: URL, destination: URL) throws {
+        let inputFile = try AVAudioFile(forReading: source)
+        guard inputFile.length > 0,
+              let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 24_000,
+                channels: 1,
+                interleaved: true
+              ),
+              let converter = AVAudioConverter(from: inputFile.processingFormat, to: outputFormat) else {
+            throw ZipVoiceError.invalidAudio
+        }
+        try? FileManager.default.removeItem(at: destination)
+        let outputFile = try AVAudioFile(
+            forWriting: destination,
+            settings: outputFormat.settings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: true
+        )
+        let inputCapacity: AVAudioFrameCount = 4_096
+        var reachedEnd = false
+        while !reachedEnd {
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: inputCapacity
+            ) else { throw ZipVoiceError.invalidAudio }
+            var conversionError: NSError?
+            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, inputStatus in
+                guard let inputBuffer = AVAudioPCMBuffer(
+                    pcmFormat: inputFile.processingFormat,
+                    frameCapacity: inputCapacity
+                ) else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                do {
+                    try inputFile.read(into: inputBuffer)
+                    if inputBuffer.frameLength == 0 {
+                        reachedEnd = true
+                        inputStatus.pointee = .endOfStream
+                        return nil
+                    }
+                    inputStatus.pointee = .haveData
+                    return inputBuffer
+                } catch {
+                    reachedEnd = true
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+            }
+            if let conversionError { throw conversionError }
+            if outputBuffer.frameLength > 0 { try outputFile.write(from: outputBuffer) }
+            if status == .error { throw ZipVoiceError.invalidAudio }
+            if status == .endOfStream { reachedEnd = true }
+        }
+        guard outputFile.length > 0 else { throw ZipVoiceError.invalidAudio }
     }
 
     private func persist(_ profiles: [ZipVoiceProfile]) throws {

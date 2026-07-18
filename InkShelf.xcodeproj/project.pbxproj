@@ -35,6 +35,9 @@
 		100000000000000000000026 /* LocalNovelRoleModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* LocalNovelRoleModel.swift */; };
 		100000000000000000000027 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000006 /* MLXLLM */; };
 		100000000000000000000028 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000007 /* MLXLMCommon */; };
+		100000000000000000000029 /* ink_stable.wav in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* ink_stable.wav */; };
+		10000000000000000000002A /* ink_warm.wav in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* ink_warm.wav */; };
+		10000000000000000000002B /* ink_clear.wav in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* ink_clear.wav */; };
 		100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */; };
 		100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */; };
 		100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* LXGWWenKai-Regular.ttf */; };
@@ -87,6 +90,9 @@
 		200000000000000000000025 /* sherpa-onnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "sherpa-onnx.xcframework"; sourceTree = "<group>"; };
 		200000000000000000000026 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "onnxruntime.xcframework"; sourceTree = "<group>"; };
 		200000000000000000000027 /* LocalNovelRoleModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNovelRoleModel.swift; sourceTree = "<group>"; };
+		200000000000000000000028 /* ink_stable.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Voices/ink_stable.wav; sourceTree = "<group>"; };
+		200000000000000000000029 /* ink_warm.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Voices/ink_warm.wav; sourceTree = "<group>"; };
+		20000000000000000000002A /* ink_clear.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = Voices/ink_clear.wav; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -102,7 +108,7 @@
 		300000000000000000000005 /* Services */ = {isa = PBXGroup; children = (200000000000000000000003 /* LibraryStore.swift */, 200000000000000000000004 /* NovelImporter.swift */, 200000000000000000000005 /* ReadAloudService.swift */, 20000000000000000000001B /* AudiobookSpeechKit.swift */, 200000000000000000000027 /* LocalNovelRoleModel.swift */, 200000000000000000000021 /* ZipVoiceKit.swift */, 200000000000000000000022 /* ZipVoiceTTSBridge.mm */, 200000000000000000000023 /* ZipVoiceTTSBridge.h */,); path = Services; sourceTree = "<group>"; };
 		300000000000000000000006 /* Theme */ = {isa = PBXGroup; children = (200000000000000000000006 /* BookPalette.swift */, 200000000000000000000007 /* ReaderPreferences.swift */,); path = Theme; sourceTree = "<group>"; };
 		300000000000000000000007 /* Views */ = {isa = PBXGroup; children = (200000000000000000000008 /* BookCoverView.swift */, 200000000000000000000009 /* BookshelfView.swift */, 20000000000000000000000A /* SettingsView.swift */, 20000000000000000000001A /* ReadAloudSettingsView.swift */, 20000000000000000000000B /* BookInfoView.swift */, 20000000000000000000000C /* ReaderView.swift */, 200000000000000000000013 /* InteractivePageTurnView.swift */,); path = Views; sourceTree = "<group>"; };
-		300000000000000000000008 /* Resources */ = {isa = PBXGroup; children = (20000000000000000000000D /* Assets.xcassets */, 20000000000000000000000E /* PrivacyInfo.xcprivacy */, 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */, 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */, 200000000000000000000016 /* LXGWWenKai-Regular.ttf */, 200000000000000000000017 /* OFL-Noto.txt */, 200000000000000000000018 /* OFL-LXGWWenKai.txt */,); path = Resources; sourceTree = "<group>"; };
+		300000000000000000000008 /* Resources */ = {isa = PBXGroup; children = (20000000000000000000000D /* Assets.xcassets */, 20000000000000000000000E /* PrivacyInfo.xcprivacy */, 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */, 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */, 200000000000000000000016 /* LXGWWenKai-Regular.ttf */, 200000000000000000000017 /* OFL-Noto.txt */, 200000000000000000000018 /* OFL-LXGWWenKai.txt */, 200000000000000000000028 /* ink_stable.wav */, 200000000000000000000029 /* ink_warm.wav */, 20000000000000000000002A /* ink_clear.wav */,); path = Resources; sourceTree = "<group>"; };
 		300000000000000000000009 /* InkShelfTests */ = {isa = PBXGroup; children = (20000000000000000000000F /* NovelParserTests.swift */,); path = InkShelfTests; sourceTree = "<group>"; };
 		30000000000000000000000A /* Products */ = {isa = PBXGroup; children = (200000000000000000000010 /* InkShelf.app */, 200000000000000000000011 /* InkShelfTests.xctest */,); name = Products; sourceTree = "<group>"; };
 		30000000000000000000000B /* Vendor */ = {isa = PBXGroup; children = (200000000000000000000025 /* sherpa-onnx.xcframework */, 200000000000000000000026 /* onnxruntime.xcframework */,); path = Vendor; sourceTree = "<group>"; };
@@ -153,7 +159,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		400000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (10000000000000000000000D /* Assets.xcassets in Resources */, 10000000000000000000000E /* PrivacyInfo.xcprivacy in Resources */, 100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */, 100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */, 100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */, 100000000000000000000016 /* OFL-Noto.txt in Resources */, 100000000000000000000017 /* OFL-LXGWWenKai.txt in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (10000000000000000000000D /* Assets.xcassets in Resources */, 10000000000000000000000E /* PrivacyInfo.xcprivacy in Resources */, 100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */, 100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */, 100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */, 100000000000000000000016 /* OFL-Noto.txt in Resources */, 100000000000000000000017 /* OFL-LXGWWenKai.txt in Resources */, 100000000000000000000029 /* ink_stable.wav in Resources */, 10000000000000000000002A /* ink_warm.wav in Resources */, 10000000000000000000002B /* ink_clear.wav in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 		400000000000000000000006 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
