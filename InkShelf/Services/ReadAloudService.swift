@@ -208,6 +208,8 @@ struct ReadAloudCrossPageContinuation: Equatable, Sendable {
 
 struct ReadAloudSpeechRequest: Equatable, Sendable {
     let position: ReadAloudSpeechPosition
+    let endingSentenceIndex: Int
+    let highlightedRange: NSRange
     let text: String
     let speaker: ReadAloudSpeaker
     let continuation: ReadAloudCrossPageContinuation?
@@ -275,6 +277,9 @@ final class ReadAloudService: NSObject, ObservableObject {
                 aiAnalyzedRoleChapters.removeAll()
                 localAnalyzedRoleChapters.removeAll()
                 refreshLocalRoleModelState()
+                if oldValue.localRoleModel != settings.localRoleModel {
+                    localRoleAnalysisMessage = nil
+                }
             }
             persistSettings()
         }
@@ -315,8 +320,6 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var nextSentenceIndex = 0
     private var sessionPages: [ReaderPage] = []
     private var sessionPageIndex: Int?
-    private var lastReaderPages: [ReaderPage] = []
-    private var lastReaderLocation: ReaderPageLocation?
     private var sessionChapterIndices: [Int] = []
     private var currentChapterPageIndices: [Int] = []
     private var timelineChapterIndex: Int?
@@ -352,14 +355,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard visibleReaderBookID == bookID else { return }
         visibleReaderBookID = nil
         onPageFinished = nil
-    }
-
-    func rememberRoleAnalysisContext(pages: [ReaderPage], location: ReaderPageLocation) {
-        guard !pages.isEmpty else { return }
-        lastReaderPages = pages
-        lastReaderLocation = pages.contains(where: { $0.location == location })
-            ? location
-            : pages.first?.location
     }
 
     func applicationActivityChanged(isActive: Bool) {
@@ -454,6 +449,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 }
                 try Task.checkCancellation()
                 localRoleModelState = .installed
+                localRoleAnalysisMessage = "模型下载完成，请选择本地图书和章节开始识别"
             } catch is CancellationError {
                 refreshLocalRoleModelState()
             } catch {
@@ -478,57 +474,63 @@ final class ReadAloudService: NSObject, ObservableObject {
         refreshLocalRoleModelState()
     }
 
-    func testLocalRoleModelOnCurrentChapter() {
-        guard roleAnalysisTask == nil else { return }
-        guard LocalNovelRoleModel.isInstalled(settings.localRoleModel) else {
+    func analyzeLocalRoles(book: NovelBook, chapterIndex: Int) {
+        guard roleAnalysisTask == nil else {
+            localRoleAnalysisMessage = "已有角色识别任务正在运行，请稍候"
+            return
+        }
+        let variant = settings.localRoleModel
+        guard LocalNovelRoleModel.isInstalled(variant) else {
             localRoleAnalysisMessage = "请先下载本地角色模型"
             return
         }
-        guard let targetLocation = currentPageLocation ?? lastReaderLocation else {
-            localRoleAnalysisMessage = "请先打开一本本地小说，再返回这里识别当前章节"
-            return
-        }
-        let chapterIndex = targetLocation.chapterIndex
-        let analyzesActiveSession = currentPageLocation != nil
-        let sourcePages = analyzesActiveSession ? sessionPages : lastReaderPages
-        let pages = sourcePages.filter { $0.location.chapterIndex == chapterIndex }
-        guard !pages.isEmpty else {
+        guard book.chapters.indices.contains(chapterIndex) else {
             localRoleAnalysisMessage = "当前章节没有可分析的正文"
             return
         }
-        let fallback: ReadAloudRolePlan
-        if analyzesActiveSession {
-            ensureRolePlan(forChapter: chapterIndex)
-            fallback = rolePlan
-        } else {
-            fallback = ReadAloudRoleAnalyzer.plan(
-                for: pages,
-                alternatesUnattributedDialogue: true
-            )
-        }
-        let variant = settings.localRoleModel
+        let chapter = book.chapters[chapterIndex]
+        let page = ReaderPage(
+            location: ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: 0),
+            chapterTitle: chapter.title,
+            text: chapter.content,
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+        let pages = [page]
         localRoleModelState = .analyzing
-        localRoleAnalysisMessage = nil
+        localRoleAnalysisMessage = "正在准备章节…"
         roleAnalysisTask = Task { [weak self] in
             guard let self else { return }
             do {
+                let fallback = await Task.detached(priority: .userInitiated) {
+                    ReadAloudRoleAnalyzer.plan(
+                        for: pages,
+                        alternatesUnattributedDialogue: true
+                    )
+                }.value
+                try Task.checkCancellation()
+                localRoleAnalysisMessage = "正在载入模型…"
                 let analyzed = try await localRoleModel.analyze(
                     pages: pages,
                     fallback: fallback,
-                    variant: variant
+                    variant: variant,
+                    progress: { [weak self] completed, total in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            self.localRoleAnalysisMessage = completed == 0
+                                ? "正在载入模型…"
+                                : "正在分批识别角色（\(completed)/\(total)）"
+                        }
+                    }
                 )
                 try Task.checkCancellation()
-                if analyzesActiveSession {
-                    mergeRolePlan(analyzed)
-                } else {
-                    rolePlan = analyzed
-                    refreshDetectedCharacterNames()
-                }
-                localAnalyzedRoleChapters.insert(chapterIndex)
+                detectedCharacterNames = characterNames(in: analyzed)
                 localRoleModelState = .installed
                 localRoleAnalysisMessage = detectedCharacterNames.isEmpty
-                    ? "分析完成：本章没有识别到明确姓名的对话角色"
-                    : "分析完成：\(detectedCharacterNames.joined(separator: "、"))"
+                    ? "《\(book.title)》· \(chapter.title)：没有识别到明确姓名的对话角色"
+                    : "识别完成：\(detectedCharacterNames.joined(separator: "、"))"
             } catch is CancellationError {
                 refreshLocalRoleModelState()
             } catch {
@@ -941,7 +943,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         activeSentenceIndex = index
         currentSentenceIndex = index
-        currentSentenceRange = plan.sentences[index].range
+        currentSentenceRange = request.highlightedRange
         nextSentenceIndex = index
         state = .playing(sentence: index)
         synchronizeNowPlayingAnchorToCurrentSentence()
@@ -1000,9 +1002,29 @@ final class ReadAloudService: NSObject, ObservableObject {
             )
         guard pagePlan.sentences.indices.contains(position.sentenceIndex) else { return nil }
         let sentence = pagePlan.sentences[position.sentenceIndex]
+        var endingSentenceIndex = position.sentenceIndex
         var continuation: ReadAloudCrossPageContinuation?
         var text = sentence.text
-        if position.sentenceIndex == pagePlan.sentences.count - 1,
+        if settings.provider == .localZipVoice,
+           let paragraphRange = pagePlan.paragraphRanges.first(where: {
+               NSIntersectionRange($0, sentence.range).length > 0
+           }) {
+            while endingSentenceIndex + 1 < pagePlan.sentences.count,
+                  endingSentenceIndex - position.sentenceIndex < 3 {
+                let nextSentence = pagePlan.sentences[endingSentenceIndex + 1]
+                guard nextSentence.speaker == sentence.speaker,
+                      NSIntersectionRange(paragraphRange, nextSentence.range).length == nextSentence.range.length,
+                      (text as NSString).length + (nextSentence.text as NSString).length <= 220 else { break }
+                text += nextSentence.text
+                endingSentenceIndex += 1
+            }
+        }
+        let lastSentence = pagePlan.sentences[endingSentenceIndex]
+        let highlightedRange = NSRange(
+            location: sentence.range.location,
+            length: NSMaxRange(lastSentence.range) - sentence.range.location
+        )
+        if endingSentenceIndex == pagePlan.sentences.count - 1,
            sessionPages.indices.contains(pageIndex + 1) {
             let nextPage = sessionPages[pageIndex + 1]
             let nextPlan = ReadAloudTextPlan(
@@ -1012,12 +1034,12 @@ final class ReadAloudService: NSObject, ObservableObject {
             if nextPage.location.chapterIndex == position.location.chapterIndex,
                let nextSentence = nextPlan.sentences.first,
                ReadAloudPageBoundary.shouldJoin(
-                    lastFragment: sentence.text,
+                    lastFragment: lastSentence.text,
                     nextFragment: nextSentence.text
                ) {
-                let separator = Self.crossPageSeparator(from: sentence.text, to: nextSentence.text)
-                let combinedText = sentence.text + separator + nextSentence.text
-                let sourceLength = max(1, (sentence.text as NSString).length)
+                let separator = Self.crossPageSeparator(from: lastSentence.text, to: nextSentence.text)
+                let combinedText = text + separator + nextSentence.text
+                let sourceLength = max(1, (text as NSString).length)
                 let totalLength = max(sourceLength + 1, (combinedText as NSString).length)
                 continuation = ReadAloudCrossPageContinuation(
                     source: position,
@@ -1029,6 +1051,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         return ReadAloudSpeechRequest(
             position: position,
+            endingSentenceIndex: endingSentenceIndex,
+            highlightedRange: highlightedRange,
             text: text,
             speaker: sentence.speaker,
             continuation: continuation
@@ -1051,7 +1075,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         if let samePage = speechRequest(at: .init(
             location: request.position.location,
-            sentenceIndex: request.position.sentenceIndex + 1
+            sentenceIndex: request.endingSentenceIndex + 1
         )) {
             return samePage
         }
@@ -1269,7 +1293,8 @@ final class ReadAloudService: NSObject, ObservableObject {
                 stoppingCurrentSpeech: false
             )
         }
-        let candidate = (request.continuation?.target.sentenceIndex ?? request.position.sentenceIndex) + 1
+        let candidate = request.continuation.map { $0.target.sentenceIndex + 1 }
+            ?? (request.endingSentenceIndex + 1)
         guard playbackRequested else {
             nextSentenceIndex = min(candidate, max(0, plan.sentences.count - 1))
             state = .paused(sentence: currentSentenceIndex)
@@ -1405,7 +1430,11 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func refreshDetectedCharacterNames() {
-        detectedCharacterNames = Array(Set(rolePlan.speakersByPage.values.flatMap { speakers in
+        detectedCharacterNames = characterNames(in: rolePlan)
+    }
+
+    private func characterNames(in plan: ReadAloudRolePlan) -> [String] {
+        Array(Set(plan.speakersByPage.values.flatMap { speakers in
             speakers.compactMap { speaker -> String? in
                 if case let .character(name) = speaker { return name }
                 return nil

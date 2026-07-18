@@ -76,15 +76,23 @@ enum ZipVoiceError: LocalizedError, Equatable {
 }
 
 enum ZipVoiceBuiltInProfiles {
-    static let transcript = "欢迎来到墨架，愿每一个故事，都有属于自己的声音。"
+    static let transcript = "Kokoro 是一系列体积虽小但功能强大的 TTS 模型。"
+    private static let retiredProfileIDs: Set<UUID> = [
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459101")!,
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459102")!,
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459103")!
+    ]
     static let definitions: [(id: UUID, resource: String, name: String, gender: ZipVoiceProfileGender)] = [
-        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459101")!, "ink_stable", "墨沉 · 沉稳", .male),
-        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459102")!, "ink_warm", "墨暖 · 温和", .female),
-        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459103")!, "ink_clear", "墨清 · 清亮", .female)
+        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459201")!, "kokoro_steady", "Kokoro · 沉稳男声", .male),
+        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459202")!, "kokoro_warm", "Kokoro · 温和女声", .female)
     ]
 
     static func contains(_ profile: ZipVoiceProfile) -> Bool {
         definitions.contains { $0.id == profile.id }
+    }
+
+    static func isRetired(_ profile: ZipVoiceProfile) -> Bool {
+        retiredProfileIDs.contains(profile.id)
     }
 }
 
@@ -160,6 +168,10 @@ struct ZipVoiceStore: Sendable {
     func ensureBuiltInProfiles(bundle: Bundle = .main) throws {
         try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
         var all = profiles()
+        for profile in all where ZipVoiceBuiltInProfiles.isRetired(profile) {
+            try? FileManager.default.removeItem(at: audioURL(for: profile))
+        }
+        all.removeAll(where: ZipVoiceBuiltInProfiles.isRetired)
         for definition in ZipVoiceBuiltInProfiles.definitions where !all.contains(where: { $0.id == definition.id }) {
             guard let source = bundle.url(
                 forResource: definition.resource,

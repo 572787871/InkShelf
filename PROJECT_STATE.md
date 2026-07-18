@@ -41,7 +41,8 @@ context, not a substitute for inspecting the current code and Git history.
     and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
   - homepage-only engine, AI/local-model role detection, automatic/per-character
-    voices, ZipVoice model/profile, API key, privacy, speed and preview UI
+    voices directly below the selected synthesis engine, ZipVoice model/profile,
+    API key, privacy, speed and preview UI
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -76,6 +77,7 @@ context, not a substitute for inspecting the current code and Git history.
 - “从本页听” starts the visible page. While that book owns an active narration
   session, each visible speech segment has a play/pause control; selecting a
   different segment explicitly retargets narration to that exact text range.
+  These controls use the prior 22-point soft-filled circular treatment.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -91,15 +93,18 @@ context, not a substitute for inspecting the current code and Git history.
   MLX/Qwen3 model. There is no user-selectable local-rules mode. Model
   assignments distinguish first-person narration, third-person narration and
   named roles, and a baseline parse keeps speech running if model analysis fails.
-  The settings test can analyze the active narration chapter or the most recently
-  opened local-book chapter and exposes detected names for per-character voices.
+  Local-model testing selects a book and chapter directly from `LibraryStore`,
+  splits the chapter into bounded 24-sentence prompts, disables Qwen3 thinking,
+  reports per-batch progress and exposes detected names for per-character voices.
 - Automatic voice selection keeps narration and named characters stable. Users
   can instead separately choose first-person narrator, third-person narrator,
   unknown-character and every detected named-character voice; the old unified
   voice mode is removed. MiMo exposes its eight published preset IDs. Local
-  ZipVoice accepts system-readable audio formats, converts them to its reference
-  WAV format, and includes three original synthetic reference prompts alongside
-  user-authorized audio/transcript pairs.
+  ZipVoice accepts system-readable audio formats, asynchronously coordinates and
+  stages file-provider URLs, converts them to its reference WAV format, and
+  includes two five-second reference excerpts from the Apache-licensed official
+  Kokoro Chinese samples alongside user-authorized audio/transcript pairs. The
+  former low-quality eSpeak reference prompts are migrated out.
 - Apple system voices, Kokoro/VITS packages and the old model store are not used.
   Speech can use MiMo chat audio, a configurable OpenAI-compatible
   `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
@@ -110,6 +115,10 @@ context, not a substitute for inspecting the current code and Git history.
   cuts through a sentence, the two page fragments are synthesized as one audio
   request and the visible/session page advances during that audio instead of
   inserting a new utterance boundary.
+- For local ZipVoice only, up to four adjacent same-speaker short sentences in
+  the same paragraph are synthesized as one block (capped at 220 UTF-16 units). This reduces repeated
+  player startup gaps and gives the following pre-generation more time; cloud
+  engines and speaker changes retain their original boundaries.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
   user explicitly consents. The local role model plus local ZipVoice needs no
   network after both model downloads finish.

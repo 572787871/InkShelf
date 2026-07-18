@@ -325,8 +325,8 @@ private final class ReaderPageContentView: UIView {
     private let pageLabel = UILabel()
     private let clockLabel = UILabel()
     private let batteryImageView = UIImageView()
+    private let paragraphButtonRanges: [NSRange]
     private var paragraphButtons: [UIButton] = []
-    private var paragraphButtonRanges: [NSRange] = []
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
     private var fittedTextSize = CGSize.zero
@@ -335,6 +335,7 @@ private final class ReaderPageContentView: UIView {
     init(page: ReaderPage, appearance: ReaderPageAppearance) {
         self.page = page
         self.appearance = appearance
+        paragraphButtonRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
         fittedLineSpacing = appearance.lineSpacing
         super.init(frame: .zero)
         isOpaque = true
@@ -388,7 +389,7 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
-        rebuildParagraphControls()
+        configureParagraphButtons()
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
     }
 
@@ -435,7 +436,7 @@ private final class ReaderPageContentView: UIView {
         pageLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         clockLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.6)
-        rebuildParagraphControls()
+        updateParagraphButtonAppearance()
         setNeedsLayout()
     }
 
@@ -587,32 +588,31 @@ private final class ReaderPageContentView: UIView {
         }
     }
 
-    private func rebuildParagraphControls() {
-        paragraphButtons.forEach { $0.removeFromSuperview() }
-        paragraphButtons.removeAll()
-        paragraphButtonRanges.removeAll()
-        guard appearance.showsParagraphControls else { return }
-        paragraphButtonRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
-        for index in paragraphButtonRanges.indices {
+    private func configureParagraphButtons() {
+        paragraphButtons = paragraphButtonRanges.enumerated().map { index, _ in
             let button = UIButton(type: .system)
             button.tag = index
             button.addTarget(self, action: #selector(paragraphControlTapped(_:)), for: .touchUpInside)
             button.accessibilityLabel = "从这一段开始朗读或暂停当前段"
             addSubview(button)
-            paragraphButtons.append(button)
+            return button
         }
-        updateParagraphControlAppearance()
+        updateParagraphButtonAppearance()
     }
 
-    private func updateParagraphControlAppearance() {
+    private func updateParagraphButtonAppearance() {
+        let highlightedRange = appearance.highlightedLocation == page.location
+            ? appearance.highlightedRange
+            : nil
         for (index, button) in paragraphButtons.enumerated() {
             guard paragraphButtonRanges.indices.contains(index) else { continue }
-            let isCurrent = appearance.highlightedLocation == page.location
-                && appearance.highlightedRange.map {
-                    NSIntersectionRange($0, paragraphButtonRanges[index]).length > 0
-                } == true
+            let isCurrent = highlightedRange.map {
+                NSIntersectionRange($0, paragraphButtonRanges[index]).length > 0
+            } ?? false
             var configuration = UIButton.Configuration.plain()
-            configuration.image = UIImage(systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill")
+            configuration.image = UIImage(
+                systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
+            )
             configuration.baseForegroundColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.82 : 0.32)
             configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
             configuration.background.backgroundColor = isCurrent
@@ -620,28 +620,54 @@ private final class ReaderPageContentView: UIView {
                 : appearance.textColor.withAlphaComponent(0.035)
             configuration.background.cornerRadius = 11
             button.configuration = configuration
+            button.isHidden = !appearance.showsParagraphControls
         }
     }
 
     private func layoutParagraphControls() {
-        guard appearance.showsParagraphControls else { return }
+        guard !paragraphButtons.isEmpty, textView.bounds.width > 0 else { return }
+        guard appearance.showsParagraphControls else {
+            paragraphButtons.forEach { $0.isHidden = true }
+            return
+        }
         textView.layoutManager.ensureLayout(for: textView.textContainer)
-        let headingLength = page.chapterHeadingPrefix.utf16.count
-        for (index, range) in paragraphButtonRanges.enumerated() where paragraphButtons.indices.contains(index) {
-            let displayRange = NSRange(location: range.location + headingLength, length: max(1, range.length))
+        let prefixLength = page.chapterHeadingPrefix.utf16.count
+        let bodyCharacterRange = NSRange(location: prefixLength, length: page.text.utf16.count)
+        let laidOutGlyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
+        let laidOutCharacterRange = textView.layoutManager.characterRange(
+            forGlyphRange: laidOutGlyphRange,
+            actualGlyphRange: nil
+        )
+        for (index, button) in paragraphButtons.enumerated() {
+            let paragraphRange = paragraphButtonRanges[index]
+            let displayRange = NSRange(location: prefixLength + paragraphRange.location, length: 1)
+            guard NSMaxRange(displayRange) <= textView.attributedText.length,
+                  NSIntersectionRange(displayRange, bodyCharacterRange).length == displayRange.length,
+                  NSIntersectionRange(displayRange, laidOutCharacterRange).length == displayRange.length else {
+                button.isHidden = true
+                continue
+            }
             let glyphRange = textView.layoutManager.glyphRange(
                 forCharacterRange: displayRange,
                 actualCharacterRange: nil
             )
-            var rect = textView.layoutManager.boundingRect(
-                forGlyphRange: NSRange(location: glyphRange.location, length: min(1, glyphRange.length)),
+            guard glyphRange.length > 0,
+                  NSIntersectionRange(glyphRange, laidOutGlyphRange).length == glyphRange.length else {
+                button.isHidden = true
+                continue
+            }
+            let glyphRect = textView.layoutManager.boundingRect(
+                forGlyphRange: glyphRange,
                 in: textView.textContainer
             )
-            rect.origin.y += textView.frame.minY
-            let x = max(3, appearance.horizontalMargin - 26)
-            paragraphButtons[index].frame = CGRect(x: x, y: rect.midY - 11, width: 22, height: 22)
+            guard !glyphRect.isNull, !glyphRect.isInfinite, glyphRect.height > 0.5 else {
+                button.isHidden = true
+                continue
+            }
+            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 22) / 2)
+            button.frame = CGRect(x: max(3, appearance.horizontalMargin - 26), y: y, width: 22, height: 22)
+            button.isHidden = !textView.frame.insetBy(dx: -28, dy: -2).contains(button.frame)
         }
-        updateParagraphControlAppearance()
     }
 
     @objc private func paragraphControlTapped(_ sender: UIButton) {

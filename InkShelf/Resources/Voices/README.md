@@ -1,20 +1,17 @@
-# InkShelf original ZipVoice reference voices
+# Bundled ZipVoice reference samples
 
-These three WAV files are original synthetic reference prompts made for
-InkShelf. They do not imitate or contain a recording of a real person or a
-third-party commercial voice.
+The bundled reference clips are five-second excerpts from the official Chinese
+samples of `hexgrad/Kokoro-82M-v1.1-zh`:
 
-- `ink_stable.wav`: eSpeak NG Mandarin voice variant `m3`
-- `ink_warm.wav`: eSpeak NG Mandarin voice variant `f2`
-- `ink_clear.wav`: eSpeak NG Mandarin voice variant `f4`
+- `kokoro_warm.wav` comes from `samples/HEARME_zf_001.wav`.
+- `kokoro_steady.wav` comes from `samples/HEARME_zm_010.wav`.
 
-All files speak the exact reference transcript used by the app:
+Source: <https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh/tree/main/samples>
 
-`欢迎来到墨架，愿每一个故事，都有属于自己的声音。`
+The model repository declares the Apache License 2.0. The exact transcript for
+both excerpts is:
 
-They were generated as mono 16-bit PCM WAV files with eSpeak NG, for example:
+`Kokoro 是一系列体积虽小但功能强大的 TTS 模型。`
 
-```sh
-espeak-ng -v cmn+m3 -s 145 -w ink_stable.wav \
-  '欢迎来到墨架，愿每一个故事，都有属于自己的声音。'
-```
+The former eSpeak NG reference clips were removed because their synthetic
+articulation was not suitable as a production ZipVoice prompt.

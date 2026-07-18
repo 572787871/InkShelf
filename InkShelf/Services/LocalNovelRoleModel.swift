@@ -44,20 +44,47 @@ actor LocalNovelRoleModel {
     func analyze(
         pages: [ReaderPage],
         fallback: ReadAloudRolePlan,
-        variant: LocalRoleModelVariant
+        variant: LocalRoleModelVariant,
+        progress: @Sendable @escaping (Int, Int) -> Void = { _, _ in }
     ) async throws -> ReadAloudRolePlan {
         guard Self.isInstalled(variant) else { throw LocalNovelRoleModelError.notInstalled }
-        let input = NovelRoleAnalysisCodec.makeInput(pages: pages, maximumCharacters: 14_000)
+        let inputs = NovelRoleAnalysisCodec.makeInputs(
+            pages: pages,
+            maximumCharacters: 5_000,
+            maximumSentences: 24
+        )
+        guard !inputs.isEmpty else { return fallback }
         let container = try await LLMModelFactory.shared.loadContainer(
             configuration: ModelConfiguration(id: variant.repositoryID)
         )
-        let session = ChatSession(
-            container,
-            instructions: "你只输出严格 JSON，不输出分析过程。",
-            generateParameters: GenerateParameters(maxTokens: 1_400, temperature: 0)
-        )
-        let content = try await session.respond(to: input.prompt)
-        return try NovelRoleAnalysisCodec.decode(content: content, input: input, fallback: fallback)
+        var combined = fallback
+        var successfulBatches = 0
+        var lastError: Error?
+        progress(0, inputs.count)
+        for (index, input) in inputs.enumerated() {
+            try Task.checkCancellation()
+            let session = ChatSession(
+                container,
+                instructions: "关闭思考过程，只输出严格 JSON。不要输出 Markdown。",
+                generateParameters: GenerateParameters(maxTokens: 1_200, temperature: 0)
+            )
+            do {
+                let content = try await session.respond(to: "/no_think\n\(input.prompt)")
+                combined = try NovelRoleAnalysisCodec.decode(
+                    content: content,
+                    input: input,
+                    fallback: combined
+                )
+                successfulBatches += 1
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+            progress(index + 1, inputs.count)
+        }
+        if successfulBatches == 0, let lastError { throw lastError }
+        return combined
     }
 
     func remove(_ variant: LocalRoleModelVariant) throws {

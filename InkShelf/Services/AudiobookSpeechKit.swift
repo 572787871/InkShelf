@@ -371,28 +371,64 @@ struct NovelRoleAnalysisInput: Sendable {
 
 enum NovelRoleAnalysisCodec {
     static func makeInput(pages: [ReaderPage], maximumCharacters: Int) -> NovelRoleAnalysisInput {
+        makeInputs(
+            pages: pages,
+            maximumCharacters: maximumCharacters,
+            maximumSentences: .max
+        ).first ?? NovelRoleAnalysisInput(prompt: prompt(for: []), sentenceLookup: [:])
+    }
+
+    static func makeInputs(
+        pages: [ReaderPage],
+        maximumCharacters: Int,
+        maximumSentences: Int
+    ) -> [NovelRoleAnalysisInput] {
+        var inputs: [NovelRoleAnalysisInput] = []
         var sentenceLookup: [String: (ReaderPageLocation, Int)] = [:]
         var sourceLines: [String] = []
         var characterCount = 0
+        var batchIndex = 0
         for (pageOffset, page) in pages.enumerated() {
             let sentences = ReadAloudTextPlan(text: page.text).sentences
             for (sentenceIndex, sentence) in sentences.enumerated() {
-                let id = "p\(pageOffset)s\(sentenceIndex)"
-                let line = "\(id)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))"
-                guard characterCount + line.count <= maximumCharacters else { break }
-                sentenceLookup[id] = (page.location, sentenceIndex)
-                sourceLines.append(line)
-                characterCount += line.count + 1
+                let previewID = "b\(batchIndex)p\(pageOffset)s\(sentenceIndex)"
+                let previewLine = "\(previewID)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))"
+                if !sourceLines.isEmpty,
+                   (characterCount + previewLine.count > maximumCharacters
+                    || sourceLines.count >= maximumSentences) {
+                    inputs.append(NovelRoleAnalysisInput(
+                        prompt: prompt(for: sourceLines),
+                        sentenceLookup: sentenceLookup
+                    ))
+                    batchIndex += 1
+                    sentenceLookup = [:]
+                    sourceLines = []
+                    characterCount = 0
+                }
+                let effectiveID = "b\(batchIndex)p\(pageOffset)s\(sentenceIndex)"
+                let effectiveLine = "\(effectiveID)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))"
+                sentenceLookup[effectiveID] = (page.location, sentenceIndex)
+                sourceLines.append(effectiveLine)
+                characterCount += effectiveLine.count + 1
             }
         }
-        let prompt = """
+        if !sourceLines.isEmpty {
+            inputs.append(NovelRoleAnalysisInput(
+                prompt: prompt(for: sourceLines),
+                sentenceLookup: sentenceLookup
+            ))
+        }
+        return inputs
+    }
+
+    private static func prompt(for sourceLines: [String]) -> String {
+        """
         你是小说有声书角色导演。结合章节上下文、引号、说话动词、人物称谓、代词和连续对话，判断每个文本单元的声音类型。
         type 只能是“第一人称旁白”“第三人称旁白”或“角色”。角色必须填写原文已经出现的人名；不确定人物时 speaker 写“未知”。不得改写原文或虚构人物。
-        只返回严格 JSON：{"assignments":[{"id":"p0s0","type":"第三人称旁白","speaker":""},{"id":"p0s1","type":"角色","speaker":"人物名"}]}。
+        只返回严格 JSON：{"assignments":[{"id":"b0p0s0","type":"第三人称旁白","speaker":""},{"id":"b0p0s1","type":"角色","speaker":"人物名"}]}。
         文本单元如下：
         \(sourceLines.joined(separator: "\n"))
         """
-        return NovelRoleAnalysisInput(prompt: prompt, sentenceLookup: sentenceLookup)
     }
 
     static func decode(

@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
+    @EnvironmentObject private var library: LibraryStore
     @State private var showingVoiceImporter = false
     @State private var showingVoiceEditor = false
     @State private var pendingVoiceURL: URL?
@@ -10,6 +11,9 @@ struct ReadAloudSettingsView: View {
     @State private var draftVoiceGender = ZipVoiceProfileGender.unspecified
     @State private var draftReferenceText = ""
     @State private var isSavingVoice = false
+    @State private var isStagingVoice = false
+    @State private var selectedRoleBookID: UUID?
+    @State private var selectedRoleChapterIndex = 0
     @State private var localError: String?
 
     var body: some View {
@@ -58,6 +62,9 @@ struct ReadAloudSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+                voiceAssignmentRows
             }
 
             Section("角色识别") {
@@ -91,10 +98,32 @@ struct ReadAloudSettingsView: View {
                         }
                     }
                     localRoleModelRow
-                    Button(action: readAloud.testLocalRoleModelOnCurrentChapter) {
-                        Label("识别当前章节角色", systemImage: "person.2.wave.2")
+                    Picker("本地图书", selection: $selectedRoleBookID) {
+                        Text("请选择").tag(UUID?.none)
+                        ForEach(library.books) { book in
+                            Text(book.title).tag(Optional(book.id))
+                        }
                     }
-                    .disabled(readAloud.localRoleModelState == .analyzing)
+                    if let selectedRoleBook {
+                        Picker("章节", selection: $selectedRoleChapterIndex) {
+                            ForEach(selectedRoleBook.chapters) { chapter in
+                                Text(chapter.title).tag(chapter.index)
+                            }
+                        }
+                    }
+                    Button(action: analyzeSelectedLocalChapter) {
+                        HStack {
+                            Label("识别所选章节角色", systemImage: "person.2.wave.2")
+                            Spacer()
+                            if readAloud.localRoleModelState == .analyzing {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(
+                        selectedRoleBook == nil
+                            || readAloud.localRoleModelState != .installed
+                    )
                     if let message = readAloud.localRoleAnalysisMessage {
                         Text(message)
                             .font(.footnote)
@@ -104,32 +133,6 @@ struct ReadAloudSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            Section("音色分配") {
-                Picker("方式", selection: settingBinding(\.voiceSelectionMode)) {
-                    ForEach(ReadAloudVoiceSelectionMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                if readAloud.settings.voiceSelectionMode == .roleBased {
-                    voicePicker("第一人称旁白", selection: settingBinding(\.narratorVoiceIdentifier))
-                    voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
-                    voicePicker("未识别角色", selection: settingBinding(\.characterVoiceIdentifier))
-                    ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
-                        voicePicker("角色 · \(name)", selection: characterVoiceBinding(name))
-                    }
-                    if readAloud.detectedCharacterNames.isEmpty {
-                        Text("先使用“识别当前章节角色”，识别出的每个人物会在这里单独出现。多人连续对话时也会按人物分别保持声线。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text(voiceSelectionHelp)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
 
             Section("播放") {
@@ -177,10 +180,12 @@ struct ReadAloudSettingsView: View {
         }
         .navigationTitle("朗读服务")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: selectDefaultRoleChapter)
+        .onChange(of: selectedRoleBookID) { _, _ in selectDefaultChapterInBook() }
         .onDisappear { readAloud.stopVoicePreview() }
         .fileImporter(
             isPresented: $showingVoiceImporter,
-            allowedContentTypes: [.audio],
+            allowedContentTypes: [.audio, .data],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -205,6 +210,32 @@ struct ReadAloudSettingsView: View {
     }
 
     @ViewBuilder
+    private var voiceAssignmentRows: some View {
+        Picker("音色分配", selection: settingBinding(\.voiceSelectionMode)) {
+            ForEach(ReadAloudVoiceSelectionMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+
+        if readAloud.settings.voiceSelectionMode == .roleBased {
+            voicePicker("第一人称旁白", selection: settingBinding(\.narratorVoiceIdentifier))
+            voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
+            voicePicker("未识别角色", selection: settingBinding(\.characterVoiceIdentifier))
+            ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
+                voicePicker("角色 · \(name)", selection: characterVoiceBinding(name))
+            }
+            if readAloud.detectedCharacterNames.isEmpty {
+                Text("识别章节后，每个明确人物都会显示独立音色选项；本地与云端语音引擎都支持。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        Text(voiceSelectionHelp)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
     private var localModelRows: some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
@@ -218,15 +249,19 @@ struct ReadAloudSettingsView: View {
         }
 
         Button { showingVoiceImporter = true } label: {
-            Label("导入参考音频", systemImage: "waveform.badge.plus")
+            HStack {
+                Label("导入参考音频", systemImage: "waveform.badge.plus")
+                Spacer()
+                if isStagingVoice { ProgressView().controlSize(.small) }
+            }
         }
-        .disabled(readAloud.zipVoiceInstallState != .installed)
+        .disabled(isStagingVoice)
 
         ForEach(readAloud.zipVoiceProfiles) { profile in
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(profile.name)
-                    Text("\(ZipVoiceBuiltInProfiles.contains(profile) ? "内置原创合成" : profile.gender.title) · \(profile.referenceText.prefix(24))")
+                    Text("\(ZipVoiceBuiltInProfiles.contains(profile) ? "内置高清参考" : profile.gender.title) · \(profile.referenceText.prefix(24))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -428,23 +463,80 @@ struct ReadAloudSettingsView: View {
         )
     }
 
+    private var selectedRoleBook: NovelBook? {
+        guard let selectedRoleBookID else { return nil }
+        return library.books.first { $0.id == selectedRoleBookID }
+    }
+
+    private func selectDefaultRoleChapter() {
+        guard selectedRoleBookID == nil else { return }
+        let defaultBook = library.books.max {
+            ($0.lastReadAt ?? $0.importedAt) < ($1.lastReadAt ?? $1.importedAt)
+        }
+        selectedRoleBookID = defaultBook?.id
+        selectedRoleChapterIndex = defaultBook?.currentChapter ?? 0
+    }
+
+    private func selectDefaultChapterInBook() {
+        guard let selectedRoleBook else {
+            selectedRoleChapterIndex = 0
+            return
+        }
+        selectedRoleChapterIndex = min(
+            max(selectedRoleBook.currentChapter, 0),
+            max(selectedRoleBook.chapters.count - 1, 0)
+        )
+    }
+
+    private func analyzeSelectedLocalChapter() {
+        guard let selectedRoleBook else { return }
+        readAloud.analyzeLocalRoles(
+            book: selectedRoleBook,
+            chapterIndex: selectedRoleChapterIndex
+        )
+    }
+
     private func stageImportedAudio(_ url: URL) {
-        let hasScope = url.startAccessingSecurityScopedResource()
-        defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("InkShelfVoiceImports", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let fileName = "\(UUID().uuidString).\(url.pathExtension.isEmpty ? "audio" : url.pathExtension)"
-            let staged = directory.appendingPathComponent(fileName)
-            try FileManager.default.copyItem(at: url, to: staged)
-            pendingVoiceURL = staged
-            draftVoiceName = url.deletingPathExtension().lastPathComponent
-            draftVoiceGender = .unspecified
-            draftReferenceText = ""
-            showingVoiceEditor = true
-        } catch {
-            localError = "无法读取所选音频：\(error.localizedDescription)"
+        isStagingVoice = true
+        Task {
+            do {
+                let staged = try await Task.detached(priority: .userInitiated) {
+                    let hasScope = url.startAccessingSecurityScopedResource()
+                    defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
+                    let directory = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("InkShelfVoiceImports", isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let fileName = "\(UUID().uuidString).\(url.pathExtension.isEmpty ? "audio" : url.pathExtension)"
+                    let staged = directory.appendingPathComponent(fileName)
+                    var coordinationError: NSError?
+                    var copyError: Error?
+                    NSFileCoordinator().coordinate(
+                        readingItemAt: url,
+                        options: [],
+                        error: &coordinationError
+                    ) { readableURL in
+                        do {
+                            try FileManager.default.copyItem(at: readableURL, to: staged)
+                        } catch {
+                            copyError = error
+                        }
+                    }
+                    if let coordinationError { throw coordinationError }
+                    if let copyError { throw copyError }
+                    guard FileManager.default.fileExists(atPath: staged.path) else {
+                        throw CocoaError(.fileReadUnknown)
+                    }
+                    return staged
+                }.value
+                pendingVoiceURL = staged
+                draftVoiceName = url.deletingPathExtension().lastPathComponent
+                draftVoiceGender = .unspecified
+                draftReferenceText = ""
+                showingVoiceEditor = true
+            } catch {
+                localError = "无法读取所选音频：\(error.localizedDescription)"
+            }
+            isStagingVoice = false
         }
     }
 

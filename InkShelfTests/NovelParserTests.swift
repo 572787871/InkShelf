@@ -672,6 +672,29 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(ReadAloudVoiceSelectionMode.allCases.map(\.rawValue), ["automatic", "roleBased"])
     }
 
+    func testLocalRoleAnalysisSplitsLargeChaptersIntoBoundedBatches() {
+        let text = (0..<13).map { "第\($0)句人物说道。" }.joined()
+        let page = ReaderPage(
+            location: ReaderPageLocation(chapterIndex: 2, pageIndex: 0),
+            chapterTitle: "测试章",
+            text: text,
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+
+        let inputs = NovelRoleAnalysisCodec.makeInputs(
+            pages: [page],
+            maximumCharacters: 10_000,
+            maximumSentences: 5
+        )
+
+        XCTAssertEqual(inputs.count, 3)
+        XCTAssertEqual(inputs.map(\.sentenceLookup.count), [5, 5, 3])
+        XCTAssertEqual(inputs.flatMap { $0.sentenceLookup.values }.count, 13)
+    }
+
     func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
         let settings = ReadAloudSettings()
         let first = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)

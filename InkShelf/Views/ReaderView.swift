@@ -176,7 +176,6 @@ struct ReaderView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             UIScreen.main.brightness = originalBrightness
-            readAloud.rememberRoleAnalysisContext(pages: catalog.pages, location: location)
             readAloud.readerDidDisappear(bookID: bookID)
         }
         .onChange(of: showingAppearance) { _, _ in reportBlockingState() }
@@ -359,7 +358,6 @@ struct ReaderView: View {
         }
         hasResolvedInitialLocation = true
         catalog = rebuilt
-        readAloud.rememberRoleAnalysisContext(pages: rebuilt.pages, location: settledLocation)
         readAloud.refreshSessionPages(rebuilt.pages, for: book.id)
         onReady()
     }
