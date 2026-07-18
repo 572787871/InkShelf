@@ -79,8 +79,11 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     generation.reference_audio_len = wave->num_samples;
     generation.reference_sample_rate = wave->sample_rate;
     generation.reference_text = referenceText.UTF8String;
-    generation.num_steps = 8;
-    generation.extra = "{\"min_char_in_sentence\":\"10\"}";
+    // Four flow-matching steps are the official distilled ZipVoice setting.
+    // Eight doubled first-audio latency on iPhone without being required by
+    // the INT8 distilled model.
+    generation.num_steps = 4;
+    generation.extra = "{\"min_char_in_sentence\":\"10\",\"max_char_in_sentence\":\"120\"}";
 
     const SherpaOnnxGeneratedAudio *audio = SherpaOnnxOfflineTtsGenerateWithConfig(
         _tts, text.UTF8String, &generation, nullptr, nullptr

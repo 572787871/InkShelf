@@ -300,10 +300,11 @@ struct ReaderView: View {
             horizontalMargin: margin,
             highlightedLocation: ownsReadAloudSession ? readAloud.currentPageLocation : nil,
             highlightedRange: ownsReadAloudSession ? readAloud.currentSentenceRange : nil,
-            isReadAloudPlaying: ownsReadAloudSession && readAloud.isPlaying,
-            showsParagraphControls: ownsReadAloudSession,
-            onParagraphControl: { pageLocation, range in
-                toggleSentenceReadAloud(book: book, pageLocation: pageLocation, range: range)
+            allowsParagraphLongPress: !showingAppearance
+                && !isScrubbingWholeBookProgress
+                && !interactionDisabled,
+            onParagraphLongPress: { pageLocation, range in
+                startReadAloudFromParagraph(book: book, pageLocation: pageLocation, range: range)
             }
         )
     }
@@ -327,12 +328,7 @@ struct ReaderView: View {
                 fontName: readerFont.name,
                 fontSize: fontSize,
                 lineSpacing: lineSpacing,
-                // Pagination reserves the same segment-control gutter used
-                // during narration, so activating playback never clips text
-                // below the visible page.
-                paragraphFirstLineIndent: ReaderParagraphControlLayout.firstLineIndent(
-                    for: fontSize
-                )
+                paragraphFirstLineIndent: 0
             )
         )
     }
@@ -425,16 +421,13 @@ struct ReaderView: View {
         )
     }
 
-    private func toggleSentenceReadAloud(
+    private func startReadAloudFromParagraph(
         book: NovelBook,
         pageLocation: ReaderPageLocation,
         range: NSRange
     ) {
-        if isCurrentReadAloudSession,
-           readAloud.currentPageLocation == pageLocation,
-           let currentRange = readAloud.currentSentenceRange,
-           NSIntersectionRange(currentRange, range).length > 0 {
-            readAloud.togglePlayback()
+        guard readAloud.canStartReading else {
+            readAloudError = "请先返回主页，在右上角设置中配置朗读服务"
             return
         }
         isBrowsingAwayFromReadAloud = false

@@ -140,7 +140,7 @@ struct ReadAloudChapterNavigator {
     }
 }
 
-/// A stable UTF-16 text plan shared by speech, highlighting and paragraph controls.
+/// A stable UTF-16 text plan shared by speech, highlighting and paragraph interactions.
 /// UIKit text ranges are UTF-16 based, so keeping one coordinate system prevents
 /// Chinese punctuation and emoji from shifting the highlight.
 struct ReadAloudTextPlan: Equatable {
@@ -215,6 +215,20 @@ struct ReadAloudSpeechRequest: Equatable, Sendable {
     let text: String
     let speaker: ReadAloudSpeaker
     let continuation: ReadAloudCrossPageContinuation?
+}
+
+enum ReadAloudLocalSpeechChunkPolicy {
+    static let maximumSentenceCount = 3
+    static let maximumUTF16Length = 180
+
+    static func canAppend(
+        currentSentenceCount: Int,
+        currentUTF16Length: Int,
+        nextUTF16Length: Int
+    ) -> Bool {
+        currentSentenceCount < maximumSentenceCount
+            && currentUTF16Length + nextUTF16Length <= maximumUTF16Length
+    }
 }
 
 enum ReadAloudPageBoundary {
@@ -308,6 +322,12 @@ final class ReadAloudService: NSObject, ObservableObject {
     private let zipVoiceSynthesizer = ZipVoiceSynthesizer()
     private let speechPlayer = AudiobookAudioPlayer()
     private let previewPlayer = AudiobookAudioPlayer()
+    private let localAudioCache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.countLimit = 16
+        cache.totalCostLimit = 48 * 1_024 * 1_024
+        return cache
+    }()
     private var plan = ReadAloudTextPlan(text: "")
     private var rolePlan = ReadAloudRolePlan.empty
     private var analyzedRoleChapters: Set<Int> = []
@@ -458,14 +478,6 @@ final class ReadAloudService: NSObject, ObservableObject {
             roleAnalysisMessage = "整书角色分析正在运行"
             return
         }
-        guard settings.allowsTextUpload else {
-            roleAnalysisMessage = "请先允许发送角色分析片段"
-            return
-        }
-        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            roleAnalysisMessage = "请先填写 API Key"
-            return
-        }
         guard !book.chapters.isEmpty else {
             roleAnalysisMessage = "这本书没有可分析的章节"
             return
@@ -475,7 +487,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         let key = apiKey
         let store = novelCastStore
         let total = book.chapters.count
-        roleAnalysisMessage = "正在建立《\(book.title)》角色档案…"
+        let usesAI = configuration.roleDetectionMode == .ai
+            && configuration.allowsTextUpload
+            && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !configuration.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !configuration.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        roleAnalysisMessage = configuration.roleDetectionMode == .localRules
+            ? "正在本地解析《\(book.title)》…"
+            : "正在建立《\(book.title)》角色档案…"
         wholeBookRoleProgress = WholeBookRoleAnalysisProgress(
             bookID: book.id,
             completedChapters: 0,
@@ -486,6 +505,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             guard let self else { return }
             var allNames = Set<String>()
             var allGenders: [String: NovelCharacterGender] = [:]
+            var usedLocalFallback = configuration.roleDetectionMode == .ai && !usesAI
             do {
                 for (offset, chapter) in book.chapters.enumerated() {
                     try Task.checkCancellation()
@@ -506,18 +526,36 @@ final class ReadAloudService: NSObject, ObservableObject {
                     if let existing {
                         cast = existing
                     } else {
-                        cast = try await analyzeCastChapter(
-                            chapter,
-                            settings: configuration,
-                            apiKey: key,
-                            knownCharacters: allNames.sorted(),
-                            batchProgress: { [weak self] completed, batchTotal in
-                                Task { @MainActor in
-                                    guard let self else { return }
-                                    self.roleAnalysisMessage = "\(chapter.title) · 文本批次 \(completed)/\(batchTotal)"
-                                }
+                        if usesAI {
+                            do {
+                                cast = try await analyzeCastChapter(
+                                    chapter,
+                                    settings: configuration,
+                                    apiKey: key,
+                                    knownCharacters: allNames.sorted(),
+                                    batchProgress: { [weak self] completed, batchTotal in
+                                        Task { @MainActor in
+                                            guard let self else { return }
+                                            self.roleAnalysisMessage = "\(chapter.title) · AI 批次 \(completed)/\(batchTotal)"
+                                        }
+                                    }
+                                )
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                usedLocalFallback = true
+                                roleAnalysisMessage = "\(chapter.title) · AI 暂不可用，正在改用本地增强解析"
+                                cast = await localCastChapter(
+                                    chapter,
+                                    knownCharacters: allNames.sorted()
+                                )
                             }
-                        )
+                        } else {
+                            cast = await localCastChapter(
+                                chapter,
+                                knownCharacters: allNames.sorted()
+                            )
+                        }
                         try await Task.detached(priority: .utility) {
                             try store.save(cast, bookID: book.id)
                         }.value
@@ -535,7 +573,13 @@ final class ReadAloudService: NSObject, ObservableObject {
                         chapterTitle: chapter.title
                     )
                 }
-                roleAnalysisMessage = "整书角色档案已完成：\(allNames.count) 个明确角色"
+                if configuration.roleDetectionMode == .localRules {
+                    roleAnalysisMessage = "本地角色解析已完成：\(allNames.count) 个明确角色"
+                } else if usedLocalFallback {
+                    roleAnalysisMessage = "角色档案已完成：\(allNames.count) 个明确角色；AI 不可用的章节已用本地增强解析"
+                } else {
+                    roleAnalysisMessage = "整书角色档案已完成：\(allNames.count) 个明确角色"
+                }
             } catch is CancellationError {
                 roleAnalysisMessage = "整书分析已暂停，再次开始会从已完成章节继续"
             } catch {
@@ -826,11 +870,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         stopVoicePreview()
         playbackRequested = true
-        guard roleAnalysisTask == nil else {
-            state = .ready
-            updateNowPlayingInfo()
-            return
-        }
         guard configureAudioSession() else {
             playbackRequested = false
             updateNowPlayingInfo()
@@ -1021,10 +1060,13 @@ final class ReadAloudService: NSObject, ObservableObject {
         var text = sentence.text
         if settings.provider == .localZipVoice {
             while endingSentenceIndex + 1 < pagePlan.sentences.count,
-                  endingSentenceIndex - position.sentenceIndex < 7 {
+                  ReadAloudLocalSpeechChunkPolicy.canAppend(
+                    currentSentenceCount: endingSentenceIndex - position.sentenceIndex + 1,
+                    currentUTF16Length: (text as NSString).length,
+                    nextUTF16Length: (pagePlan.sentences[endingSentenceIndex + 1].text as NSString).length
+                  ) {
                 let nextSentence = pagePlan.sentences[endingSentenceIndex + 1]
-                guard nextSentence.speaker == sentence.speaker,
-                      (text as NSString).length + (nextSentence.text as NSString).length <= 420 else { break }
+                guard nextSentence.speaker == sentence.speaker else { break }
                 text += nextSentence.text
                 endingSentenceIndex += 1
             }
@@ -1049,8 +1091,11 @@ final class ReadAloudService: NSObject, ObservableObject {
                 )
                 let canGroupAcrossPage = settings.provider == .localZipVoice
                     && nextSentence.speaker == sentence.speaker
-                    && endingSentenceIndex - position.sentenceIndex < 7
-                    && (text as NSString).length + (nextSentence.text as NSString).length <= 420
+                    && ReadAloudLocalSpeechChunkPolicy.canAppend(
+                        currentSentenceCount: endingSentenceIndex - position.sentenceIndex + 1,
+                        currentUTF16Length: (text as NSString).length,
+                        nextUTF16Length: (nextSentence.text as NSString).length
+                    )
                 guard joinsSplitSentence || canGroupAcrossPage else {
                     return ReadAloudSpeechRequest(
                         position: position,
@@ -1065,11 +1110,14 @@ final class ReadAloudService: NSObject, ObservableObject {
                 var targetText = nextSentence.text
                 if settings.provider == .localZipVoice {
                     while targetEndingSentenceIndex + 1 < nextPlan.sentences.count,
-                          endingSentenceIndex - position.sentenceIndex + targetEndingSentenceIndex + 1 < 7 {
+                          ReadAloudLocalSpeechChunkPolicy.canAppend(
+                            currentSentenceCount: endingSentenceIndex - position.sentenceIndex
+                                + targetEndingSentenceIndex + 2,
+                            currentUTF16Length: (text as NSString).length + (targetText as NSString).length,
+                            nextUTF16Length: (nextPlan.sentences[targetEndingSentenceIndex + 1].text as NSString).length
+                          ) {
                         let following = nextPlan.sentences[targetEndingSentenceIndex + 1]
-                        guard following.speaker == sentence.speaker,
-                              (text as NSString).length + (targetText as NSString).length
-                                + (following.text as NSString).length <= 420 else { break }
+                        guard following.speaker == sentence.speaker else { break }
                         targetText += following.text
                         targetEndingSentenceIndex += 1
                     }
@@ -1154,6 +1202,10 @@ final class ReadAloudService: NSObject, ObservableObject {
             guard let profile = zipVoiceProfile(for: speaker, settings: configuration) else {
                 throw ZipVoiceError.noVoiceProfile
             }
+            let cacheKey = "\(profile.id.uuidString)|\(configuration.rateMultiplier)|\(text)" as NSString
+            if let cached = localAudioCache.object(forKey: cacheKey) {
+                return cached as Data
+            }
             let audio = try await zipVoiceSynthesizer.synthesize(
                 text: text,
                 model: model,
@@ -1161,7 +1213,9 @@ final class ReadAloudService: NSObject, ObservableObject {
                 audioURL: zipVoiceStore.audioURL(for: profile),
                 speed: Float(configuration.rateMultiplier)
             )
-            return audio.wavData
+            let wav = audio.wavData
+            localAudioCache.setObject(wav as NSData, forKey: cacheKey, cost: wav.count)
+            return wav
         }
     }
 
@@ -1386,10 +1440,15 @@ final class ReadAloudService: NSObject, ObservableObject {
             .filter { $0.location.chapterIndex == chapterIndex }
             .sorted { $0.location.pageIndex < $1.location.pageIndex }
         guard !chapterPages.isEmpty else { return }
-        var chapterPlan = ReadAloudRoleAnalyzer.plan(
-            for: chapterPages,
-            alternatesUnattributedDialogue: true
+        let localAnalysis = ReadAloudRoleAnalyzer.analyze(
+            pages: chapterPages,
+            alternatesUnattributedDialogue: true,
+            knownCharacters: detectedCharacterNames
         )
+        var chapterPlan = localAnalysis.plan
+        detectedCharacterGenders.merge(localAnalysis.characterGenders) { existing, new in
+            existing == .unspecified ? new : existing
+        }
         if let bookID = bookContext?.id,
            let cast = novelCastStore.load(
                bookID: bookID,
@@ -1415,14 +1474,13 @@ final class ReadAloudService: NSObject, ObservableObject {
             return
         }
         ensureRolePlan(forChapter: chapterIndex)
-        let needsAnalysis = !aiAnalyzedRoleChapters.contains(chapterIndex)
+        play()
+        let needsAnalysis = settings.roleDetectionMode == .ai
+            && !aiAnalyzedRoleChapters.contains(chapterIndex)
             && networkCredentialsReady
             && !settings.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !settings.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard needsAnalysis else {
-            play()
-            return
-        }
+        guard needsAnalysis, roleAnalysisTask == nil else { return }
         let chapterPages = sessionPages
             .filter { $0.location.chapterIndex == chapterIndex }
             .sorted { $0.location.pageIndex < $1.location.pageIndex }
@@ -1436,10 +1494,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         let key = apiKey
         let store = novelCastStore
         let bookID = bookContext?.id
-        let expectedLocation = currentPageLocation
-        playbackRequested = true
-        state = .ready
-        roleAnalysisTask?.cancel()
         roleAnalysisTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1457,7 +1511,8 @@ final class ReadAloudService: NSObject, ObservableObject {
                 }
                 let baseline = ReadAloudRoleAnalyzer.plan(
                     for: chapterPages,
-                    alternatesUnattributedDialogue: true
+                    alternatesUnattributedDialogue: true,
+                    knownCharacters: detectedCharacterNames
                 )
                 detectedCharacterGenders.merge(cast.characterGenders) { existing, new in
                     existing == .unspecified ? new : existing
@@ -1465,20 +1520,48 @@ final class ReadAloudService: NSObject, ObservableObject {
                 mergeRolePlan(cast.plan(for: chapterPages, fallback: baseline))
                 aiAnalyzedRoleChapters.insert(chapterIndex)
             } catch is CancellationError {
+                roleAnalysisTask = nil
                 return
             } catch {
                 // The persisted smart cast is an enhancement. Keep the local
                 // baseline attribution and never interrupt audiobook playback.
                 aiAnalyzedRoleChapters.insert(chapterIndex)
-                roleAnalysisMessage = "本章智能角色分析失败，已使用基础角色衔接：\(error.localizedDescription)"
+                roleAnalysisMessage = "本章 AI 暂不可用，已使用本地增强角色解析"
             }
             roleAnalysisTask = nil
-            guard let expectedLocation,
-                  currentPageLocation == expectedLocation,
-                  let page = sessionPages.first(where: { $0.location == expectedLocation }) else { return }
-            setPage(text: page.text, location: page.location, stoppingCurrentSpeech: false)
-            if playbackRequested { play() }
+            if playbackRequested,
+               currentPageLocation?.chapterIndex != chapterIndex {
+                analyzeCurrentChapterThenPlayIfNeeded()
+            }
         }
+    }
+
+    private func localCastChapter(
+        _ chapter: NovelChapter,
+        knownCharacters: [String]
+    ) async -> NovelCastChapter {
+        await Task.detached(priority: .userInitiated) {
+            let page = ReaderPage(
+                location: ReaderPageLocation(chapterIndex: chapter.index, pageIndex: 0),
+                chapterTitle: chapter.title,
+                text: chapter.content,
+                pageInChapter: 1,
+                pageCountInChapter: 1,
+                overallIndex: 0,
+                overallCount: 1
+            )
+            let analysis = ReadAloudRoleAnalyzer.analyze(
+                pages: [page],
+                alternatesUnattributedDialogue: true,
+                knownCharacters: knownCharacters
+            )
+            return NovelCastChapter.make(
+                chapterIndex: chapter.index,
+                text: chapter.content,
+                plan: analysis.plan,
+                characterGenders: analysis.characterGenders
+            )
+        }.value
     }
 
     private func analyzeCastChapter(
@@ -1501,7 +1584,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         let fallback = await Task.detached(priority: .userInitiated) {
             ReadAloudRoleAnalyzer.plan(
                 for: pages,
-                alternatesUnattributedDialogue: true
+                alternatesUnattributedDialogue: true,
+                knownCharacters: knownCharacters
             )
         }.value
         let analyzed = try await aiRoleClient.analyze(

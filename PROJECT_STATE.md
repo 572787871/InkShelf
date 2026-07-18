@@ -38,8 +38,9 @@ context, not a substitute for inspecting the current code and Git history.
   - official ZipVoice model download/install, reference-voice profiles,
     Swift-to-sherpa-onnx bridge and iPhone ONNX inference
 - `InkShelf/Models/ReadAloudRoles.swift`
-  - local dialogue attribution, stable character/unknown speaker assignments,
-    and persisted provider/playback preferences
+  - enhanced offline dialogue attribution (quotes, speech/action verbs,
+    honorifics, context and turn continuity), stable character/unknown speaker
+    assignments, and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
   - homepage-only engine, resumable whole-book role analysis,
     automatic/per-character voices directly below the selected synthesis engine,
@@ -76,10 +77,9 @@ context, not a substitute for inspecting the current code and Git history.
 - A manual page turn, directory jump, or progress browsing action does not move
   the speech queue to that page.
 - “从本页听” starts the visible page. While that book owns an active narration
-  session, each visible speech segment has a play/pause control; selecting a
-  different segment explicitly retargets narration to that exact text range.
-  These controls reproduce the 8a72918 reader treatment: an 18×18-point thin
-  oval at the leading edge of a compact 26-point first-line gutter.
+  session, long-pressing visible paragraph text explicitly retargets narration
+  to that paragraph. Paragraph play/pause buttons and their first-line gutter
+  are deleted; the normal text width is used before and during narration.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -91,15 +91,14 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Role attribution uses a resumable whole-book AI director through MiMo or an
-  OpenAI-compatible endpoint. It distinguishes first-person narration,
-  third-person narration and named roles, records role gender, and saves every
-  completed chapter immediately. Each chapter is content-signed and assignments
-  use source UTF-16 ranges, so font or pagination changes do not invalidate the
-  cast. A deterministic baseline keeps speech running when smart analysis has
-  not completed or a request fails. The prior downloadable MLX/Qwen model and
-  its user-facing local-model flow are removed; an upgrade cleanup deletes only
-  the two exact retired model snapshot directories from the app sandbox.
+- Role attribution can run as an enhanced, fully offline whole-book parser or a
+  resumable AI director through MiMo/OpenAI-compatible endpoints. Both identify
+  first/third-person narration and named roles and save every completed chapter
+  immediately. AI analysis falls back per chapter to the same local parser when
+  credentials, network or the endpoint are unavailable, and playback never
+  waits for AI. Each chapter is content-signed and assignments use source UTF-16
+  ranges, so font or pagination changes do not invalidate the cast. The prior
+  downloadable MLX/Qwen model remains removed.
 - Automatic voice selection keeps narration and named characters stable. Users
   can instead separately choose first-person narrator, third-person narrator,
   unknown-character and every detected named-character voice; the old unified
@@ -123,12 +122,12 @@ context, not a substitute for inspecting the current code and Git history.
   cuts through a sentence, the two page fragments are synthesized as one audio
   request and the visible/session page advances during that audio instead of
   inserting a new utterance boundary.
-- For local ZipVoice only, up to eight adjacent same-speaker sentences are
-  synthesized as one block (capped at 420 UTF-16 units), including the next
-  page's opening sentences when capacity allows. ZipVoice uses its eight-step
-  quality path, reduced generated silence, edge-silence trimming, DC correction,
-  bounded gain and short fades. This removes repeated player startup gaps;
-  speaker changes retain intentional boundaries.
+- For local ZipVoice, low-latency blocks contain at most three adjacent
+  same-speaker sentences / 180 UTF-16 units, including the next page when space
+  allows. The distilled model uses the official four-step inference setting,
+  pre-generates the following block while audio plays, and keeps a bounded
+  in-memory replay cache. Edge-silence trimming, DC correction, bounded gain and
+  short fades remain; speaker changes retain intentional boundaries.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
   user explicitly consents. Local ZipVoice playback needs no network after its
   model download; whole-book smart analysis is optional, resumable network work
@@ -154,16 +153,15 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
-- Reader pagination reserves the narration segment-control's compact 26-point
-  first-line gutter. During narration, continuation lines keep the full text
-  width; the paginator uses the same metric so enabling playback cannot clip
-  text below the page.
+- Reader pagination and rendering both use the full text width; narration no
+  longer changes paragraph indentation.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
-- The current spoken range uses the 8a72918 neutral text-tinted, per-line rounded
-  marker without a leading accent; the immersive “原进度 / 从本页听” capsule sits
-  closer to the bottom status row.
+- The current spoken range uses one reusable neutral text-tinted shape layer.
+  Line markers stay inside their own line boxes and are composited once, so
+  repeated layout cannot stack translucent highlights. The immersive “原进度 /
+  从本页听” capsule sits closer to the bottom status row.
 - Reader appearance controls use grouped cards with coordinated theme/background
   previews, brightness, precise font-size controls, named line-spacing presets
   plus numeric sliders, page margins, font, page-turn style, and screen-awake

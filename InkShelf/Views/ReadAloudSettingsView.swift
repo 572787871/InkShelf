@@ -67,21 +67,32 @@ struct ReadAloudSettingsView: View {
             }
 
             Section("整书角色导演") {
-                Label("分析结果按书籍和章节保存，换字体、字号或重新分页后仍能继续使用。", systemImage: "person.3.sequence.fill")
+                Label("解析结果按书籍和章节保存，换字体、字号或重新分页后仍能继续使用。", systemImage: "person.3.sequence.fill")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Picker("AI 服务", selection: analysisProviderBinding) {
-                    ForEach(ReadAloudAIProvider.allCases) { provider in
-                        Text(provider.title).tag(provider)
+                Picker("角色解析", selection: settingBinding(\.roleDetectionMode)) {
+                    ForEach(ReadAloudRoleDetectionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
                     }
                 }
-                TextField("AI 服务地址", text: settingBinding(\.analysisBaseURL))
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                TextField("角色分析模型", text: settingBinding(\.analysisModel))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                if readAloud.settings.roleDetectionMode == .ai {
+                    Picker("AI 服务", selection: analysisProviderBinding) {
+                        ForEach(ReadAloudAIProvider.allCases) { provider in
+                            Text(provider.title).tag(provider)
+                        }
+                    }
+                    TextField("AI 服务地址", text: settingBinding(\.analysisBaseURL))
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                    TextField("角色分析模型", text: settingBinding(\.analysisModel))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    Label("完全离线：结合引号、说话动词、上下句、人物称谓和连续对话轮次识别角色。", systemImage: "iphone")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Picker("本地图书", selection: $selectedRoleBookID) {
                     Text("请选择").tag(UUID?.none)
                     ForEach(library.books) { book in
@@ -101,7 +112,14 @@ struct ReadAloudSettingsView: View {
                     }
                 } else {
                     Button(action: analyzeSelectedBook) {
-                        Label("建立或继续整书角色档案", systemImage: "wand.and.stars")
+                        Label(
+                            readAloud.settings.roleDetectionMode == .localRules
+                                ? "本地解析整本小说"
+                                : "建立或继续整书角色档案",
+                            systemImage: readAloud.settings.roleDetectionMode == .localRules
+                                ? "iphone.gen3.radiowaves.left.and.right"
+                                : "wand.and.stars"
+                        )
                     }
                     .disabled(selectedRoleBook == nil)
                 }
@@ -110,7 +128,9 @@ struct ReadAloudSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(message.contains("失败") ? .red : .secondary)
                 }
-                Text("首次分析会把小说按章节和短批次发送到所选 AI；中断后可以续传。听书时优先使用已保存档案，未分析章节使用基础衔接，不会阻塞播放。")
+                Text(readAloud.settings.roleDetectionMode == .localRules
+                    ? "本地解析不会上传正文；中断后可继续，听书过程中也会即时使用相同规则兜底。"
+                    : "AI 按章节和短批次工作；网络或接口失败时会自动保存本地增强解析结果，不再阻塞播放。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

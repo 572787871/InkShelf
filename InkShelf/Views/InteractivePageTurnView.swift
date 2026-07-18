@@ -23,9 +23,8 @@ struct ReaderPageAppearance: Equatable {
     let horizontalMargin: CGFloat
     let highlightedLocation: ReaderPageLocation?
     let highlightedRange: NSRange?
-    let isReadAloudPlaying: Bool
-    let showsParagraphControls: Bool
-    let onParagraphControl: ((ReaderPageLocation, NSRange) -> Void)?
+    let allowsParagraphLongPress: Bool
+    let onParagraphLongPress: ((ReaderPageLocation, NSRange) -> Void)?
 
     static func == (lhs: ReaderPageAppearance, rhs: ReaderPageAppearance) -> Bool {
         lhs.themeID == rhs.themeID &&
@@ -42,8 +41,7 @@ struct ReaderPageAppearance: Equatable {
         lhs.horizontalMargin == rhs.horizontalMargin &&
         lhs.highlightedLocation == rhs.highlightedLocation &&
         lhs.highlightedRange == rhs.highlightedRange &&
-        lhs.isReadAloudPlaying == rhs.isReadAloudPlaying &&
-        lhs.showsParagraphControls == rhs.showsParagraphControls
+        lhs.allowsParagraphLongPress == rhs.allowsParagraphLongPress
     }
 
     func hasSameLayout(as other: ReaderPageAppearance) -> Bool {
@@ -74,17 +72,14 @@ struct ReaderPageVerticalFill {
     }
 }
 
-/// Keep the paragraph control aligned exactly as it was in the 8a72918 reader:
-/// an 18-point oval inside a compact 26-point first-line gutter.
-enum ReaderParagraphControlLayout {
-    static let buttonSize = CGSize(width: 18, height: 18)
-
-    static func firstLineIndent(for _: CGFloat) -> CGFloat {
-        26
-    }
-
-    static func buttonLeadingInset(for _: CGFloat) -> CGFloat {
-        2
+enum ReaderParagraphSelection {
+    static func range(
+        containingUTF16Location location: Int,
+        paragraphRanges: [NSRange]
+    ) -> NSRange? {
+        paragraphRanges.first {
+            location >= $0.location && location < NSMaxRange($0)
+        }
     }
 }
 
@@ -333,14 +328,15 @@ private final class ReaderPageBackgroundView: UIView {
 private final class ReaderPageContentView: UIView {
     private let backgroundDecoration = ReaderPageBackgroundView()
     private let highlightDecoration = UIView()
+    private let highlightLayer = CAShapeLayer()
     private let titleLabel = UILabel()
     private let brandLabel = UILabel()
     private let textView = UITextView()
     private let pageLabel = UILabel()
     private let clockLabel = UILabel()
     private let batteryImageView = UIImageView()
-    private let paragraphButtonRanges: [NSRange]
-    private var paragraphButtons: [UIButton] = []
+    private let paragraphRanges: [NSRange]
+    private weak var paragraphLongPressGesture: UILongPressGestureRecognizer?
     private let page: ReaderPage
     private var appearance: ReaderPageAppearance
     private var fittedTextSize = CGSize.zero
@@ -349,7 +345,7 @@ private final class ReaderPageContentView: UIView {
     init(page: ReaderPage, appearance: ReaderPageAppearance) {
         self.page = page
         self.appearance = appearance
-        paragraphButtonRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
+        paragraphRanges = ReadAloudTextPlan(text: page.text).paragraphRanges
         fittedLineSpacing = appearance.lineSpacing
         super.init(frame: .zero)
         isOpaque = true
@@ -365,6 +361,8 @@ private final class ReaderPageContentView: UIView {
         addSubview(backgroundDecoration)
         highlightDecoration.isUserInteractionEnabled = false
         highlightDecoration.backgroundColor = .clear
+        highlightLayer.fillRule = .nonZero
+        highlightDecoration.layer.addSublayer(highlightLayer)
         addSubview(highlightDecoration)
 
         titleLabel.text = page.chapterTitle
@@ -403,7 +401,15 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
         [titleLabel, brandLabel, textView, pageLabel, clockLabel, batteryImageView].forEach(addSubview)
-        configureParagraphButtons()
+        let longPress = UILongPressGestureRecognizer(
+            target: self,
+            action: #selector(paragraphLongPressed(_:))
+        )
+        longPress.minimumPressDuration = 0.45
+        longPress.allowableMovement = 12
+        longPress.isEnabled = appearance.allowsParagraphLongPress
+        addGestureRecognizer(longPress)
+        paragraphLongPressGesture = longPress
         accessibilityLabel = "\(page.chapterTitle)，第 \(page.pageInChapter) 页"
     }
 
@@ -418,6 +424,7 @@ private final class ReaderPageContentView: UIView {
         let footerY = bounds.height - max(28, safeAreaInsets.bottom + 18)
         backgroundDecoration.frame = bounds
         highlightDecoration.frame = bounds
+        highlightLayer.frame = highlightDecoration.bounds
         titleLabel.frame = CGRect(x: margin, y: headerY, width: width * 0.62, height: 18)
         brandLabel.frame = CGRect(x: margin + width * 0.64, y: headerY, width: width * 0.36, height: 18)
         textView.frame = CGRect(x: margin, y: headerY + 42, width: width, height: max(0, footerY - headerY - 64))
@@ -428,7 +435,6 @@ private final class ReaderPageContentView: UIView {
         batteryImageView.image = UIImage(systemName: ReaderPageStatus.batterySymbolName())
         fitTextVerticallyIfNeeded()
         layoutSentenceHighlight()
-        layoutParagraphControls()
     }
 
     func updateHighlight(using appearance: ReaderPageAppearance) {
@@ -450,7 +456,8 @@ private final class ReaderPageContentView: UIView {
         pageLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         clockLabel.textColor = appearance.textColor.withAlphaComponent(0.6)
         batteryImageView.tintColor = appearance.textColor.withAlphaComponent(0.6)
-        updateParagraphButtonAppearance()
+        paragraphLongPressGesture?.isEnabled = appearance.allowsParagraphLongPress
+        highlightLayer.path = nil
         setNeedsLayout()
     }
 
@@ -460,9 +467,7 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
-        paragraph.firstLineHeadIndent = appearance.showsParagraphControls && !paragraphButtonRanges.isEmpty
-            ? ReaderParagraphControlLayout.firstLineIndent(for: appearance.fontSize)
-            : 0
+        paragraph.firstLineHeadIndent = 0
         paragraph.headIndent = 0
         let attributed = NSMutableAttributedString(
             string: text,
@@ -551,7 +556,7 @@ private final class ReaderPageContentView: UIView {
     }
 
     private func layoutSentenceHighlight() {
-        highlightDecoration.layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        highlightLayer.path = nil
         guard appearance.highlightedLocation == page.location,
               let range = appearance.highlightedRange,
               range.location >= 0,
@@ -571,6 +576,7 @@ private final class ReaderPageContentView: UIView {
         let visibleHighlightRange = NSIntersectionRange(highlightGlyphRange, laidOutGlyphRange)
         guard visibleHighlightRange.length > 0 else { return }
 
+        let combinedPath = UIBezierPath()
         textView.layoutManager.enumerateLineFragments(forGlyphRange: visibleHighlightRange) {
             [weak self] _, _, _, lineGlyphRange, _ in
             guard let self else { return }
@@ -583,123 +589,49 @@ private final class ReaderPageContentView: UIView {
             guard !rect.isNull, !rect.isInfinite, rect.width > 0.5, rect.height > 0.5 else { return }
             rect.origin.x += self.textView.frame.minX
             rect.origin.y += self.textView.frame.minY
-            rect = rect.insetBy(dx: -3, dy: -1.5)
+            // Keep adjacent line markers inside their own line boxes. A single
+            // shape layer also guarantees overlapping paths are composited only
+            // once when TextKit returns touching glyph rectangles.
+            rect = rect.insetBy(dx: -2.5, dy: 0.75)
             rect = rect.intersection(self.textView.frame.insetBy(dx: -2, dy: -1))
             guard !rect.isNull, rect.width > 1, rect.height > 1 else { return }
 
-            let marker = CAShapeLayer()
-            marker.path = UIBezierPath(roundedRect: rect, cornerRadius: 5).cgPath
-            marker.fillColor = self.readingHighlightColor.cgColor
-            marker.strokeColor = self.appearance.textColor.withAlphaComponent(0.04).cgColor
-            marker.lineWidth = 0.5
-            self.highlightDecoration.layer.addSublayer(marker)
+            combinedPath.append(UIBezierPath(roundedRect: rect, cornerRadius: 4.5))
         }
+        highlightLayer.path = combinedPath.cgPath
+        highlightLayer.fillColor = readingHighlightColor.cgColor
+        highlightLayer.strokeColor = nil
     }
 
-    private func configureParagraphButtons() {
-        paragraphButtons = paragraphButtonRanges.enumerated().map { index, _ in
-            let button = UIButton(type: .system)
-            button.tag = index
-            button.tintColor = appearance.textColor.withAlphaComponent(0.32)
-            button.backgroundColor = .clear
-            button.layer.cornerRadius = 9
-            button.layer.cornerCurve = .continuous
-            button.layer.borderWidth = 0.6
-            button.layer.borderColor = appearance.textColor.withAlphaComponent(0.14).cgColor
-            button.setImage(
-                UIImage(
-                    systemName: "play.fill",
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)
-                ),
-                for: .normal
-            )
-            button.addTarget(self, action: #selector(paragraphControlTapped(_:)), for: .touchUpInside)
-            button.accessibilityLabel = "从本段开始朗读"
-            addSubview(button)
-            return button
-        }
-        updateParagraphButtonAppearance()
-    }
-
-    private func updateParagraphButtonAppearance() {
-        let highlightedRange = appearance.highlightedLocation == page.location
-            ? appearance.highlightedRange
-            : nil
-        for (index, button) in paragraphButtons.enumerated() {
-            guard paragraphButtonRanges.indices.contains(index) else { continue }
-            let isCurrent = highlightedRange.map {
-                NSIntersectionRange($0, paragraphButtonRanges[index]).length > 0
-            } ?? false
-            let symbol = isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
-            button.setImage(
-                UIImage(
-                    systemName: symbol,
-                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)
-                ),
-                for: .normal
-            )
-            button.tintColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.78 : 0.32)
-            button.backgroundColor = isCurrent
-                ? readingHighlightColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.18 : 0.1)
-                : appearance.textColor.withAlphaComponent(0.025)
-            button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.3 : 0.14).cgColor
-            button.isHidden = !appearance.showsParagraphControls
-        }
-    }
-
-    private func layoutParagraphControls() {
-        guard !paragraphButtons.isEmpty, textView.bounds.width > 0 else { return }
-        guard appearance.showsParagraphControls else {
-            paragraphButtons.forEach { $0.isHidden = true }
-            return
-        }
+    @objc private func paragraphLongPressed(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began,
+              appearance.allowsParagraphLongPress,
+              !paragraphRanges.isEmpty,
+              textView.bounds.width > 0 else { return }
+        let point = recognizer.location(in: textView)
+        guard textView.bounds.contains(point) else { return }
         textView.layoutManager.ensureLayout(for: textView.textContainer)
-        let prefixLength = page.chapterHeadingPrefix.utf16.count
-        let bodyCharacterRange = NSRange(location: prefixLength, length: page.text.utf16.count)
-        let laidOutGlyphRange = textView.layoutManager.glyphRange(for: textView.textContainer)
-        let laidOutCharacterRange = textView.layoutManager.characterRange(
-            forGlyphRange: laidOutGlyphRange,
-            actualGlyphRange: nil
+        let glyphIndex = textView.layoutManager.glyphIndex(
+            for: point,
+            in: textView.textContainer,
+            fractionOfDistanceThroughGlyph: nil
         )
-        for (index, button) in paragraphButtons.enumerated() {
-            let paragraphRange = paragraphButtonRanges[index]
-            let displayRange = NSRange(location: prefixLength + paragraphRange.location, length: 1)
-            guard NSMaxRange(displayRange) <= textView.attributedText.length,
-                  NSIntersectionRange(displayRange, bodyCharacterRange).length == displayRange.length,
-                  NSIntersectionRange(displayRange, laidOutCharacterRange).length == displayRange.length else {
-                button.isHidden = true
-                continue
-            }
-            let glyphRange = textView.layoutManager.glyphRange(
-                forCharacterRange: displayRange,
-                actualCharacterRange: nil
-            )
-            guard glyphRange.length > 0,
-                  NSIntersectionRange(glyphRange, laidOutGlyphRange).length == glyphRange.length else {
-                button.isHidden = true
-                continue
-            }
-            let glyphRect = textView.layoutManager.boundingRect(
-                forGlyphRange: glyphRange,
-                in: textView.textContainer
-            )
-            guard !glyphRect.isNull, !glyphRect.isInfinite, glyphRect.height > 0.5 else {
-                button.isHidden = true
-                continue
-            }
-            let buttonSize = ReaderParagraphControlLayout.buttonSize
-            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - buttonSize.height) / 2)
-            let x = textView.frame.minX + ReaderParagraphControlLayout.buttonLeadingInset(
-                for: appearance.fontSize
-            )
-            button.frame = CGRect(origin: CGPoint(x: x, y: y), size: buttonSize)
-            button.isHidden = !textView.frame.insetBy(dx: 0, dy: -2).contains(button.frame)
-        }
-    }
-
-    @objc private func paragraphControlTapped(_ sender: UIButton) {
-        guard paragraphButtonRanges.indices.contains(sender.tag) else { return }
-        appearance.onParagraphControl?(page.location, paragraphButtonRanges[sender.tag])
+        guard glyphIndex < textView.layoutManager.numberOfGlyphs else { return }
+        let usedLineRect = textView.layoutManager.lineFragmentUsedRect(
+            forGlyphAt: glyphIndex,
+            effectiveRange: nil
+        )
+        guard usedLineRect.insetBy(dx: -8, dy: -5).contains(point) else { return }
+        let displayCharacterIndex = textView.layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let prefixLength = page.chapterHeadingPrefix.utf16.count
+        let bodyLocation = displayCharacterIndex - prefixLength
+        guard bodyLocation >= 0,
+              let range = ReaderParagraphSelection.range(
+                  containingUTF16Location: bodyLocation,
+                  paragraphRanges: paragraphRanges
+              ) else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        appearance.onParagraphLongPress?(page.location, range)
     }
 
 }

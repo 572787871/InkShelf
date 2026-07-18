@@ -781,12 +781,12 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(character.voiceID, "茉莉")
     }
 
-    func testRemovedLocalRoleModesMigrateToWholeBookAI() throws {
+    func testLocalRoleModeCanBeRestoredFromExistingSettings() throws {
         let data = #"{"roleDetectionMode":"localRules"}"#.data(using: .utf8)!
 
         let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
 
-        XCTAssertEqual(settings.roleDetectionMode, .ai)
+        XCTAssertEqual(settings.roleDetectionMode, .localRules)
     }
 
     func testPersistedNovelCastSurvivesAPageBoundaryInsideDialogue() throws {
@@ -882,6 +882,74 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(plan.speakers(for: pages[0].location), [.character("张三")])
         XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("李四")])
+    }
+
+    func testEnhancedLocalRulesRecognizeNamedQuoteAndSpeakingActions() {
+        let pages = [
+            page(index: 0, text: "李明：“马上出发。”"),
+            page(index: 1, text: "王强皱眉提醒道：“路上小心。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.character("李明")])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("王强")])
+    }
+
+    func testEnhancedLocalRulesUseKnownSpeakerBeforeAddressee() {
+        let page = page(index: 0, text: "张三对李四低声说道：“先别出声。”")
+
+        let plan = ReadAloudRoleAnalyzer.plan(
+            for: [page],
+            knownCharacters: ["张三", "李四"]
+        )
+
+        XCTAssertEqual(plan.speakers(for: page.location), [.character("张三")])
+    }
+
+    func testEnhancedLocalRulesNormalizeHonorificAndInferGender() {
+        let page = page(index: 0, text: "苏桐小姐轻声说道：“我知道了。”")
+
+        let analysis = ReadAloudRoleAnalyzer.analyze(pages: [page])
+
+        XCTAssertEqual(analysis.plan.speakers(for: page.location), [.character("苏桐")])
+        XCTAssertEqual(analysis.characterGenders["苏桐"], .female)
+    }
+
+    func testLocalSpeechChunksPrioritizeFirstAudioLatency() {
+        XCTAssertTrue(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 2,
+            currentUTF16Length: 120,
+            nextUTF16Length: 60
+        ))
+        XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 3,
+            currentUTF16Length: 100,
+            nextUTF16Length: 10
+        ))
+        XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 1,
+            currentUTF16Length: 170,
+            nextUTF16Length: 11
+        ))
+    }
+
+    func testParagraphSelectionUsesUTF16ParagraphRanges() {
+        let text = "第一段🙂。\n第二段。"
+        let ranges = ReadAloudTextPlan(text: text).paragraphRanges
+        let secondLocation = ("第一段🙂。\n" as NSString).length
+
+        XCTAssertEqual(
+            ReaderParagraphSelection.range(
+                containingUTF16Location: secondLocation,
+                paragraphRanges: ranges
+            ),
+            ranges[1]
+        )
+        XCTAssertNil(ReaderParagraphSelection.range(
+            containingUTF16Location: (text as NSString).length,
+            paragraphRanges: ranges
+        ))
     }
 
     func testThirdPersonNarrationUsesItsOwnSpeakerType() {
@@ -1129,9 +1197,8 @@ final class ReaderRuntimeTests: XCTestCase {
                 horizontalMargin: 22,
                 highlightedLocation: nil,
                 highlightedRange: nil,
-                isReadAloudPlaying: false,
-                showsParagraphControls: false,
-                onParagraphControl: nil
+                allowsParagraphLongPress: true,
+                onParagraphLongPress: nil
             )
             let host = ReaderPageTurnHostController()
             var bodyTapCount = 0
@@ -1192,9 +1259,8 @@ final class ReaderRuntimeTests: XCTestCase {
             horizontalMargin: 22,
             highlightedLocation: pages[0].location,
             highlightedRange: NSRange(location: 0, length: 2),
-            isReadAloudPlaying: true,
-            showsParagraphControls: true,
-            onParagraphControl: nil
+            allowsParagraphLongPress: true,
+            onParagraphLongPress: nil
         )
         let host = ReaderPageTurnHostController()
         let committed = expectation(description: "自动翻页提交下一页")
