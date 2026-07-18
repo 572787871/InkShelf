@@ -476,7 +476,7 @@ struct ZipVoiceSynthesizedAudio: Sendable {
         let sampleCount = pcmFloat32.count / MemoryLayout<Float>.size
         guard sampleCount > 0 else { return pcmFloat32 }
         var samples = [Float](repeating: 0, count: sampleCount)
-        samples.withUnsafeMutableBytes { destination in
+        _ = samples.withUnsafeMutableBytes { destination in
             pcmFloat32.copyBytes(to: destination)
         }
         for index in samples.indices where !samples[index].isFinite {

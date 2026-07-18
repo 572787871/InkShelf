@@ -88,7 +88,8 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
         let location = ReaderPageLocation(chapterIndex: chapterIndex, pageIndex: 0)
         let sentences = ReadAloudTextPlan(text: text).sentences
         let speakers = plan.speakers(for: location) ?? []
-        let assignments = sentences.enumerated().compactMap { index, sentence in
+        let assignments: [NovelCastAssignment] = sentences.enumerated().compactMap {
+            index, sentence -> NovelCastAssignment? in
             guard speakers.indices.contains(index) else { return nil }
             return NovelCastAssignment(range: sentence.range, speaker: speakers[index])
         }
