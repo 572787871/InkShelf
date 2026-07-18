@@ -48,6 +48,7 @@ enum ZipVoiceInstallState: Equatable {
 enum ZipVoiceError: LocalizedError, Equatable {
     case inaccessibleAudio
     case invalidAudio
+    case invalidDuration
     case invalidTranscript
     case downloadFailed(String)
     case checksumMismatch
@@ -62,6 +63,7 @@ enum ZipVoiceError: LocalizedError, Equatable {
         switch self {
         case .inaccessibleAudio: "无法访问参考音频"
         case .invalidAudio: "无法读取该音频，请选择 WAV、M4A、MP3、AAC 或其他系统支持的音频文件"
+        case .invalidDuration: "参考音频请控制在 2 到 30 秒，并只保留清晰人声"
         case .invalidTranscript: "请填写与参考音频完全一致的文字"
         case let .downloadFailed(message): "ZipVoice 下载失败：\(message)"
         case .checksumMismatch: "ZipVoice 文件校验失败，请重新下载"
@@ -76,19 +78,50 @@ enum ZipVoiceError: LocalizedError, Equatable {
 }
 
 enum ZipVoiceBuiltInProfiles {
-    static let transcript = "Kokoro 是一系列体积虽小但功能强大的 TTS 模型。"
+    struct Definition: Codable, Sendable {
+        let id: UUID
+        let resource: String
+        let name: String
+        let gender: ZipVoiceProfileGender
+        let referenceText: String?
+    }
+
+    private struct Catalog: Codable {
+        let transcript: String
+        let voices: [Definition]
+    }
+
+    private static let catalog: Catalog = {
+        let bundle = Bundle.main
+        let url = bundle.url(forResource: "catalog", withExtension: "json", subdirectory: "Voices")
+            ?? bundle.url(forResource: "catalog", withExtension: "json")
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
+            return Catalog(
+                transcript: "愿每一个故事，都有属于自己的声音。",
+                voices: []
+            )
+        }
+        return catalog
+    }()
+
+    static let transcript = catalog.transcript
     private static let retiredProfileIDs: Set<UUID> = [
         UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459101")!,
         UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459102")!,
-        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459103")!
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459103")!,
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459201")!,
+        UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459202")!
     ]
-    static let definitions: [(id: UUID, resource: String, name: String, gender: ZipVoiceProfileGender)] = [
-        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459201")!, "kokoro_steady", "Kokoro · 沉稳男声", .male),
-        (UUID(uuidString: "347D8335-91A6-4D9D-91B8-67C504459202")!, "kokoro_warm", "Kokoro · 温和女声", .female)
-    ]
+    static let definitions = catalog.voices
 
     static func contains(_ profile: ZipVoiceProfile) -> Bool {
         definitions.contains { $0.id == profile.id }
+    }
+
+    static func definition(for profile: ZipVoiceProfile) -> Definition? {
+        definitions.first { $0.id == profile.id }
     }
 
     static func isRetired(_ profile: ZipVoiceProfile) -> Bool {
@@ -146,7 +179,15 @@ struct ZipVoiceStore: Sendable {
     }
 
     func audioURL(for profile: ZipVoiceProfile) -> URL {
-        profilesDirectory.appendingPathComponent(profile.audioFileName)
+        if let definition = ZipVoiceBuiltInProfiles.definition(for: profile),
+           let bundled = Bundle.main.url(
+               forResource: definition.resource,
+               withExtension: "wav",
+               subdirectory: "Voices"
+           ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav") {
+            return bundled
+        }
+        return profilesDirectory.appendingPathComponent(profile.audioFileName)
     }
 
     func addProfile(
@@ -173,21 +214,17 @@ struct ZipVoiceStore: Sendable {
         }
         all.removeAll(where: ZipVoiceBuiltInProfiles.isRetired)
         for definition in ZipVoiceBuiltInProfiles.definitions where !all.contains(where: { $0.id == definition.id }) {
-            guard let source = bundle.url(
+            guard let _ = bundle.url(
                 forResource: definition.resource,
                 withExtension: "wav",
                 subdirectory: "Voices"
             ) ?? bundle.url(forResource: definition.resource, withExtension: "wav") else { continue }
-            let fileName = "\(definition.id.uuidString.lowercased()).wav"
-            let destination = profilesDirectory.appendingPathComponent(fileName)
-            try? FileManager.default.removeItem(at: destination)
-            try convertToReferenceWAV(source, destination: destination)
             all.append(ZipVoiceProfile(
                 id: definition.id,
                 name: definition.name,
                 gender: definition.gender,
-                referenceText: ZipVoiceBuiltInProfiles.transcript,
-                audioFileName: fileName
+                referenceText: definition.referenceText ?? ZipVoiceBuiltInProfiles.transcript,
+                audioFileName: "\(definition.resource).wav"
             ))
         }
         try persist(all)
@@ -237,6 +274,9 @@ struct ZipVoiceStore: Sendable {
         let destination = profilesDirectory.appendingPathComponent(fileName)
         do {
             try convertToReferenceWAV(sourceURL, destination: destination)
+        } catch let error as ZipVoiceError {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         } catch {
             try? FileManager.default.removeItem(at: destination)
             throw ZipVoiceError.invalidAudio
@@ -256,6 +296,8 @@ struct ZipVoiceStore: Sendable {
 
     private func convertToReferenceWAV(_ source: URL, destination: URL) throws {
         let inputFile = try AVAudioFile(forReading: source)
+        let duration = Double(inputFile.length) / max(1, inputFile.processingFormat.sampleRate)
+        guard (2...30).contains(duration) else { throw ZipVoiceError.invalidDuration }
         guard inputFile.length > 0,
               let outputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatInt16,
@@ -402,6 +444,7 @@ struct ZipVoiceSynthesizedAudio: Sendable {
     let sampleRate: Double
 
     var wavData: Data {
+        let polishedPCM = polishedPCMFloat32
         var data = Data()
         func appendASCII(_ value: String) { data.append(contentsOf: value.utf8) }
         func append<T: FixedWidthInteger>(_ value: T) {
@@ -409,7 +452,7 @@ struct ZipVoiceSynthesizedAudio: Sendable {
             withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
         }
         let sampleRate = UInt32(max(1, self.sampleRate.rounded()))
-        let dataSize = UInt32(min(Int(UInt32.max), pcmFloat32.count))
+        let dataSize = UInt32(min(Int(UInt32.max), polishedPCM.count))
         appendASCII("RIFF")
         append(UInt32(36) + dataSize)
         appendASCII("WAVEfmt ")
@@ -422,8 +465,50 @@ struct ZipVoiceSynthesizedAudio: Sendable {
         append(UInt16(32))
         appendASCII("data")
         append(dataSize)
-        data.append(pcmFloat32.prefix(Int(dataSize)))
+        data.append(polishedPCM.prefix(Int(dataSize)))
         return data
+    }
+
+    /// ZipVoice can leave a short block of near-digital silence at each edge.
+    /// Removing it before the next prefetched block starts avoids an audible
+    /// stop/start rhythm while a short fade keeps the cut click-free.
+    private var polishedPCMFloat32: Data {
+        let sampleCount = pcmFloat32.count / MemoryLayout<Float>.size
+        guard sampleCount > 0 else { return pcmFloat32 }
+        var samples = [Float](repeating: 0, count: sampleCount)
+        samples.withUnsafeMutableBytes { destination in
+            pcmFloat32.copyBytes(to: destination)
+        }
+        for index in samples.indices where !samples[index].isFinite {
+            samples[index] = 0
+        }
+        let originalPeak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        guard originalPeak > 0.000_01 else { return pcmFloat32 }
+        let threshold = max(Float(0.0015), originalPeak * 0.0025)
+        guard let firstSignal = samples.firstIndex(where: { abs($0) >= threshold }),
+              let lastSignal = samples.lastIndex(where: { abs($0) >= threshold }) else {
+            return pcmFloat32
+        }
+        let rate = max(1, Int(sampleRate.rounded()))
+        let start = max(0, firstSignal - rate / 50)
+        let end = min(samples.count, lastSignal + rate * 3 / 100 + 1)
+        var polished = Array(samples[start..<end])
+
+        let mean = polished.reduce(Float(0), +) / Float(max(1, polished.count))
+        for index in polished.indices { polished[index] -= mean }
+        let peak = polished.reduce(Float(0)) { max($0, abs($1)) }
+        let gain = peak > 0.98 ? 0.94 / peak : min(1.2, 0.86 / max(peak, 0.000_01))
+        if gain != 1 {
+            for index in polished.indices { polished[index] *= gain }
+        }
+
+        let fadeFrames = min(polished.count / 2, max(1, rate / 200))
+        for index in 0..<fadeFrames {
+            let envelope = Float(index) / Float(fadeFrames)
+            polished[index] *= envelope
+            polished[polished.count - index - 1] *= envelope
+        }
+        return polished.withUnsafeBytes { Data($0) }
     }
 }
 

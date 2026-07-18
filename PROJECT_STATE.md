@@ -25,14 +25,15 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Views/InteractivePageTurnView.swift`
   - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
 - `InkShelf/Services/ReadAloudService.swift`
-  - automatic audiobook session, AI/local casting, cloud/local TTS
+  - automatic audiobook session, persisted whole-book smart casting, cloud/local TTS
     orchestration, next-sentence pre-generation, sentence highlighting,
     background audio, chapter timeline and MediaPlayer controls
 - `InkShelf/Services/AudiobookSpeechKit.swift`
   - MiMo and OpenAI-compatible speech clients, AI chapter role analysis,
     automatic role casting, Keychain credential storage and audio playback
-- `InkShelf/Services/LocalNovelRoleModel.swift`
-  - downloadable MLX/Qwen3 4-bit chapter-role model used entirely on iPhone
+- `InkShelf/Services/NovelCastStore.swift`
+  - content-signed per-book/per-chapter role assignments and gender metadata;
+    source ranges remap onto the current pagination without losing split text
 - `InkShelf/Services/ZipVoiceKit.swift` and `ZipVoiceTTSBridge.{h,mm}`
   - official ZipVoice model download/install, reference-voice profiles,
     Swift-to-sherpa-onnx bridge and iPhone ONNX inference
@@ -40,9 +41,9 @@ context, not a substitute for inspecting the current code and Git history.
   - local dialogue attribution, stable character/unknown speaker assignments,
     and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
-  - homepage-only engine, AI/local-model role detection, automatic/per-character
-    voices directly below the selected synthesis engine, ZipVoice model/profile,
-    API key, privacy, speed and preview UI
+  - homepage-only engine, resumable whole-book role analysis,
+    automatic/per-character voices directly below the selected synthesis engine,
+    ZipVoice model/profile, API key, privacy, speed and preview UI
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -77,7 +78,8 @@ context, not a substitute for inspecting the current code and Git history.
 - “从本页听” starts the visible page. While that book owns an active narration
   session, each visible speech segment has a play/pause control; selecting a
   different segment explicitly retargets narration to that exact text range.
-  These controls use the prior 22-point soft-filled circular treatment.
+  These controls use a thin 30×21-point oval treatment aligned just before the
+  segment's first visible line.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -89,23 +91,29 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Role attribution can use an OpenAI-compatible request or a downloaded local
-  MLX/Qwen3 model. There is no user-selectable local-rules mode. Model
-  assignments distinguish first-person narration, third-person narration and
-  named roles, and a baseline parse keeps speech running if model analysis fails.
-  Local-model testing selects a book and chapter directly from `LibraryStore`,
-  splits the chapter into bounded 24-sentence prompts, disables Qwen3 thinking,
-  reports per-batch progress and exposes detected names for per-character voices.
+- Role attribution uses a resumable whole-book AI director through MiMo or an
+  OpenAI-compatible endpoint. It distinguishes first-person narration,
+  third-person narration and named roles, records role gender, and saves every
+  completed chapter immediately. Each chapter is content-signed and assignments
+  use source UTF-16 ranges, so font or pagination changes do not invalidate the
+  cast. A deterministic baseline keeps speech running when smart analysis has
+  not completed or a request fails. The prior downloadable MLX/Qwen model and
+  its user-facing local-model flow are removed; an upgrade cleanup deletes only
+  the two exact retired model snapshot directories from the app sandbox.
 - Automatic voice selection keeps narration and named characters stable. Users
   can instead separately choose first-person narrator, third-person narrator,
   unknown-character and every detected named-character voice; the old unified
   voice mode is removed. MiMo exposes its eight published preset IDs. Local
   ZipVoice accepts system-readable audio formats, asynchronously coordinates and
   stages file-provider URLs, converts them to its reference WAV format, and
-  includes two five-second reference excerpts from the Apache-licensed official
-  Kokoro Chinese samples alongside user-authorized audio/transcript pairs. The
-  former low-quality eSpeak reference prompts are migrated out.
-- Apple system voices, Kokoro/VITS packages and the old model store are not used.
+  includes 103 full-utterance, 24 kHz reference prompts generated from all
+  Apache-licensed speaker vectors in the upstream Kokoro catalog (100 Chinese
+  and 3 English),
+  presented under product-facing Chinese voice names, alongside user-authorized
+  audio/transcript pairs. The former short demo and low-quality eSpeak reference
+  prompts are migrated out.
+- Apple system voices, runtime Kokoro/VITS packages and the old model store are
+  not used.
   Speech can use MiMo chat audio, a configurable OpenAI-compatible
   `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
   iPhone. The official bilingual INT8 model/vocoder is downloaded from the
@@ -115,13 +123,16 @@ context, not a substitute for inspecting the current code and Git history.
   cuts through a sentence, the two page fragments are synthesized as one audio
   request and the visible/session page advances during that audio instead of
   inserting a new utterance boundary.
-- For local ZipVoice only, up to four adjacent same-speaker short sentences in
-  the same paragraph are synthesized as one block (capped at 220 UTF-16 units). This reduces repeated
-  player startup gaps and gives the following pre-generation more time; cloud
-  engines and speaker changes retain their original boundaries.
+- For local ZipVoice only, up to eight adjacent same-speaker sentences are
+  synthesized as one block (capped at 420 UTF-16 units), including the next
+  page's opening sentences when capacity allows. ZipVoice uses its eight-step
+  quality path, reduced generated silence, edge-silence trimming, DC correction,
+  bounded gain and short fades. This removes repeated player startup gaps;
+  speaker changes retain intentional boundaries.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
-  user explicitly consents. The local role model plus local ZipVoice needs no
-  network after both model downloads finish.
+  user explicitly consents. Local ZipVoice playback needs no network after its
+  model download; whole-book smart analysis is optional, resumable network work
+  and cached chapters remain available offline.
 - Read-aloud settings are available only from the homepage top-right Settings
   screen. The reader's bottom “朗读” action starts or pauses immediately; when
   configuration is incomplete it only directs the user back to homepage

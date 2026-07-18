@@ -39,8 +39,9 @@ struct AudiobookVoiceChoice: Identifiable, Equatable, Sendable {
     let name: String
 }
 
-/// Stable automatic casting inspired by mimo-tts. Manual mode intentionally
-/// selects one voice for the whole book; automatic mode keeps character roles.
+/// Stable automatic casting for narration and named roles. Role-based mode
+/// preserves explicit per-character choices while automatic mode derives a
+/// stable voice from the persisted cast metadata.
 enum AudiobookVoiceDirector {
     static func choices(for provider: ReadAloudProvider) -> [AudiobookVoiceChoice] {
         switch provider {
@@ -66,7 +67,8 @@ enum AudiobookVoiceDirector {
 
     static func direction(
         for speaker: ReadAloudSpeaker,
-        settings: ReadAloudSettings
+        settings: ReadAloudSettings,
+        characterGenders: [String: NovelCharacterGender] = [:]
     ) -> AudiobookVoiceDirection {
         let choices = choices(for: settings.provider)
         if let selectedIdentifier = selectedVoiceIdentifier(for: speaker, settings: settings),
@@ -89,7 +91,12 @@ enum AudiobookVoiceDirector {
                     instruction: "以自然的角色口吻朗读对白，不要读出额外说明。"
                 )
             case let .character(name):
-                let voices = ["冰糖", "苏打", "茉莉"]
+                let voices: [String]
+                switch characterGenders[name] {
+                case .female: voices = ["冰糖", "茉莉"]
+                case .male: voices = ["苏打", "白桦"]
+                case .unspecified, .none: voices = ["冰糖", "苏打", "茉莉"]
+                }
                 return .init(
                     voiceID: voices[stableIndex(name, count: voices.count)],
                     instruction: "保持人物“\(name)”的声音稳定，以自然的角色口吻朗读对白。"
@@ -108,7 +115,12 @@ enum AudiobookVoiceDirector {
                     instruction: "Read as natural character dialogue in the text's language. Do not add words."
                 )
             case let .character(name):
-                let voices = ["nova", "echo", "shimmer", "onyx", "fable"]
+                let voices: [String]
+                switch characterGenders[name] {
+                case .female: voices = ["nova", "shimmer"]
+                case .male: voices = ["echo", "onyx", "fable"]
+                case .unspecified, .none: voices = ["nova", "echo", "shimmer", "onyx", "fable"]
+                }
                 return .init(
                     voiceID: voices[stableIndex(name, count: voices.count)],
                     instruction: "Keep a consistent audiobook character performance for \(name). Do not add words."
@@ -213,7 +225,8 @@ actor AudiobookSpeechClient {
         text: String,
         speaker: ReadAloudSpeaker,
         settings: ReadAloudSettings,
-        apiKey: String
+        apiKey: String,
+        characterGenders: [String: NovelCharacterGender] = [:]
     ) async throws -> Data {
         let configuration = settings.normalized
         guard configuration.allowsTextUpload else { throw AudiobookSpeechError.textUploadNotAllowed }
@@ -230,7 +243,11 @@ actor AudiobookSpeechClient {
         guard configuration.provider != .localZipVoice else {
             throw AudiobookSpeechError.invalidConfiguration("本地 ZipVoice 不使用网络语音接口")
         }
-        let direction = AudiobookVoiceDirector.direction(for: speaker, settings: configuration)
+        let direction = AudiobookVoiceDirector.direction(
+            for: speaker,
+            settings: configuration,
+            characterGenders: characterGenders
+        )
         var request: URLRequest
         switch configuration.provider {
         case .localZipVoice:
@@ -367,21 +384,37 @@ actor AudiobookSpeechClient {
 struct NovelRoleAnalysisInput: Sendable {
     let prompt: String
     let sentenceLookup: [String: (ReaderPageLocation, Int)]
+    let sourceLines: [String]
+}
+
+struct NovelRoleAnalysisResult: Equatable, Sendable {
+    let plan: ReadAloudRolePlan
+    let characterGenders: [String: NovelCharacterGender]
 }
 
 enum NovelRoleAnalysisCodec {
-    static func makeInput(pages: [ReaderPage], maximumCharacters: Int) -> NovelRoleAnalysisInput {
+    static func makeInput(
+        pages: [ReaderPage],
+        maximumCharacters: Int,
+        knownCharacters: [String] = []
+    ) -> NovelRoleAnalysisInput {
         makeInputs(
             pages: pages,
             maximumCharacters: maximumCharacters,
-            maximumSentences: .max
-        ).first ?? NovelRoleAnalysisInput(prompt: prompt(for: []), sentenceLookup: [:])
+            maximumSentences: .max,
+            knownCharacters: knownCharacters
+        ).first ?? NovelRoleAnalysisInput(
+            prompt: prompt(for: [], knownCharacters: knownCharacters),
+            sentenceLookup: [:],
+            sourceLines: []
+        )
     }
 
     static func makeInputs(
         pages: [ReaderPage],
         maximumCharacters: Int,
-        maximumSentences: Int
+        maximumSentences: Int,
+        knownCharacters: [String] = []
     ) -> [NovelRoleAnalysisInput] {
         var inputs: [NovelRoleAnalysisInput] = []
         var sentenceLookup: [String: (ReaderPageLocation, Int)] = [:]
@@ -397,8 +430,9 @@ enum NovelRoleAnalysisCodec {
                    (characterCount + previewLine.count > maximumCharacters
                     || sourceLines.count >= maximumSentences) {
                     inputs.append(NovelRoleAnalysisInput(
-                        prompt: prompt(for: sourceLines),
-                        sentenceLookup: sentenceLookup
+                        prompt: prompt(for: sourceLines, knownCharacters: knownCharacters),
+                        sentenceLookup: sentenceLookup,
+                        sourceLines: sourceLines
                     ))
                     batchIndex += 1
                     sentenceLookup = [:]
@@ -414,18 +448,34 @@ enum NovelRoleAnalysisCodec {
         }
         if !sourceLines.isEmpty {
             inputs.append(NovelRoleAnalysisInput(
-                prompt: prompt(for: sourceLines),
-                sentenceLookup: sentenceLookup
+                prompt: prompt(for: sourceLines, knownCharacters: knownCharacters),
+                sentenceLookup: sentenceLookup,
+                sourceLines: sourceLines
             ))
         }
         return inputs
     }
 
-    private static func prompt(for sourceLines: [String]) -> String {
+    static func refreshing(
+        _ input: NovelRoleAnalysisInput,
+        knownCharacters: [String]
+    ) -> NovelRoleAnalysisInput {
+        NovelRoleAnalysisInput(
+            prompt: prompt(
+                for: input.sourceLines,
+                knownCharacters: Array(knownCharacters.prefix(120))
+            ),
+            sentenceLookup: input.sentenceLookup,
+            sourceLines: input.sourceLines
+        )
+    }
+
+    private static func prompt(for sourceLines: [String], knownCharacters: [String]) -> String {
         """
         你是小说有声书角色导演。结合章节上下文、引号、说话动词、人物称谓、代词和连续对话，判断每个文本单元的声音类型。
-        type 只能是“第一人称旁白”“第三人称旁白”或“角色”。角色必须填写原文已经出现的人名；不确定人物时 speaker 写“未知”。不得改写原文或虚构人物。
-        只返回严格 JSON：{"assignments":[{"id":"b0p0s0","type":"第三人称旁白","speaker":""},{"id":"b0p0s1","type":"角色","speaker":"人物名"}]}。
+        type 只能是“第一人称旁白”“第三人称旁白”或“角色”。角色填写原文人物名；称谓或别名明确对应此前角色时，speaker 必须沿用此前规范名。不确定人物时 speaker 写“未知”。不得虚构人物。连续对话必须结合上下句判断说话人，不能因为省略姓名就随意更换声线。
+        本书此前已确认的角色：\(knownCharacters.isEmpty ? "暂无" : knownCharacters.joined(separator: "、"))。
+        只返回严格 JSON：{"characters":[{"name":"人物名","gender":"女或男或未知"}],"assignments":[{"id":"b0p0s0","type":"第三人称旁白","speaker":""},{"id":"b0p0s1","type":"角色","speaker":"人物名"}]}。
         文本单元如下：
         \(sourceLines.joined(separator: "\n"))
         """
@@ -436,6 +486,14 @@ enum NovelRoleAnalysisCodec {
         input: NovelRoleAnalysisInput,
         fallback: ReadAloudRolePlan
     ) throws -> ReadAloudRolePlan {
+        try decodeResult(content: content, input: input, fallback: fallback).plan
+    }
+
+    static func decodeResult(
+        content: String,
+        input: NovelRoleAnalysisInput,
+        fallback: ReadAloudRolePlan
+    ) throws -> NovelRoleAnalysisResult {
         guard let jsonData = jsonObjectData(in: content),
               let result = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
               let assignments = result["assignments"] as? [[String: Any]] else {
@@ -461,7 +519,24 @@ enum NovelRoleAnalysisCodec {
             }
             combined[location] = speakers
         }
-        return ReadAloudRolePlan(speakersByPage: combined)
+        var genders: [String: NovelCharacterGender] = [:]
+        for character in result["characters"] as? [[String: Any]] ?? [] {
+            let name = (character["name"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.count <= 12 else { continue }
+            let rawGender = (character["gender"] as? String ?? "").lowercased()
+            if rawGender.contains("女") || rawGender == "female" {
+                genders[name] = .female
+            } else if rawGender.contains("男") || rawGender == "male" {
+                genders[name] = .male
+            } else {
+                genders[name] = .unspecified
+            }
+        }
+        return NovelRoleAnalysisResult(
+            plan: ReadAloudRolePlan(speakersByPage: combined),
+            characterGenders: genders
+        )
     }
 
     private static func jsonObjectData(in content: String) -> Data? {
@@ -476,8 +551,10 @@ actor AICharacterRoleClient {
         pages: [ReaderPage],
         settings: ReadAloudSettings,
         apiKey: String,
-        fallback: ReadAloudRolePlan
-    ) async throws -> ReadAloudRolePlan {
+        fallback: ReadAloudRolePlan,
+        knownCharacters: [String] = [],
+        progress: @Sendable @escaping (Int, Int) -> Void = { _, _ in }
+    ) async throws -> NovelRoleAnalysisResult {
         guard settings.allowsTextUpload else { throw AudiobookSpeechError.textUploadNotAllowed }
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw AudiobookSpeechError.missingAPIKey }
@@ -489,11 +566,81 @@ actor AICharacterRoleClient {
             throw AudiobookSpeechError.invalidConfiguration("角色分析地址必须是 HTTPS 地址")
         }
 
-        let input = NovelRoleAnalysisCodec.makeInput(pages: pages, maximumCharacters: 48_000)
+        let inputs = NovelRoleAnalysisCodec.makeInputs(
+            pages: pages,
+            maximumCharacters: 7_000,
+            maximumSentences: 36,
+            knownCharacters: knownCharacters
+        )
+        guard !inputs.isEmpty else {
+            return NovelRoleAnalysisResult(plan: fallback, characterGenders: [:])
+        }
+        var combined = fallback
+        var characterGenders: [String: NovelCharacterGender] = [:]
+        var continuityNames = Set(knownCharacters)
+        progress(0, inputs.count)
+        for (index, rawInput) in inputs.enumerated() {
+            try Task.checkCancellation()
+            // Feed names discovered in earlier batches back into later ones so
+            // long chapters keep aliases and alternating dialogue stable.
+            let input = NovelRoleAnalysisCodec.refreshing(
+                rawInput,
+                knownCharacters: continuityNames.sorted()
+            )
+            var decoded: NovelRoleAnalysisResult?
+            var decodeError: Error?
+            for decodeAttempt in 0..<2 {
+                let content = try await responseContent(
+                    input: input,
+                    settings: settings,
+                    apiKey: key,
+                    baseURL: baseURL
+                )
+                do {
+                    decoded = try NovelRoleAnalysisCodec.decodeResult(
+                        content: content,
+                        input: input,
+                        fallback: combined
+                    )
+                    break
+                } catch {
+                    decodeError = error
+                    if decodeAttempt == 0 {
+                        try await Task.sleep(for: .milliseconds(350))
+                    }
+                }
+            }
+            guard let decoded else {
+                throw decodeError ?? AudiobookSpeechError.invalidResponse
+            }
+            combined = decoded.plan
+            characterGenders.merge(decoded.characterGenders) { existing, new in
+                existing == .unspecified ? new : existing
+            }
+            continuityNames.formUnion(decoded.characterGenders.keys)
+            for speakers in decoded.plan.speakersByPage.values {
+                for speaker in speakers {
+                    if case let .character(name) = speaker { continuityNames.insert(name) }
+                }
+            }
+            progress(index + 1, inputs.count)
+        }
+        return NovelRoleAnalysisResult(
+            plan: combined,
+            characterGenders: characterGenders
+        )
+    }
+
+    private func responseContent(
+        input: NovelRoleAnalysisInput,
+        settings: ReadAloudSettings,
+        apiKey: String,
+        baseURL: URL
+    ) async throws -> String {
         let body: [String: Any] = [
             "model": settings.analysisModel,
             "messages": [
-                ["role": "system", "content": "你只输出严格 JSON。"],
+                ["role": "system", "content": "你是有声书角色导演，只输出严格 JSON，不输出解释或 Markdown。"],
                 ["role": "user", "content": input.prompt]
             ],
             "temperature": 0
@@ -502,24 +649,39 @@ actor AICharacterRoleClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw AudiobookSpeechError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else {
-            throw AudiobookSpeechError.service(
-                statusCode: http.statusCode,
-                message: Self.serviceMessage(from: data)
-            )
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw AudiobookSpeechError.invalidResponse
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    throw AudiobookSpeechError.service(
+                        statusCode: http.statusCode,
+                        message: Self.serviceMessage(from: data)
+                    )
+                }
+                guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let choices = root["choices"] as? [[String: Any]],
+                      let message = choices.first?["message"] as? [String: Any],
+                      let content = message["content"] as? String else {
+                    throw AudiobookSpeechError.invalidResponse
+                }
+                return content
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt == 0 {
+                    try await Task.sleep(for: .milliseconds(650))
+                }
+            }
         }
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = root["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw AudiobookSpeechError.invalidResponse
-        }
-        return try NovelRoleAnalysisCodec.decode(content: content, input: input, fallback: fallback)
+        throw lastError ?? AudiobookSpeechError.invalidResponse
     }
 
     private static func serviceMessage(from data: Data) -> String {

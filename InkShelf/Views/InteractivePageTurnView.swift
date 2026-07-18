@@ -611,14 +611,17 @@ private final class ReaderPageContentView: UIView {
             } ?? false
             var configuration = UIButton.Configuration.plain()
             configuration.image = UIImage(
-                systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
+                systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill",
+                withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .medium)
             )
-            configuration.baseForegroundColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.82 : 0.32)
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+            configuration.baseForegroundColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.72 : 0.3)
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8)
             configuration.background.backgroundColor = isCurrent
-                ? UIColor.systemOrange.withAlphaComponent(0.13)
-                : appearance.textColor.withAlphaComponent(0.035)
-            configuration.background.cornerRadius = 11
+                ? appearance.textColor.withAlphaComponent(0.055)
+                : .clear
+            configuration.background.strokeColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.28 : 0.18)
+            configuration.background.strokeWidth = 0.7
+            configuration.background.cornerRadius = 10.5
             button.configuration = configuration
             button.isHidden = !appearance.showsParagraphControls
         }
@@ -664,9 +667,9 @@ private final class ReaderPageContentView: UIView {
                 button.isHidden = true
                 continue
             }
-            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 22) / 2)
-            button.frame = CGRect(x: max(3, appearance.horizontalMargin - 26), y: y, width: 22, height: 22)
-            button.isHidden = !textView.frame.insetBy(dx: -28, dy: -2).contains(button.frame)
+            let y = textView.frame.minY + glyphRect.minY + max(0, (glyphRect.height - 21) / 2)
+            button.frame = CGRect(x: max(3, appearance.horizontalMargin - 34), y: y, width: 30, height: 21)
+            button.isHidden = !textView.frame.insetBy(dx: -36, dy: -2).contains(button.frame)
         }
     }
 

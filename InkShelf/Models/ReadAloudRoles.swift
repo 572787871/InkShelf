@@ -34,35 +34,9 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case ai
-    case localModel
 
     var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .ai: "云端 AI"
-        case .localModel: "本地大模型"
-        }
-    }
-}
-
-enum LocalRoleModelVariant: String, Codable, CaseIterable, Identifiable, Sendable {
-    case qwen3_0_6B
-    case qwen3_1_7B
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .qwen3_0_6B: "Qwen3 0.6B · 轻量"
-        case .qwen3_1_7B: "Qwen3 1.7B · 精准"
-        }
-    }
-    var repositoryID: String {
-        switch self {
-        case .qwen3_0_6B: "mlx-community/Qwen3-0.6B-4bit"
-        case .qwen3_1_7B: "mlx-community/Qwen3-1.7B-4bit"
-        }
-    }
-    var approximateDownload: String { self == .qwen3_0_6B ? "约 335 MB" : "约 938 MB" }
+    var title: String { "整书智能分析" }
 }
 
 enum ReadAloudAIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -98,7 +72,6 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
     var rateMultiplier = 0.9
     var allowsTextUpload = false
     var roleDetectionMode = ReadAloudRoleDetectionMode.ai
-    var localRoleModel = LocalRoleModelVariant.qwen3_0_6B
     var analysisProvider = ReadAloudAIProvider.mimo
     var analysisBaseURL = ReadAloudAIProvider.mimo.defaultBaseURL
     var analysisModel = ReadAloudAIProvider.mimo.defaultModel
@@ -110,7 +83,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case provider, baseURL, model, rateMultiplier, allowsTextUpload
-        case roleDetectionMode, localRoleModel, analysisProvider, analysisBaseURL, analysisModel
+        case roleDetectionMode, analysisProvider, analysisBaseURL, analysisModel
         case voiceSelectionMode, narratorVoiceIdentifier
         case thirdPersonVoiceIdentifier, characterVoiceIdentifier, characterVoiceIdentifiers
     }
@@ -132,8 +105,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
         let roleModeRaw = try container.decodeIfPresent(String.self, forKey: .roleDetectionMode)
         roleDetectionMode = roleModeRaw.flatMap(ReadAloudRoleDetectionMode.init(rawValue:))
-            ?? (roleModeRaw == nil ? .ai : .localModel)
-        localRoleModel = try container.decodeIfPresent(LocalRoleModelVariant.self, forKey: .localRoleModel) ?? .qwen3_0_6B
+            ?? .ai
         analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
         analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
             ?? analysisProvider.defaultBaseURL
@@ -182,6 +154,20 @@ enum ReadAloudSpeaker: Equatable, Sendable {
         switch self {
         case .narrator, .thirdPersonNarrator: return false
         case .character, .unknownDialogue: return true
+        }
+    }
+}
+
+enum NovelCharacterGender: String, Codable, Equatable, Sendable {
+    case female
+    case male
+    case unspecified
+
+    var title: String {
+        switch self {
+        case .female: "女声"
+        case .male: "男声"
+        case .unspecified: "未定"
         }
     }
 }

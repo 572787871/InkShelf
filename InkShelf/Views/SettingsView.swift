@@ -69,7 +69,7 @@ struct SettingsView: View {
                             Image(systemName: "waveform")
                         }
                     }
-                    Text("支持 AI/本地角色识别、自动或指定音色，以及 ZipVoice iPhone 本地生成。所有设置只保留在这里。")
+                    Text("支持可续传的整书角色档案、自动或指定音色，以及 ZipVoice iPhone 本地生成。所有设置只保留在这里。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -453,7 +453,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("本地大模型识别和 ZipVoice 语音生成完全在设备上完成。选择 AI 角色识别或云端语音时，只有在你明确允许后，章节句子或正在预生成的短句才会发送到配置的服务。API Key 保存在设备钥匙串中；服务方如何处理数据由其隐私政策决定。")
+            Text("ZipVoice 语音生成完全在设备上完成。建立整书角色档案或使用云端语音时，只有在你明确允许后，章节短批次或正在预生成的朗读文本才会发送到配置的服务。角色档案和 API Key 分别保存在设备沙盒与钥匙串中；服务方如何处理数据由其隐私政策决定。")
         }.navigationTitle("隐私说明")
     }
 }

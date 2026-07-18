@@ -667,12 +667,12 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
-    func testOnlyAIAndLocalModelRoleDetectionModesRemain() {
-        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["ai", "localModel"])
+    func testWholeBookSmartRoleDetectionReplacesDownloadedModelModes() {
+        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["ai"])
         XCTAssertEqual(ReadAloudVoiceSelectionMode.allCases.map(\.rawValue), ["automatic", "roleBased"])
     }
 
-    func testLocalRoleAnalysisSplitsLargeChaptersIntoBoundedBatches() {
+    func testSmartRoleAnalysisSplitsLargeChaptersIntoBoundedBatches() {
         let text = (0..<13).map { "第\($0)句人物说道。" }.joined()
         let page = ReaderPage(
             location: ReaderPageLocation(chapterIndex: 2, pageIndex: 0),
@@ -695,6 +695,43 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(inputs.flatMap { $0.sentenceLookup.values }.count, 13)
     }
 
+    func testSmartRoleResultCarriesCharacterGenderForAutomaticCasting() throws {
+        let page = page(chapter: 1, index: 0, text: "苏桐说道：“你好。”")
+        let input = NovelRoleAnalysisCodec.makeInput(pages: [page], maximumCharacters: 2_000)
+        let id = try XCTUnwrap(input.sentenceLookup.keys.first)
+        let fallback = ReadAloudRoleAnalyzer.plan(for: [page])
+        let content = """
+        {"characters":[{"name":"苏桐","gender":"女"}],"assignments":[{"id":"\(id)","type":"角色","speaker":"苏桐"}]}
+        """
+
+        let result = try NovelRoleAnalysisCodec.decodeResult(
+            content: content,
+            input: input,
+            fallback: fallback
+        )
+
+        XCTAssertEqual(result.characterGenders["苏桐"], .female)
+        XCTAssertEqual(result.plan.speakers(for: page.location)?.first, .character("苏桐"))
+    }
+
+    func testBundledReferenceCatalogContainsEveryPublishedSpeaker() {
+        let definitions = ZipVoiceBuiltInProfiles.definitions
+
+        XCTAssertEqual(definitions.count, 103)
+        XCTAssertEqual(Set(definitions.map(\.id)).count, 103)
+        XCTAssertEqual(Set(definitions.map(\.name)).count, 103)
+        XCTAssertEqual(definitions.filter { $0.gender == .female }.count, 58)
+        XCTAssertEqual(definitions.filter { $0.gender == .male }.count, 45)
+        for definition in definitions {
+            let url = Bundle.main.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav")
+            XCTAssertNotNil(url, "缺少内置声线资源：\(definition.resource)")
+        }
+    }
+
     func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
         let settings = ReadAloudSettings()
         let first = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
@@ -704,6 +741,23 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertEqual(narrator.voiceID, "白桦")
         XCTAssertNotEqual(first.voiceID, narrator.voiceID)
+    }
+
+    func testAutomaticCloudCastingUsesDetectedCharacterGender() {
+        let settings = ReadAloudSettings()
+        let female = AudiobookVoiceDirector.direction(
+            for: .character("苏桐"),
+            settings: settings,
+            characterGenders: ["苏桐": .female]
+        )
+        let male = AudiobookVoiceDirector.direction(
+            for: .character("杨飞"),
+            settings: settings,
+            characterGenders: ["杨飞": .male]
+        )
+
+        XCTAssertTrue(["冰糖", "茉莉"].contains(female.voiceID))
+        XCTAssertTrue(["苏打", "白桦"].contains(male.voiceID))
     }
 
     func testUnknownDialogueAlternatesAutomaticVoices() {
@@ -727,12 +781,55 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(character.voiceID, "茉莉")
     }
 
-    func testRemovedLocalRulesSettingMigratesToLocalModel() throws {
+    func testRemovedLocalRoleModesMigrateToWholeBookAI() throws {
         let data = #"{"roleDetectionMode":"localRules"}"#.data(using: .utf8)!
 
         let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
 
-        XCTAssertEqual(settings.roleDetectionMode, .localModel)
+        XCTAssertEqual(settings.roleDetectionMode, .ai)
+    }
+
+    func testPersistedNovelCastSurvivesAPageBoundaryInsideDialogue() throws {
+        let text = "张三说道：“你好。”\n他转身离开。"
+        let sourceLocation = ReaderPageLocation(chapterIndex: 3, pageIndex: 0)
+        let sourceSentences = ReadAloudTextPlan(text: text).sentences
+        let sourceSpeakers = sourceSentences.indices.map { index in
+            index == 0 ? ReadAloudSpeaker.character("张三") : .thirdPersonNarrator
+        }
+        let cast = NovelCastChapter.make(
+            chapterIndex: 3,
+            text: text,
+            plan: ReadAloudRolePlan(speakersByPage: [sourceLocation: sourceSpeakers])
+        )
+        let pages = [
+            page(chapter: 3, index: 0, text: "张三说道：“你"),
+            page(chapter: 3, index: 1, text: "好。”\n他转身离开。")
+        ]
+        let fallback = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        let remapped = cast.plan(for: pages, fallback: fallback)
+
+        XCTAssertEqual(remapped.speakers(for: pages[0].location)?.first, .character("张三"))
+        XCTAssertEqual(remapped.speakers(for: pages[1].location)?.first, .character("张三"))
+    }
+
+    func testNovelCastStoreRejectsChangedChapterContent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NovelCastStoreTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = NovelCastStore(rootURL: directory)
+        let text = "李明说道：“出发。”"
+        let location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
+        let cast = NovelCastChapter.make(
+            chapterIndex: 0,
+            text: text,
+            plan: ReadAloudRolePlan(speakersByPage: [location: [.character("李明")]])
+        )
+        let bookID = UUID()
+        try store.save(cast, bookID: bookID)
+
+        XCTAssertNotNil(store.load(bookID: bookID, chapterIndex: 0, chapterText: text))
+        XCTAssertNil(store.load(bookID: bookID, chapterIndex: 0, chapterText: text + "后来。"))
     }
 
     func testRoleBasedVoiceSelectionSeparatesNarrationTypesAndCharacters() {
@@ -880,7 +977,6 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(settings.model, ReadAloudProvider.mimo.defaultModel)
         XCTAssertFalse(settings.allowsTextUpload)
         XCTAssertEqual(settings.roleDetectionMode, .ai)
-        XCTAssertEqual(settings.localRoleModel, .qwen3_0_6B)
         XCTAssertEqual(settings.voiceSelectionMode, .automatic)
     }
 
@@ -888,6 +984,18 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         ReaderPage(
             location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
             chapterTitle: "第一章",
+            text: text,
+            pageInChapter: index + 1,
+            pageCountInChapter: 2,
+            overallIndex: index,
+            overallCount: 2
+        )
+    }
+
+    private func page(chapter: Int, index: Int, text: String) -> ReaderPage {
+        ReaderPage(
+            location: ReaderPageLocation(chapterIndex: chapter, pageIndex: index),
+            chapterTitle: "测试章",
             text: text,
             pageInChapter: index + 1,
             pageCountInChapter: 2,

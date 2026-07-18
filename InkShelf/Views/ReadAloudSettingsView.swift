@@ -13,7 +13,6 @@ struct ReadAloudSettingsView: View {
     @State private var isSavingVoice = false
     @State private var isStagingVoice = false
     @State private var selectedRoleBookID: UUID?
-    @State private var selectedRoleChapterIndex = 0
     @State private var localError: String?
 
     var body: some View {
@@ -29,7 +28,7 @@ struct ReadAloudSettingsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("小说有声书")
                                 .font(.headline)
-                            Text("本地大模型识别角色 · 跨页续句无缝朗读")
+                            Text("整书角色档案 · 本地多声线连续朗读")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -49,7 +48,7 @@ struct ReadAloudSettingsView: View {
                 }
 
                 if readAloud.settings.provider == .localZipVoice {
-                    localModelRows
+                    zipVoiceRows
                 } else {
                     TextField("服务地址", text: settingBinding(\.baseURL))
                         .textInputAutocapitalization(.never)
@@ -67,72 +66,53 @@ struct ReadAloudSettingsView: View {
                 voiceAssignmentRows
             }
 
-            Section("角色识别") {
-                Picker("检测方式", selection: settingBinding(\.roleDetectionMode)) {
-                    ForEach(ReadAloudRoleDetectionMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+            Section("整书角色导演") {
+                Label("分析结果按书籍和章节保存，换字体、字号或重新分页后仍能继续使用。", systemImage: "person.3.sequence.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Picker("AI 服务", selection: analysisProviderBinding) {
+                    ForEach(ReadAloudAIProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
                     }
                 }
-                .pickerStyle(.segmented)
-
-                if readAloud.settings.roleDetectionMode == .ai {
-                    Picker("AI 服务", selection: analysisProviderBinding) {
-                        ForEach(ReadAloudAIProvider.allCases) { provider in
-                            Text(provider.title).tag(provider)
-                        }
+                TextField("AI 服务地址", text: settingBinding(\.analysisBaseURL))
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+                TextField("角色分析模型", text: settingBinding(\.analysisModel))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Picker("本地图书", selection: $selectedRoleBookID) {
+                    Text("请选择").tag(UUID?.none)
+                    ForEach(library.books) { book in
+                        Text(book.title).tag(Optional(book.id))
                     }
-                    TextField("AI 服务地址", text: settingBinding(\.analysisBaseURL))
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .autocorrectionDisabled()
-                    TextField("角色分析模型", text: settingBinding(\.analysisModel))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Text("AI 会按章节判断每句话属于旁白还是具体人物；接口失败时保留基础解析结果，不中断朗读。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else if readAloud.settings.roleDetectionMode == .localModel {
-                    Picker("本地模型", selection: settingBinding(\.localRoleModel)) {
-                        ForEach(LocalRoleModelVariant.allCases) { model in
-                            Text(model.title).tag(model)
-                        }
-                    }
-                    localRoleModelRow
-                    Picker("本地图书", selection: $selectedRoleBookID) {
-                        Text("请选择").tag(UUID?.none)
-                        ForEach(library.books) { book in
-                            Text(book.title).tag(Optional(book.id))
-                        }
-                    }
-                    if let selectedRoleBook {
-                        Picker("章节", selection: $selectedRoleChapterIndex) {
-                            ForEach(selectedRoleBook.chapters) { chapter in
-                                Text(chapter.title).tag(chapter.index)
-                            }
-                        }
-                    }
-                    Button(action: analyzeSelectedLocalChapter) {
-                        HStack {
-                            Label("识别所选章节角色", systemImage: "person.2.wave.2")
-                            Spacer()
-                            if readAloud.localRoleModelState == .analyzing {
-                                ProgressView().controlSize(.small)
-                            }
-                        }
-                    }
-                    .disabled(
-                        selectedRoleBook == nil
-                            || readAloud.localRoleModelState != .installed
-                    )
-                    if let message = readAloud.localRoleAnalysisMessage {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(message.hasPrefix("识别失败") ? .red : .secondary)
-                    }
-                    Text("模型下载后完全在 iPhone 上理解章节上下文，不上传小说；会区分第一人称旁白、第三人称旁白和具体角色。分析失败时会使用基础解析结果继续朗读。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
+                if let progress = readAloud.wholeBookRoleProgress,
+                   progress.bookID == selectedRoleBookID {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView(value: progress.fraction)
+                        Text("\(progress.completedChapters)/\(progress.totalChapters) · \(progress.chapterTitle)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button(role: .destructive, action: readAloud.cancelWholeBookRoleAnalysis) {
+                        Label("暂停整书分析", systemImage: "pause.circle")
+                    }
+                } else {
+                    Button(action: analyzeSelectedBook) {
+                        Label("建立或继续整书角色档案", systemImage: "wand.and.stars")
+                    }
+                    .disabled(selectedRoleBook == nil)
+                }
+                if let message = readAloud.roleAnalysisMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(message.contains("失败") ? .red : .secondary)
+                }
+                Text("首次分析会把小说按章节和短批次发送到所选 AI；中断后可以续传。听书时优先使用已保存档案，未分析章节使用基础衔接，不会阻塞播放。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("播放") {
@@ -172,7 +152,7 @@ struct ReadAloudSettingsView: View {
                 }
 
                 if requiresNetwork {
-                    Text("API Key 只保存在 iPhone 钥匙串。AI 角色检测会发送当前章节的句子，云端语音只发送正在预生成的短句；本地 ZipVoice 不上传声音样本。")
+                    Text("API Key 只保存在 iPhone 钥匙串。整书角色导演按章节短批次发送文本，云端语音只发送正在预生成的朗读块；本地 ZipVoice 不上传声音样本。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -180,8 +160,8 @@ struct ReadAloudSettingsView: View {
         }
         .navigationTitle("朗读服务")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: selectDefaultRoleChapter)
-        .onChange(of: selectedRoleBookID) { _, _ in selectDefaultChapterInBook() }
+        .onAppear(perform: selectDefaultRoleBook)
+        .onChange(of: selectedRoleBookID) { _, _ in loadSelectedBookCast() }
         .onDisappear { readAloud.stopVoicePreview() }
         .fileImporter(
             isPresented: $showingVoiceImporter,
@@ -222,10 +202,11 @@ struct ReadAloudSettingsView: View {
             voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
             voicePicker("未识别角色", selection: settingBinding(\.characterVoiceIdentifier))
             ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
-                voicePicker("角色 · \(name)", selection: characterVoiceBinding(name))
+                let gender = readAloud.detectedCharacterGenders[name]?.title ?? "未定"
+                voicePicker("角色 · \(name) · \(gender)", selection: characterVoiceBinding(name))
             }
             if readAloud.detectedCharacterNames.isEmpty {
-                Text("识别章节后，每个明确人物都会显示独立音色选项；本地与云端语音引擎都支持。")
+                Text("建立整书角色档案后，每个明确人物都会显示独立音色选项；本地与云端语音引擎都支持。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -236,7 +217,7 @@ struct ReadAloudSettingsView: View {
     }
 
     @ViewBuilder
-    private var localModelRows: some View {
+    private var zipVoiceRows: some View {
         HStack {
             VStack(alignment: .leading, spacing: 3) {
                 Text("ZipVoice 中英 INT8")
@@ -257,36 +238,21 @@ struct ReadAloudSettingsView: View {
         }
         .disabled(isStagingVoice)
 
-        ForEach(readAloud.zipVoiceProfiles) { profile in
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name)
-                    Text("\(ZipVoiceBuiltInProfiles.contains(profile) ? "内置高清参考" : profile.gender.title) · \(profile.referenceText.prefix(24))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button {
-                    readAloud.previewVoice(profile.voiceIdentifier)
-                } label: {
-                    Image(systemName: "play.circle.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(readAloud.connectionState == .testing)
-                .accessibilityLabel("试听\(profile.name)")
-                if !ZipVoiceBuiltInProfiles.contains(profile) {
-                    Button(role: .destructive) {
-                        do { try readAloud.removeZipVoiceProfile(profile) }
-                        catch { localError = error.localizedDescription }
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                }
+        DisclosureGroup("内置女声 · \(builtInFemaleVoices.count)") {
+            ForEach(builtInFemaleVoices) { profile in
+                voiceProfileRow(profile, removable: false)
             }
         }
+        DisclosureGroup("内置男声 · \(builtInMaleVoices.count)") {
+            ForEach(builtInMaleVoices) { profile in
+                voiceProfileRow(profile, removable: false)
+            }
+        }
+        ForEach(importedVoices) { profile in
+            voiceProfileRow(profile, removable: true)
+        }
 
-        Text("支持 WAV、M4A、MP3、AAC 等系统可读取的音频，导入后统一转为 24kHz 单声道 WAV。参考文字必须与音频逐字一致；请只导入你有权使用的声音。")
+        Text("支持 WAV、M4A、MP3、AAC 等系统可读取的音频，导入后统一转为 24kHz 单声道 WAV。建议使用 2–30 秒、无配乐和环境噪声的清晰人声；参考文字必须逐字一致。")
             .font(.footnote)
             .foregroundStyle(.secondary)
 
@@ -294,6 +260,51 @@ struct ReadAloudSettingsView: View {
             Text(message)
                 .font(.footnote)
                 .foregroundStyle(.red)
+        }
+    }
+
+    private var builtInFemaleVoices: [ZipVoiceProfile] {
+        readAloud.zipVoiceProfiles
+            .filter { ZipVoiceBuiltInProfiles.contains($0) && $0.gender == .female }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var builtInMaleVoices: [ZipVoiceProfile] {
+        readAloud.zipVoiceProfiles
+            .filter { ZipVoiceBuiltInProfiles.contains($0) && $0.gender == .male }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var importedVoices: [ZipVoiceProfile] {
+        readAloud.zipVoiceProfiles.filter { !ZipVoiceBuiltInProfiles.contains($0) }
+    }
+
+    private func voiceProfileRow(_ profile: ZipVoiceProfile, removable: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name)
+                Text("\(removable ? "已导入" : "内置高清") · \(profile.gender.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                readAloud.previewVoice(profile.voiceIdentifier)
+            } label: {
+                Image(systemName: "play.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .disabled(readAloud.connectionState == .testing)
+            .accessibilityLabel("试听\(profile.name)")
+            if removable {
+                Button(role: .destructive) {
+                    do { try readAloud.removeZipVoiceProfile(profile) }
+                    catch { localError = error.localizedDescription }
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+            }
         }
     }
 
@@ -362,51 +373,6 @@ struct ReadAloudSettingsView: View {
             || readAloud.settings.roleDetectionMode == .ai
     }
 
-    @ViewBuilder
-    private var localRoleModelRow: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(readAloud.settings.localRoleModel.approximateDownload)
-                Text("MLX · Qwen3 4-bit · 仅用于章节角色理解")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            switch readAloud.localRoleModelState {
-            case .notInstalled, .failed(_):
-                Button("下载") { readAloud.downloadLocalRoleModel() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            case let .downloading(progress):
-                VStack(spacing: 4) {
-                    ProgressView(value: progress).frame(width: 64)
-                    Button("取消") { readAloud.cancelLocalRoleModelDownload() }
-                        .font(.caption)
-                }
-            case .installed:
-                Menu {
-                    Button("删除模型", role: .destructive) {
-                        Task {
-                            do { try await readAloud.removeLocalRoleModel() }
-                            catch { localError = error.localizedDescription }
-                        }
-                    }
-                } label: {
-                    Label("已安装", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-            case .analyzing:
-                Label("分析中", systemImage: "brain.head.profile")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        if case let .failed(message) = readAloud.localRoleModelState {
-            Text(message).font(.footnote).foregroundStyle(.red)
-        }
-    }
-
     private func voicePicker(_ title: String, selection: Binding<String>) -> some View {
         Picker(title, selection: selection) {
             Text("自动").tag("")
@@ -419,7 +385,7 @@ struct ReadAloudSettingsView: View {
     private var voiceSelectionHelp: String {
         switch readAloud.settings.voiceSelectionMode {
         case .automatic:
-            "自动模式会为旁白使用稳定音色，并按人物名称稳定分配角色音色。"
+            "自动模式会固定旁白声线，并结合整书档案中的人物名称和性别稳定分配角色音色。"
         case .roleBased:
             "第一人称、第三人称、未知人物以及每个已识别角色都能分别选择音色。"
         }
@@ -468,32 +434,23 @@ struct ReadAloudSettingsView: View {
         return library.books.first { $0.id == selectedRoleBookID }
     }
 
-    private func selectDefaultRoleChapter() {
+    private func selectDefaultRoleBook() {
         guard selectedRoleBookID == nil else { return }
         let defaultBook = library.books.max {
             ($0.lastReadAt ?? $0.importedAt) < ($1.lastReadAt ?? $1.importedAt)
         }
         selectedRoleBookID = defaultBook?.id
-        selectedRoleChapterIndex = defaultBook?.currentChapter ?? 0
+        if let defaultBook { readAloud.loadStoredCastCharacters(for: defaultBook) }
     }
 
-    private func selectDefaultChapterInBook() {
-        guard let selectedRoleBook else {
-            selectedRoleChapterIndex = 0
-            return
-        }
-        selectedRoleChapterIndex = min(
-            max(selectedRoleBook.currentChapter, 0),
-            max(selectedRoleBook.chapters.count - 1, 0)
-        )
-    }
-
-    private func analyzeSelectedLocalChapter() {
+    private func loadSelectedBookCast() {
         guard let selectedRoleBook else { return }
-        readAloud.analyzeLocalRoles(
-            book: selectedRoleBook,
-            chapterIndex: selectedRoleChapterIndex
-        )
+        readAloud.loadStoredCastCharacters(for: selectedRoleBook)
+    }
+
+    private func analyzeSelectedBook() {
+        guard let selectedRoleBook else { return }
+        readAloud.analyzeWholeBook(selectedRoleBook)
     }
 
     private func stageImportedAudio(_ url: URL) {

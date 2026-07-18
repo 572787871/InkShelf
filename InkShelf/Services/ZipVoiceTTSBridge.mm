@@ -18,7 +18,7 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     if (!self) return nil;
 
     SherpaOnnxOfflineTtsConfig config = {};
-    config.model.num_threads = 2;
+    config.model.num_threads = 4;
     config.model.debug = 0;
     config.model.provider = "cpu";
     config.model.zipvoice.encoder = encoderPath.UTF8String;
@@ -31,8 +31,8 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     config.model.zipvoice.t_shift = 0.5f;
     config.model.zipvoice.target_rms = 0.1f;
     config.model.zipvoice.guidance_scale = 1.0f;
-    config.max_num_sentences = 1;
-    config.silence_scale = 0.1f;
+    config.max_num_sentences = 8;
+    config.silence_scale = 0.04f;
 
     _tts = SherpaOnnxCreateOfflineTts(&config);
     if (!_tts) {
@@ -73,13 +73,13 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     }
 
     SherpaOnnxGenerationConfig generation = {};
-    generation.silence_scale = 0.1f;
+    generation.silence_scale = 0.04f;
     generation.speed = MAX(0.7f, MIN(1.2f, speed));
     generation.reference_audio = wave->samples;
     generation.reference_audio_len = wave->num_samples;
     generation.reference_sample_rate = wave->sample_rate;
     generation.reference_text = referenceText.UTF8String;
-    generation.num_steps = 4;
+    generation.num_steps = 8;
     generation.extra = "{\"min_char_in_sentence\":\"10\"}";
 
     const SherpaOnnxGeneratedAudio *audio = SherpaOnnxOfflineTtsGenerateWithConfig(
