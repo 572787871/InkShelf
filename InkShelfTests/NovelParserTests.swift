@@ -694,6 +694,25 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(character.voiceID, "茉莉")
     }
 
+    func testRoleBasedVoiceSelectionSeparatesNarrationTypesAndCharacters() {
+        var settings = ReadAloudSettings()
+        settings.voiceSelectionMode = .roleBased
+        settings.narratorVoiceIdentifier = "白桦"
+        settings.thirdPersonVoiceIdentifier = "苏打"
+        settings.characterVoiceIdentifier = "冰糖"
+
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .narrator, settings: settings).voiceID, "白桦")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .thirdPersonNarrator, settings: settings).voiceID, "苏打")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings).voiceID, "冰糖")
+    }
+
+    func testMiMoCatalogIncludesAllPublishedPresetVoiceIdentifiers() {
+        XCTAssertEqual(
+            Set(AudiobookVoiceDirector.choices(for: .mimo).map(\.id)),
+            Set(["冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"])
+        )
+    }
+
     func testZipVoiceFloatPCMCanBeWrappedAsWAV() {
         let pcm = Data(repeating: 0, count: 16)
         let audio = ZipVoiceSynthesizedAudio(pcmFloat32: pcm, sampleRate: 24_000)
@@ -716,12 +735,35 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("李四")])
     }
 
-    func testNarrationKeepsNarratorVoice() {
+    func testThirdPersonNarrationUsesItsOwnSpeakerType() {
         let page = page(index: 0, text: "天色渐渐亮了。远处传来钟声。")
 
         let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
 
-        XCTAssertEqual(speakers, [.narrator, .narrator])
+        XCTAssertEqual(speakers, [.thirdPersonNarrator, .thirdPersonNarrator])
+    }
+
+    func testFirstPersonNarrationUsesNarratorSpeakerType() {
+        let page = page(index: 0, text: "我推开门，发现天色已经亮了。")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.narrator])
+    }
+
+    func testCrossPageSentenceFragmentsAreJoinedButCompletedSentencesAreNot() {
+        XCTAssertTrue(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "他推开门，发现走廊尽头站着",
+            nextFragment: "一个陌生人。"
+        ))
+        XCTAssertFalse(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "他推开门。",
+            nextFragment: "走廊尽头站着一个陌生人。"
+        ))
+        XCTAssertFalse(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "“我知道了！”",
+            nextFragment: "她转身离开。"
+        ))
     }
 
     func testUnknownDialogueAlternatesAcrossPages() {
@@ -786,6 +828,7 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(settings.model, ReadAloudProvider.mimo.defaultModel)
         XCTAssertFalse(settings.allowsTextUpload)
         XCTAssertEqual(settings.roleDetectionMode, .ai)
+        XCTAssertEqual(settings.localRoleModel, .qwen3_0_6B)
         XCTAssertEqual(settings.voiceSelectionMode, .automatic)
     }
 

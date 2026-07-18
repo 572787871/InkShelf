@@ -31,6 +31,8 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Services/AudiobookSpeechKit.swift`
   - MiMo and OpenAI-compatible speech clients, AI chapter role analysis,
     automatic role casting, Keychain credential storage and audio playback
+- `InkShelf/Services/LocalNovelRoleModel.swift`
+  - downloadable MLX/Qwen3 4-bit chapter-role model used entirely on iPhone
 - `InkShelf/Services/ZipVoiceKit.swift` and `ZipVoiceTTSBridge.{h,mm}`
   - official ZipVoice model download/install, reference-voice profiles,
     Swift-to-sherpa-onnx bridge and iPhone ONNX inference
@@ -83,21 +85,25 @@ context, not a substitute for inspecting the current code and Git history.
 - The floating circular cover opens the narrated book. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
-- Role attribution can use an OpenAI-compatible chapter analysis request or the
-  local quoted-dialogue/speaking-verb rules. AI assignments merge onto the local
-  fallback, so an unavailable analysis service does not stop narration.
-- Automatic voice selection keeps the narrator and named characters stable;
-  users can instead select one voice for the whole book. Local ZipVoice profiles
-  are reference WAV/precise-transcript pairs rather than bundled real-person
-  samples.
+- Role attribution can use an OpenAI-compatible request, a downloaded local
+  MLX/Qwen3 model, or quoted-dialogue/speaking-verb rules. Model assignments
+  distinguish first-person narration, third-person narration and named roles,
+  then merge onto the local fallback so analysis failure does not stop speech.
+- Automatic voice selection keeps narration and named characters stable. Users
+  can instead select one voice for the whole book or separately choose
+  first-person narrator, third-person narrator and default-character voices.
+  MiMo exposes its eight published preset IDs; local ZipVoice profiles remain
+  user-authorized reference WAV/precise-transcript pairs, not copied presets.
 - Apple system voices, Kokoro/VITS packages and the old model store are not used.
   Speech can use MiMo chat audio, a configurable OpenAI-compatible
   `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
   iPhone. The official bilingual INT8 model/vocoder is downloaded from the
   sherpa-onnx release and checksum-verified instead of being bundled in the IPA.
 - While a sentence is playing, the next sentence is synthesized concurrently
-  and consumed from the pre-generation slot. If it is not ready at completion,
-  playback waits for that in-flight request instead of launching a duplicate.
+  and consumed from a page-and-sentence-keyed pre-generation slot. If pagination
+  cuts through a sentence, the two page fragments are synthesized as one audio
+  request and the visible/session page advances during that audio instead of
+  inserting a new utterance boundary.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
   user explicitly consents. Local rules plus local ZipVoice needs no network.
 - Read-aloud settings are available only from the homepage top-right Settings

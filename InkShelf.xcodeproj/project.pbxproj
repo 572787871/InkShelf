@@ -32,6 +32,9 @@
 		100000000000000000000023 /* sherpa-onnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* sherpa-onnx.xcframework */; };
 		100000000000000000000024 /* onnxruntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* onnxruntime.xcframework */; };
 		100000000000000000000025 /* SWCompression in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000004 /* SWCompression */; };
+		100000000000000000000026 /* LocalNovelRoleModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* LocalNovelRoleModel.swift */; };
+		100000000000000000000027 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000006 /* MLXLLM */; };
+		100000000000000000000028 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 900000000000000000000007 /* MLXLMCommon */; };
 		100000000000000000000013 /* NotoSerifCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */; };
 		100000000000000000000014 /* NotoSansCJKsc-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */; };
 		100000000000000000000015 /* LXGWWenKai-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* LXGWWenKai-Regular.ttf */; };
@@ -83,10 +86,11 @@
 		200000000000000000000024 /* InkShelf-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "InkShelf-Bridging-Header.h"; sourceTree = "<group>"; };
 		200000000000000000000025 /* sherpa-onnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "sherpa-onnx.xcframework"; sourceTree = "<group>"; };
 		200000000000000000000026 /* onnxruntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "onnxruntime.xcframework"; sourceTree = "<group>"; };
+		200000000000000000000027 /* LocalNovelRoleModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalNovelRoleModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */, 100000000000000000000025 /* SWCompression in Frameworks */, 100000000000000000000023 /* sherpa-onnx.xcframework in Frameworks */, 100000000000000000000024 /* onnxruntime.xcframework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000010 /* ZIPFoundation in Frameworks */, 100000000000000000000025 /* SWCompression in Frameworks */, 100000000000000000000027 /* MLXLLM in Frameworks */, 100000000000000000000028 /* MLXLMCommon in Frameworks */, 100000000000000000000023 /* sherpa-onnx.xcframework in Frameworks */, 100000000000000000000024 /* onnxruntime.xcframework in Frameworks */,); runOnlyForDeploymentPostprocessing = 0; };
 		400000000000000000000004 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
@@ -95,7 +99,7 @@
 		300000000000000000000002 /* InkShelf */ = {isa = PBXGroup; children = (300000000000000000000003 /* App */, 300000000000000000000004 /* Models */, 300000000000000000000005 /* Services */, 300000000000000000000006 /* Theme */, 300000000000000000000007 /* Views */, 300000000000000000000008 /* Resources */, 200000000000000000000024 /* InkShelf-Bridging-Header.h */); path = InkShelf; sourceTree = "<group>"; };
 		300000000000000000000003 /* App */ = {isa = PBXGroup; children = (200000000000000000000001 /* InkShelfApp.swift */,); path = App; sourceTree = "<group>"; };
 		300000000000000000000004 /* Models */ = {isa = PBXGroup; children = (200000000000000000000002 /* Book.swift */, 200000000000000000000012 /* ReaderPagination.swift */, 200000000000000000000019 /* ReadAloudRoles.swift */,); path = Models; sourceTree = "<group>"; };
-		300000000000000000000005 /* Services */ = {isa = PBXGroup; children = (200000000000000000000003 /* LibraryStore.swift */, 200000000000000000000004 /* NovelImporter.swift */, 200000000000000000000005 /* ReadAloudService.swift */, 20000000000000000000001B /* AudiobookSpeechKit.swift */, 200000000000000000000021 /* ZipVoiceKit.swift */, 200000000000000000000022 /* ZipVoiceTTSBridge.mm */, 200000000000000000000023 /* ZipVoiceTTSBridge.h */,); path = Services; sourceTree = "<group>"; };
+		300000000000000000000005 /* Services */ = {isa = PBXGroup; children = (200000000000000000000003 /* LibraryStore.swift */, 200000000000000000000004 /* NovelImporter.swift */, 200000000000000000000005 /* ReadAloudService.swift */, 20000000000000000000001B /* AudiobookSpeechKit.swift */, 200000000000000000000027 /* LocalNovelRoleModel.swift */, 200000000000000000000021 /* ZipVoiceKit.swift */, 200000000000000000000022 /* ZipVoiceTTSBridge.mm */, 200000000000000000000023 /* ZipVoiceTTSBridge.h */,); path = Services; sourceTree = "<group>"; };
 		300000000000000000000006 /* Theme */ = {isa = PBXGroup; children = (200000000000000000000006 /* BookPalette.swift */, 200000000000000000000007 /* ReaderPreferences.swift */,); path = Theme; sourceTree = "<group>"; };
 		300000000000000000000007 /* Views */ = {isa = PBXGroup; children = (200000000000000000000008 /* BookCoverView.swift */, 200000000000000000000009 /* BookshelfView.swift */, 20000000000000000000000A /* SettingsView.swift */, 20000000000000000000001A /* ReadAloudSettingsView.swift */, 20000000000000000000000B /* BookInfoView.swift */, 20000000000000000000000C /* ReaderView.swift */, 200000000000000000000013 /* InteractivePageTurnView.swift */,); path = Views; sourceTree = "<group>"; };
 		300000000000000000000008 /* Resources */ = {isa = PBXGroup; children = (20000000000000000000000D /* Assets.xcassets */, 20000000000000000000000E /* PrivacyInfo.xcprivacy */, 200000000000000000000014 /* NotoSerifCJKsc-Regular.otf */, 200000000000000000000015 /* NotoSansCJKsc-Regular.otf */, 200000000000000000000016 /* LXGWWenKai-Regular.ttf */, 200000000000000000000017 /* OFL-Noto.txt */, 200000000000000000000018 /* OFL-LXGWWenKai.txt */,); path = Resources; sourceTree = "<group>"; };
@@ -112,7 +116,7 @@
 			buildRules = ();
 			dependencies = ();
 			name = InkShelf;
-			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */, 900000000000000000000004 /* SWCompression */,);
+			packageProductDependencies = (900000000000000000000002 /* ZIPFoundation */, 900000000000000000000004 /* SWCompression */, 900000000000000000000006 /* MLXLLM */, 900000000000000000000007 /* MLXLMCommon */,);
 			productName = InkShelf;
 			productReference = 200000000000000000000010 /* InkShelf.app */;
 			productType = "com.apple.product-type.application";
@@ -140,7 +144,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (en, Base, zh_Hans,);
 			mainGroup = 300000000000000000000001;
-			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */, 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */,);
+			packageReferences = (900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */, 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */, 900000000000000000000005 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,);
 			productRefGroup = 30000000000000000000000A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -154,7 +158,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		400000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000001, 100000000000000000000002, 100000000000000000000003, 100000000000000000000004, 100000000000000000000005, 100000000000000000000006, 100000000000000000000007, 100000000000000000000008, 100000000000000000000009, 10000000000000000000000A, 10000000000000000000000B, 10000000000000000000000C, 100000000000000000000011, 100000000000000000000012, 100000000000000000000018, 100000000000000000000019, 10000000000000000000001A, 10000000000000000000001B, 100000000000000000000021, 100000000000000000000022,); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000001, 100000000000000000000002, 100000000000000000000003, 100000000000000000000004, 100000000000000000000005, 100000000000000000000006, 100000000000000000000007, 100000000000000000000008, 100000000000000000000009, 10000000000000000000000A, 10000000000000000000000B, 10000000000000000000000C, 100000000000000000000011, 100000000000000000000012, 100000000000000000000018, 100000000000000000000019, 10000000000000000000001A, 10000000000000000000001B, 100000000000000000000021, 100000000000000000000022, 100000000000000000000026,); runOnlyForDeploymentPostprocessing = 0; };
 		400000000000000000000005 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (10000000000000000000000F /* NovelParserTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
@@ -180,11 +184,14 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/weichsel/ZIPFoundation.git"; requirement = {kind = exactVersion; version = 0.9.20; }; };
 		900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/tsolomko/SWCompression.git"; requirement = {kind = exactVersion; version = 4.9.0; }; };
+		900000000000000000000005 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/ml-explore/mlx-swift-lm.git"; requirement = {kind = exactVersion; version = 2.25.9; }; };
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		900000000000000000000002 /* ZIPFoundation */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */; productName = ZIPFoundation; };
 		900000000000000000000004 /* SWCompression */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000003 /* XCRemoteSwiftPackageReference "SWCompression" */; productName = SWCompression; };
+		900000000000000000000006 /* MLXLLM */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000005 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */; productName = MLXLLM; };
+		900000000000000000000007 /* MLXLMCommon */ = {isa = XCSwiftPackageProductDependency; package = 900000000000000000000005 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */; productName = MLXLMCommon; };
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 600000000000000000000001 /* Project object */;

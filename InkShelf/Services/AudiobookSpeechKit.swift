@@ -51,7 +51,11 @@ enum AudiobookVoiceDirector {
                 .init(id: "白桦", name: "白桦 · 男声"),
                 .init(id: "苏打", name: "苏打 · 男声"),
                 .init(id: "冰糖", name: "冰糖 · 女声"),
-                .init(id: "茉莉", name: "茉莉 · 女声")
+                .init(id: "茉莉", name: "茉莉 · 女声"),
+                .init(id: "Mia", name: "Mia · 英文女声"),
+                .init(id: "Chloe", name: "Chloe · 英文女声"),
+                .init(id: "Milo", name: "Milo · 英文男声"),
+                .init(id: "Dean", name: "Dean · 英文男声")
             ]
         case .openAICompatible:
             return ["alloy", "nova", "echo", "shimmer", "onyx", "fable"].map {
@@ -64,9 +68,10 @@ enum AudiobookVoiceDirector {
         for speaker: ReadAloudSpeaker,
         settings: ReadAloudSettings
     ) -> AudiobookVoiceDirection {
-        if settings.voiceSelectionMode == .single,
-           choices(for: settings.provider).contains(where: { $0.id == settings.selectedVoiceIdentifier }) {
-            return .init(voiceID: settings.selectedVoiceIdentifier, instruction: instruction(for: speaker))
+        let choices = choices(for: settings.provider)
+        if let selectedIdentifier = selectedVoiceIdentifier(for: speaker, settings: settings),
+           choices.contains(where: { $0.id == selectedIdentifier }) {
+            return .init(voiceID: selectedIdentifier, instruction: instruction(for: speaker))
         }
         switch settings.provider {
         case .localZipVoice:
@@ -75,6 +80,8 @@ enum AudiobookVoiceDirector {
             switch speaker {
             case .narrator:
                 return .init(voiceID: "白桦", instruction: "沉稳、自然地进行有声书旁白，吐字清晰。")
+            case .thirdPersonNarrator:
+                return .init(voiceID: "苏打", instruction: "以客观、连贯的第三人称旁白口吻朗读，吐字清晰。")
             case let .unknownDialogue(turn):
                 let voices = ["冰糖", "苏打"]
                 return .init(
@@ -92,6 +99,8 @@ enum AudiobookVoiceDirector {
             switch speaker {
             case .narrator:
                 return .init(voiceID: "alloy", instruction: "Read as a calm, natural audiobook narrator in the text's language.")
+            case .thirdPersonNarrator:
+                return .init(voiceID: "fable", instruction: "Read as an objective third-person audiobook narrator in the text's language.")
             case let .unknownDialogue(turn):
                 let voices = ["nova", "echo"]
                 return .init(
@@ -111,8 +120,30 @@ enum AudiobookVoiceDirector {
     private static func instruction(for speaker: ReadAloudSpeaker) -> String {
         switch speaker {
         case .narrator: "沉稳、自然地进行有声书旁白，吐字清晰。"
+        case .thirdPersonNarrator: "以客观、连贯的第三人称旁白口吻朗读，吐字清晰。"
         case let .character(name): "保持人物“\(name)”的声音稳定，以自然的角色口吻朗读对白。"
         case .unknownDialogue: "以自然的角色口吻朗读对白，不要读出额外说明。"
+        }
+    }
+
+    private static func selectedVoiceIdentifier(
+        for speaker: ReadAloudSpeaker,
+        settings: ReadAloudSettings
+    ) -> String? {
+        switch settings.voiceSelectionMode {
+        case .automatic:
+            return nil
+        case .single:
+            return settings.selectedVoiceIdentifier
+        case .roleBased:
+            switch speaker {
+            case .narrator:
+                return settings.narratorVoiceIdentifier
+            case .thirdPersonNarrator:
+                return settings.thirdPersonVoiceIdentifier
+            case .character, .unknownDialogue:
+                return settings.characterVoiceIdentifier
+            }
         }
     }
 
@@ -333,6 +364,77 @@ actor AudiobookSpeechClient {
     }
 }
 
+struct NovelRoleAnalysisInput: Sendable {
+    let prompt: String
+    let sentenceLookup: [String: (ReaderPageLocation, Int)]
+}
+
+enum NovelRoleAnalysisCodec {
+    static func makeInput(pages: [ReaderPage], maximumCharacters: Int) -> NovelRoleAnalysisInput {
+        var sentenceLookup: [String: (ReaderPageLocation, Int)] = [:]
+        var sourceLines: [String] = []
+        var characterCount = 0
+        for (pageOffset, page) in pages.enumerated() {
+            let sentences = ReadAloudTextPlan(text: page.text).sentences
+            for (sentenceIndex, sentence) in sentences.enumerated() {
+                let id = "p\(pageOffset)s\(sentenceIndex)"
+                let line = "\(id)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))"
+                guard characterCount + line.count <= maximumCharacters else { break }
+                sentenceLookup[id] = (page.location, sentenceIndex)
+                sourceLines.append(line)
+                characterCount += line.count + 1
+            }
+        }
+        let prompt = """
+        你是小说有声书角色导演。结合章节上下文、引号、说话动词、人物称谓、代词和连续对话，判断每个文本单元的声音类型。
+        type 只能是“第一人称旁白”“第三人称旁白”或“角色”。角色必须填写原文已经出现的人名；不确定人物时 speaker 写“未知”。不得改写原文或虚构人物。
+        只返回严格 JSON：{"assignments":[{"id":"p0s0","type":"第三人称旁白","speaker":""},{"id":"p0s1","type":"角色","speaker":"人物名"}]}。
+        文本单元如下：
+        \(sourceLines.joined(separator: "\n"))
+        """
+        return NovelRoleAnalysisInput(prompt: prompt, sentenceLookup: sentenceLookup)
+    }
+
+    static func decode(
+        content: String,
+        input: NovelRoleAnalysisInput,
+        fallback: ReadAloudRolePlan
+    ) throws -> ReadAloudRolePlan {
+        guard let jsonData = jsonObjectData(in: content),
+              let result = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let assignments = result["assignments"] as? [[String: Any]] else {
+            throw AudiobookSpeechError.invalidResponse
+        }
+        var combined = fallback.speakersByPage
+        for assignment in assignments {
+            guard let id = assignment["id"] as? String,
+                  let (location, index) = input.sentenceLookup[id],
+                  var speakers = combined[location], speakers.indices.contains(index) else { continue }
+            let type = (assignment["type"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawSpeaker = (assignment["speaker"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if type.contains("第三人称") || rawSpeaker.contains("第三人称") {
+                speakers[index] = .thirdPersonNarrator
+            } else if type.contains("第一人称") || rawSpeaker == "旁白" || rawSpeaker.contains("第一人称") {
+                speakers[index] = .narrator
+            } else if type == "角色" || (!rawSpeaker.isEmpty && rawSpeaker != "未知") {
+                if !rawSpeaker.isEmpty, rawSpeaker != "未知", rawSpeaker.count <= 12 {
+                    speakers[index] = .character(rawSpeaker)
+                }
+            }
+            combined[location] = speakers
+        }
+        return ReadAloudRolePlan(speakersByPage: combined)
+    }
+
+    private static func jsonObjectData(in content: String) -> Data? {
+        guard let start = content.firstIndex(of: "{"),
+              let end = content.lastIndex(of: "}"), start <= end else { return nil }
+        return Data(content[start...end].utf8)
+    }
+}
+
 actor AICharacterRoleClient {
     func analyze(
         pages: [ReaderPage],
@@ -351,28 +453,12 @@ actor AICharacterRoleClient {
             throw AudiobookSpeechError.invalidConfiguration("角色分析地址必须是 HTTPS 地址")
         }
 
-        var sentenceLookup: [String: (ReaderPageLocation, Int)] = [:]
-        var sourceLines: [String] = []
-        for (pageOffset, page) in pages.enumerated() {
-            let sentences = ReadAloudTextPlan(text: page.text).sentences
-            for (sentenceIndex, sentence) in sentences.enumerated() {
-                let id = "p\(pageOffset)s\(sentenceIndex)"
-                sentenceLookup[id] = (page.location, sentenceIndex)
-                sourceLines.append("\(id)\t\(sentence.text.replacingOccurrences(of: "\n", with: " "))")
-            }
-        }
-        let source = String(sourceLines.joined(separator: "\n").prefix(48_000))
-        let instruction = """
-        你是小说有声书导演。判断每句是旁白还是哪位人物说话。不得改写原文，不得虚构姓名。
-        只返回 JSON：{"assignments":[{"id":"p0s0","speaker":"旁白"},{"id":"p0s1","speaker":"人物名"}]}。
-        不确定说话人时 speaker 写“未知”。句子如下：
-        \(source)
-        """
+        let input = NovelRoleAnalysisCodec.makeInput(pages: pages, maximumCharacters: 48_000)
         let body: [String: Any] = [
             "model": settings.analysisModel,
             "messages": [
                 ["role": "system", "content": "你只输出严格 JSON。"],
-                ["role": "user", "content": instruction]
+                ["role": "user", "content": input.prompt]
             ],
             "temperature": 0
         ]
@@ -394,35 +480,10 @@ actor AICharacterRoleClient {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String,
-              let jsonData = Self.jsonObjectData(in: content),
-              let result = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let assignments = result["assignments"] as? [[String: Any]] else {
+              let content = message["content"] as? String else {
             throw AudiobookSpeechError.invalidResponse
         }
-
-        var combined = fallback.speakersByPage
-        for assignment in assignments {
-            guard let id = assignment["id"] as? String,
-                  let rawSpeaker = assignment["speaker"] as? String,
-                  let (location, index) = sentenceLookup[id],
-                  var speakers = combined[location], speakers.indices.contains(index) else { continue }
-            let speaker = rawSpeaker.trimmingCharacters(in: .whitespacesAndNewlines)
-            if speaker == "旁白" {
-                speakers[index] = .narrator
-            } else if !speaker.isEmpty, speaker != "未知", speaker.count <= 12 {
-                speakers[index] = .character(speaker)
-            }
-            combined[location] = speakers
-        }
-        return ReadAloudRolePlan(speakersByPage: combined)
-    }
-
-    private static func jsonObjectData(in content: String) -> Data? {
-        guard let start = content.firstIndex(of: "{"), let end = content.lastIndex(of: "}"), start <= end else {
-            return nil
-        }
-        return Data(content[start...end].utf8)
+        return try NovelRoleAnalysisCodec.decode(content: content, input: input, fallback: fallback)
     }
 
     private static func serviceMessage(from data: Data) -> String {
@@ -439,20 +500,44 @@ actor AICharacterRoleClient {
 final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     private var completion: (() -> Void)?
+    private var boundaryTimer: Timer?
+    private var boundaryHandler: (() -> Void)?
     private(set) var isPaused = false
 
     var hasScheduledAudio: Bool { player != nil }
 
-    func play(_ data: Data, completion: @escaping () -> Void) throws {
+    func play(
+        _ data: Data,
+        boundaryFraction: Double? = nil,
+        onBoundary: (() -> Void)? = nil,
+        completion: @escaping () -> Void
+    ) throws {
         stop()
         let player = try AVAudioPlayer(data: data)
         self.player = player
         self.completion = completion
+        boundaryHandler = onBoundary
         player.delegate = self
         player.prepareToPlay()
         guard player.play() else {
             stop()
             throw AudiobookSpeechError.invalidResponse
+        }
+        if let boundaryFraction, onBoundary != nil {
+            let fraction = min(0.98, max(0.02, boundaryFraction))
+            let boundaryTime = player.duration * fraction
+            boundaryTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak player] timer in
+                guard let self, let player, self.player === player else {
+                    timer.invalidate()
+                    return
+                }
+                guard player.currentTime >= boundaryTime else { return }
+                timer.invalidate()
+                self.boundaryTimer = nil
+                let handler = self.boundaryHandler
+                self.boundaryHandler = nil
+                handler?()
+            }
         }
     }
 
@@ -468,6 +553,9 @@ final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     func stop() {
+        boundaryTimer?.invalidate()
+        boundaryTimer = nil
+        boundaryHandler = nil
         player?.stop()
         player = nil
         completion = nil
@@ -477,6 +565,9 @@ final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         guard let currentPlayer = self.player, player === currentPlayer else { return }
         let completion = self.completion
+        boundaryTimer?.invalidate()
+        boundaryTimer = nil
+        boundaryHandler = nil
         self.player = nil
         self.completion = nil
         isPaused = false

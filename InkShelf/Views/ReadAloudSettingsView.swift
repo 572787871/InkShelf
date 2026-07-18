@@ -25,12 +25,12 @@ struct ReadAloudSettingsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("小说有声书")
                                 .font(.headline)
-                            Text("AI 识别角色 · 云端与本地共存 · 下一句预生成")
+                            Text("本地大模型识别角色 · 跨页续句无缝朗读")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Text("播放当前句时会提前生成下一句，减少段落之间的停顿。阅读页只负责开始、暂停和继续，所有配置仍集中在这里。")
+                    Text("同一句即使被分页切开，也会合并为一条语音并在朗读过程中翻页。阅读页只负责开始、暂停和继续，所有配置集中在这里。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -84,6 +84,16 @@ struct ReadAloudSettingsView: View {
                     Text("AI 会按章节判断每句话属于旁白还是具体人物；接口失败时自动回退到本地引号和说话动词规则，不中断朗读。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } else if readAloud.settings.roleDetectionMode == .localModel {
+                    Picker("本地模型", selection: settingBinding(\.localRoleModel)) {
+                        ForEach(LocalRoleModelVariant.allCases) { model in
+                            Text(model.title).tag(model)
+                        }
+                    }
+                    localRoleModelRow
+                    Text("模型下载后完全在 iPhone 上理解章节上下文，不上传小说；会区分第一人称旁白、第三人称旁白和具体角色。内存不足或分析失败时自动使用本地规则继续朗读。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("完全离线识别引号对白和“某某说、问、答”等提示语。")
                         .font(.footnote)
@@ -106,10 +116,12 @@ struct ReadAloudSettingsView: View {
                             Text(voice.name).tag(voice.id)
                         }
                     }
+                } else if readAloud.settings.voiceSelectionMode == .roleBased {
+                    voicePicker("第一人称旁白", selection: settingBinding(\.narratorVoiceIdentifier))
+                    voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
+                    voicePicker("默认角色", selection: settingBinding(\.characterVoiceIdentifier))
                 }
-                Text(readAloud.settings.voiceSelectionMode == .automatic
-                    ? "自动模式会让旁白使用稳定音色，并按人物名称稳定分配其他音色。"
-                    : "指定模式会让旁白和所有角色统一使用所选音色。")
+                Text(voiceSelectionHelp)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -299,6 +311,71 @@ struct ReadAloudSettingsView: View {
     private var requiresNetwork: Bool {
         readAloud.settings.provider != .localZipVoice
             || readAloud.settings.roleDetectionMode == .ai
+    }
+
+    @ViewBuilder
+    private var localRoleModelRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(readAloud.settings.localRoleModel.approximateDownload)
+                Text("MLX · Qwen3 4-bit · 仅用于章节角色理解")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            switch readAloud.localRoleModelState {
+            case .notInstalled, .failed(_):
+                Button("下载") { readAloud.downloadLocalRoleModel() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            case let .downloading(progress):
+                VStack(spacing: 4) {
+                    ProgressView(value: progress).frame(width: 64)
+                    Button("取消") { readAloud.cancelLocalRoleModelDownload() }
+                        .font(.caption)
+                }
+            case .installed:
+                Menu {
+                    Button("删除模型", role: .destructive) {
+                        Task {
+                            do { try await readAloud.removeLocalRoleModel() }
+                            catch { localError = error.localizedDescription }
+                        }
+                    }
+                } label: {
+                    Label("已安装", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            case .analyzing:
+                Label("分析中", systemImage: "brain.head.profile")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        if case let .failed(message) = readAloud.localRoleModelState {
+            Text(message).font(.footnote).foregroundStyle(.red)
+        }
+    }
+
+    private func voicePicker(_ title: String, selection: Binding<String>) -> some View {
+        Picker(title, selection: selection) {
+            Text("自动").tag("")
+            ForEach(readAloud.availableVoiceChoices) { voice in
+                Text(voice.name).tag(voice.id)
+            }
+        }
+    }
+
+    private var voiceSelectionHelp: String {
+        switch readAloud.settings.voiceSelectionMode {
+        case .automatic:
+            "自动模式会为旁白使用稳定音色，并按人物名称稳定分配角色音色。"
+        case .roleBased:
+            "可以分别设置第一人称旁白、第三人称旁白和普通角色；具体人物仍会保持稳定分配。"
+        case .single:
+            "统一音色会让旁白和所有角色使用同一个声音。"
+        }
     }
 
     @ViewBuilder

@@ -193,6 +193,41 @@ struct ReadAloudTextPlan: Equatable {
     }
 }
 
+struct ReadAloudSpeechPosition: Hashable, Sendable {
+    let location: ReaderPageLocation
+    let sentenceIndex: Int
+}
+
+struct ReadAloudCrossPageContinuation: Equatable, Sendable {
+    let source: ReadAloudSpeechPosition
+    let target: ReadAloudSpeechPosition
+    let boundaryFraction: Double
+}
+
+struct ReadAloudSpeechRequest: Equatable, Sendable {
+    let position: ReadAloudSpeechPosition
+    let text: String
+    let speaker: ReadAloudSpeaker
+    let continuation: ReadAloudCrossPageContinuation?
+}
+
+enum ReadAloudPageBoundary {
+    private static let terminalPunctuation = CharacterSet(charactersIn: "。！？!?；;…")
+    private static let trailingClosers = CharacterSet(charactersIn: "\"'”’」』】）》〉〕）]}")
+
+    static func shouldJoin(lastFragment: String, nextFragment: String) -> Bool {
+        guard !lastFragment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !nextFragment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        var scalarView = Array(lastFragment.unicodeScalars)
+        while let last = scalarView.last,
+              CharacterSet.whitespacesAndNewlines.contains(last) || trailingClosers.contains(last) {
+            scalarView.removeLast()
+        }
+        guard let last = scalarView.last else { return false }
+        return !terminalPunctuation.contains(last)
+    }
+}
+
 /// Automatic audiobook session with optional AI casting and interchangeable
 /// cloud or on-device speech generation.
 @MainActor
@@ -210,6 +245,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var connectionState = AudiobookConnectionState.idle
     @Published private(set) var zipVoiceInstallState = ZipVoiceInstallState.notInstalled
     @Published private(set) var zipVoiceProfiles: [ZipVoiceProfile] = []
+    @Published private(set) var localRoleModelState = LocalRoleModelState.notInstalled
     @Published var apiKey: String {
         didSet {
             guard apiKey != oldValue else { return }
@@ -224,12 +260,17 @@ final class ReadAloudService: NSObject, ObservableObject {
                 prefetchTask?.cancel()
                 prefetchTask = nil
                 prefetchedAudio = nil
+                prefetchTarget = nil
+                waitingForPrefetchPosition = nil
             }
             if oldValue.roleDetectionMode != settings.roleDetectionMode
                 || oldValue.analysisProvider != settings.analysisProvider
                 || oldValue.analysisBaseURL != settings.analysisBaseURL
-                || oldValue.analysisModel != settings.analysisModel {
+                || oldValue.analysisModel != settings.analysisModel
+                || oldValue.localRoleModel != settings.localRoleModel {
                 aiAnalyzedRoleChapters.removeAll()
+                localAnalyzedRoleChapters.removeAll()
+                refreshLocalRoleModelState()
             }
             persistSettings()
         }
@@ -244,6 +285,7 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private let speechClient = AudiobookSpeechClient()
     private let aiRoleClient = AICharacterRoleClient()
+    private let localRoleModel = LocalNovelRoleModel()
     private let zipVoiceStore = ZipVoiceStore()
     private let zipVoiceSynthesizer = ZipVoiceSynthesizer()
     private let speechPlayer = AudiobookAudioPlayer()
@@ -253,11 +295,15 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var analyzedRoleChapters: Set<Int> = []
     private var synthesisTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
-    private var prefetchedAudio: (index: Int, data: Data)?
-    private var waitingForPrefetchIndex: Int?
+    private var prefetchedAudio: (request: ReadAloudSpeechRequest, data: Data)?
+    private var prefetchTarget: ReadAloudSpeechRequest?
+    private var waitingForPrefetchPosition: ReadAloudSpeechPosition?
+    private var activeRequest: ReadAloudSpeechRequest?
     private var roleAnalysisTask: Task<Void, Never>?
     private var aiAnalyzedRoleChapters: Set<Int> = []
+    private var localAnalyzedRoleChapters: Set<Int> = []
     private var modelDownloadTask: Task<Void, Never>?
+    private var roleModelDownloadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var playbackToken = UUID()
     private var previewToken = UUID()
@@ -281,6 +327,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         super.init()
         zipVoiceProfiles = zipVoiceStore.profiles()
         zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
+        refreshLocalRoleModelState()
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
@@ -318,10 +365,17 @@ final class ReadAloudService: NSObject, ObservableObject {
                 && !settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        let analysisReady = settings.roleDetectionMode == .localRules
-            || (networkCredentialsReady
+        let analysisReady: Bool
+        switch settings.roleDetectionMode {
+        case .localRules:
+            analysisReady = true
+        case .localModel:
+            analysisReady = LocalNovelRoleModel.isInstalled(settings.localRoleModel)
+        case .ai:
+            analysisReady = networkCredentialsReady
                 && !settings.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !settings.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                && !settings.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         return synthesisReady && analysisReady
     }
 
@@ -344,6 +398,15 @@ final class ReadAloudService: NSObject, ObservableObject {
         if !availableVoiceChoices.contains(where: { $0.id == settings.selectedVoiceIdentifier }) {
             settings.selectedVoiceIdentifier = ""
         }
+        if !availableVoiceChoices.contains(where: { $0.id == settings.narratorVoiceIdentifier }) {
+            settings.narratorVoiceIdentifier = ""
+        }
+        if !availableVoiceChoices.contains(where: { $0.id == settings.thirdPersonVoiceIdentifier }) {
+            settings.thirdPersonVoiceIdentifier = ""
+        }
+        if !availableVoiceChoices.contains(where: { $0.id == settings.characterVoiceIdentifier }) {
+            settings.characterVoiceIdentifier = ""
+        }
         connectionState = .idle
     }
 
@@ -352,6 +415,51 @@ final class ReadAloudService: NSObject, ObservableObject {
         settings.analysisBaseURL = provider.defaultBaseURL
         settings.analysisModel = provider.defaultModel
         connectionState = .idle
+    }
+
+    func refreshLocalRoleModelState() {
+        localRoleModelState = LocalNovelRoleModel.isInstalled(settings.localRoleModel)
+            ? .installed
+            : .notInstalled
+    }
+
+    func downloadLocalRoleModel() {
+        guard roleModelDownloadTask == nil else { return }
+        let variant = settings.localRoleModel
+        localRoleModelState = .downloading(progress: 0)
+        roleModelDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await localRoleModel.download(variant) { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self, settings.localRoleModel == variant else { return }
+                        localRoleModelState = .downloading(progress: progress)
+                    }
+                }
+                try Task.checkCancellation()
+                localRoleModelState = .installed
+            } catch is CancellationError {
+                refreshLocalRoleModelState()
+            } catch {
+                localRoleModelState = .failed(error.localizedDescription)
+            }
+            roleModelDownloadTask = nil
+        }
+    }
+
+    func cancelLocalRoleModelDownload() {
+        roleModelDownloadTask?.cancel()
+        roleModelDownloadTask = nil
+        refreshLocalRoleModelState()
+    }
+
+    func removeLocalRoleModel() async throws {
+        let variant = settings.localRoleModel
+        roleModelDownloadTask?.cancel()
+        roleModelDownloadTask = nil
+        try await localRoleModel.remove(variant)
+        localAnalyzedRoleChapters.removeAll()
+        refreshLocalRoleModelState()
     }
 
     func downloadZipVoiceModel() {
@@ -473,6 +581,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         sessionPageIndex = pageIndex
         rolePlan = .empty
         analyzedRoleChapters.removeAll()
+        aiAnalyzedRoleChapters.removeAll()
+        localAnalyzedRoleChapters.removeAll()
         sessionChapterIndices = chapterIndices(in: pages)
         rebuildCurrentChapterTimeline(force: true)
         let context = ReadAloudBookContext(
@@ -524,7 +634,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             stoppingCurrentSpeech: stoppingCurrentSpeech
         )
         if continuePlaying {
-            play()
+            analyzeCurrentChapterThenPlayIfNeeded()
         } else {
             playbackRequested = false
             state = .paused(sentence: currentSentenceIndex)
@@ -544,6 +654,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         rolePlan = .empty
         analyzedRoleChapters.removeAll()
         aiAnalyzedRoleChapters.removeAll()
+        localAnalyzedRoleChapters.removeAll()
         sessionChapterIndices = chapterIndices(in: pages)
         sessionPageIndex = pages.firstIndex { $0.location == currentPageLocation }
             ?? pages.lastIndex {
@@ -686,6 +797,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         rolePlan = .empty
         analyzedRoleChapters.removeAll()
         aiAnalyzedRoleChapters.removeAll()
+        localAnalyzedRoleChapters.removeAll()
         roleAnalysisTask?.cancel()
         roleAnalysisTask = nil
         currentSentenceIndex = 0
@@ -722,27 +834,34 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func enqueueSentence(at index: Int) {
-        guard plan.sentences.indices.contains(index) else {
+        guard let currentPageLocation,
+              let request = speechRequest(at: .init(location: currentPageLocation, sentenceIndex: index)) else {
             playbackRequested = false
             state = .failed(message: "当前朗读位置不可用")
             updateNowPlayingInfo()
             return
         }
-        let sentence = plan.sentences[index]
-        let token = UUID()
-        playbackToken = token
         activeSentenceIndex = index
         currentSentenceIndex = index
-        currentSentenceRange = sentence.range
+        currentSentenceRange = plan.sentences[index].range
         nextSentenceIndex = index
-        waitingForPrefetchIndex = nil
         state = .playing(sentence: index)
         synchronizeNowPlayingAnchorToCurrentSentence()
         updateNowPlayingInfo()
 
-        if let prefetchedAudio, prefetchedAudio.index == index {
+        if prefetchTask != nil, prefetchTarget == request {
+            waitingForPrefetchPosition = request.position
+            return
+        }
+
+        let token = UUID()
+        playbackToken = token
+        activeRequest = request
+        waitingForPrefetchPosition = nil
+
+        if let prefetchedAudio, prefetchedAudio.request == request {
             self.prefetchedAudio = nil
-            startAudioPlayback(prefetchedAudio.data, index: index, token: token)
+            startAudioPlayback(prefetchedAudio.data, request: request, token: token)
             return
         }
 
@@ -750,15 +869,15 @@ final class ReadAloudService: NSObject, ObservableObject {
             guard let self else { return }
             do {
                 let audio = try await synthesizeAudio(
-                    text: sentence.text,
-                    speaker: sentence.speaker,
+                    text: request.text,
+                    speaker: request.speaker,
                     configuration: settings,
                     key: apiKey
                 )
                 try Task.checkCancellation()
                 guard playbackToken == token, playbackRequested else { return }
                 synthesisTask = nil
-                startAudioPlayback(audio, index: index, token: token)
+                startAudioPlayback(audio, request: request, token: token)
             } catch is CancellationError {
                 return
             } catch {
@@ -770,6 +889,82 @@ final class ReadAloudService: NSObject, ObservableObject {
                 updateNowPlayingInfo()
             }
         }
+    }
+
+    private func speechRequest(at position: ReadAloudSpeechPosition) -> ReadAloudSpeechRequest? {
+        guard let pageIndex = sessionPages.firstIndex(where: { $0.location == position.location }) else { return nil }
+        ensureRolePlan(forChapter: position.location.chapterIndex)
+        let pagePlan = position.location == currentPageLocation
+            ? plan
+            : ReadAloudTextPlan(
+                text: sessionPages[pageIndex].text,
+                speakers: rolePlan.speakers(for: position.location)
+            )
+        guard pagePlan.sentences.indices.contains(position.sentenceIndex) else { return nil }
+        let sentence = pagePlan.sentences[position.sentenceIndex]
+        var continuation: ReadAloudCrossPageContinuation?
+        var text = sentence.text
+        if position.sentenceIndex == pagePlan.sentences.count - 1,
+           sessionPages.indices.contains(pageIndex + 1) {
+            let nextPage = sessionPages[pageIndex + 1]
+            let nextPlan = ReadAloudTextPlan(
+                text: nextPage.text,
+                speakers: rolePlan.speakers(for: nextPage.location)
+            )
+            if nextPage.location.chapterIndex == position.location.chapterIndex,
+               let nextSentence = nextPlan.sentences.first,
+               ReadAloudPageBoundary.shouldJoin(
+                    lastFragment: sentence.text,
+                    nextFragment: nextSentence.text
+               ) {
+                let separator = Self.crossPageSeparator(from: sentence.text, to: nextSentence.text)
+                let combinedText = sentence.text + separator + nextSentence.text
+                let sourceLength = max(1, (sentence.text as NSString).length)
+                let totalLength = max(sourceLength + 1, (combinedText as NSString).length)
+                continuation = ReadAloudCrossPageContinuation(
+                    source: position,
+                    target: .init(location: nextPage.location, sentenceIndex: 0),
+                    boundaryFraction: Double(sourceLength) / Double(totalLength)
+                )
+                text = combinedText
+            }
+        }
+        return ReadAloudSpeechRequest(
+            position: position,
+            text: text,
+            speaker: sentence.speaker,
+            continuation: continuation
+        )
+    }
+
+    private static func crossPageSeparator(from first: String, to second: String) -> String {
+        guard let left = first.last, let right = second.first,
+              left.isASCII, right.isASCII,
+              (left.isLetter || left.isNumber), (right.isLetter || right.isNumber) else { return "" }
+        return " "
+    }
+
+    private func requestAfter(_ request: ReadAloudSpeechRequest) -> ReadAloudSpeechRequest? {
+        if let continuation = request.continuation {
+            return speechRequest(at: .init(
+                location: continuation.target.location,
+                sentenceIndex: continuation.target.sentenceIndex + 1
+            ))
+        }
+        if let samePage = speechRequest(at: .init(
+            location: request.position.location,
+            sentenceIndex: request.position.sentenceIndex + 1
+        )) {
+            return samePage
+        }
+        guard let pageIndex = sessionPages.firstIndex(where: { $0.location == request.position.location }),
+              sessionPages.indices.contains(pageIndex + 1) else { return nil }
+        let nextPage = sessionPages[pageIndex + 1]
+        if nextPage.location.chapterIndex != request.position.location.chapterIndex,
+           settings.roleDetectionMode != .localRules {
+            return nil
+        }
+        return speechRequest(at: .init(location: nextPage.location, sentenceIndex: 0))
     }
 
     private func synthesizeAudio(
@@ -802,12 +997,18 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private func startAudioPlayback(_ audio: Data, index: Int, token: UUID) {
+    private func startAudioPlayback(_ audio: Data, request: ReadAloudSpeechRequest, token: UUID) {
         do {
-            try speechPlayer.play(audio) { [weak self] in
-                self?.sentenceAudioDidFinish(index: index, token: token)
+            try speechPlayer.play(
+                audio,
+                boundaryFraction: request.continuation?.boundaryFraction,
+                onBoundary: request.continuation.map { continuation in
+                    { [weak self] in self?.crossPageBoundaryReached(continuation, token: token) }
+                }
+            ) { [weak self] in
+                self?.sentenceAudioDidFinish(request: request, token: token)
             }
-            beginPrefetch(after: index, token: token)
+            beginPrefetch(after: request, token: token)
         } catch {
             guard playbackToken == token else { return }
             activeSentenceIndex = nil
@@ -817,23 +1018,23 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private func beginPrefetch(after index: Int, token: UUID) {
+    private func beginPrefetch(after request: ReadAloudSpeechRequest, token: UUID) {
         prefetchTask?.cancel()
         prefetchedAudio = nil
-        let candidate = index + 1
-        guard plan.sentences.indices.contains(candidate) else {
+        guard let candidate = requestAfter(request) else {
             prefetchTask = nil
+            prefetchTarget = nil
             return
         }
-        let sentence = plan.sentences[candidate]
         let configuration = settings
         let key = apiKey
+        prefetchTarget = candidate
         prefetchTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let audio = try await synthesizeAudio(
-                    text: sentence.text,
-                    speaker: sentence.speaker,
+                    text: candidate.text,
+                    speaker: candidate.speaker,
                     configuration: configuration,
                     key: key
                 )
@@ -841,14 +1042,18 @@ final class ReadAloudService: NSObject, ObservableObject {
                 guard playbackToken == token else { return }
                 prefetchedAudio = (candidate, audio)
                 prefetchTask = nil
-                if waitingForPrefetchIndex == candidate, playbackRequested {
-                    enqueueSentence(at: candidate)
+                prefetchTarget = nil
+                if waitingForPrefetchPosition == candidate.position, playbackRequested,
+                   currentPageLocation == candidate.position.location {
+                    enqueueSentence(at: candidate.position.sentenceIndex)
                 }
             } catch {
                 guard playbackToken == token else { return }
                 prefetchTask = nil
-                if waitingForPrefetchIndex == candidate, playbackRequested {
-                    enqueueSentence(at: candidate)
+                prefetchTarget = nil
+                if waitingForPrefetchPosition == candidate.position, playbackRequested,
+                   currentPageLocation == candidate.position.location {
+                    enqueueSentence(at: candidate.position.sentenceIndex)
                 }
             }
         }
@@ -863,10 +1068,23 @@ final class ReadAloudService: NSObject, ObservableObject {
            let selected = zipVoiceProfiles.first(where: { $0.voiceIdentifier == settings.selectedVoiceIdentifier }) {
             return selected
         }
+        if settings.voiceSelectionMode == .roleBased {
+            let identifier: String
+            switch speaker {
+            case .narrator: identifier = settings.narratorVoiceIdentifier
+            case .thirdPersonNarrator: identifier = settings.thirdPersonVoiceIdentifier
+            case .character, .unknownDialogue: identifier = settings.characterVoiceIdentifier
+            }
+            if let selected = zipVoiceProfiles.first(where: { $0.voiceIdentifier == identifier }) {
+                return selected
+            }
+        }
         let index: Int
         switch speaker {
         case .narrator:
             index = 0
+        case .thirdPersonNarrator:
+            index = min(1, zipVoiceProfiles.count - 1)
         case let .unknownDialogue(turn):
             index = positiveModulo(turn + 1, zipVoiceProfiles.count)
         case let .character(name):
@@ -914,15 +1132,49 @@ final class ReadAloudService: NSObject, ObservableObject {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchedAudio = nil
-        waitingForPrefetchIndex = nil
+        prefetchTarget = nil
+        waitingForPrefetchPosition = nil
         speechPlayer.stop()
         activeSentenceIndex = nil
+        activeRequest = nil
     }
 
-    private func sentenceAudioDidFinish(index: Int, token: UUID) {
-        guard playbackToken == token, activeSentenceIndex == index else { return }
+    private func crossPageBoundaryReached(
+        _ continuation: ReadAloudCrossPageContinuation,
+        token: UUID
+    ) {
+        guard playbackToken == token,
+              currentPageLocation == continuation.source.location,
+              playbackRequested else { return }
+        currentSentenceRange = nil
+        state = .ready
+        if applicationIsActive,
+           bookContext?.id == visibleReaderBookID,
+           let onPageFinished {
+            onPageFinished()
+        } else {
+            advanceInBackground()
+        }
+    }
+
+    private func sentenceAudioDidFinish(request: ReadAloudSpeechRequest, token: UUID) {
+        guard playbackToken == token, activeRequest == request else { return }
         activeSentenceIndex = nil
-        let candidate = index + 1
+        activeRequest = nil
+        if let continuation = request.continuation,
+           currentPageLocation != continuation.target.location {
+            guard let targetIndex = sessionPages.firstIndex(where: {
+                $0.location == continuation.target.location
+            }) else { return }
+            sessionPageIndex = targetIndex
+            let targetPage = sessionPages[targetIndex]
+            setPage(
+                text: targetPage.text,
+                location: targetPage.location,
+                stoppingCurrentSpeech: false
+            )
+        }
+        let candidate = (request.continuation?.target.sentenceIndex ?? request.position.sentenceIndex) + 1
         guard playbackRequested else {
             nextSentenceIndex = min(candidate, max(0, plan.sentences.count - 1))
             state = .paused(sentence: currentSentenceIndex)
@@ -931,10 +1183,14 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
         guard candidate >= plan.sentences.count else {
             nextSentenceIndex = candidate
-            if prefetchedAudio?.index == candidate || prefetchTask == nil {
+            let candidatePosition = ReadAloudSpeechPosition(
+                location: currentPageLocation ?? request.position.location,
+                sentenceIndex: candidate
+            )
+            if prefetchedAudio?.request.position == candidatePosition || prefetchTask == nil {
                 enqueueSentence(at: candidate)
             } else {
-                waitingForPrefetchIndex = candidate
+                waitingForPrefetchPosition = candidatePosition
             }
             return
         }
@@ -965,10 +1221,21 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func analyzeCurrentChapterThenPlayIfNeeded() {
-        guard settings.roleDetectionMode == .ai,
-              let chapterIndex = currentPageLocation?.chapterIndex,
-              !aiAnalyzedRoleChapters.contains(chapterIndex),
-              networkCredentialsReady else {
+        guard let chapterIndex = currentPageLocation?.chapterIndex else {
+            play()
+            return
+        }
+        let needsAnalysis: Bool
+        switch settings.roleDetectionMode {
+        case .localRules:
+            needsAnalysis = false
+        case .ai:
+            needsAnalysis = !aiAnalyzedRoleChapters.contains(chapterIndex) && networkCredentialsReady
+        case .localModel:
+            needsAnalysis = !localAnalyzedRoleChapters.contains(chapterIndex)
+                && LocalNovelRoleModel.isInstalled(settings.localRoleModel)
+        }
+        guard needsAnalysis else {
             play()
             return
         }
@@ -984,23 +1251,46 @@ final class ReadAloudService: NSObject, ObservableObject {
         roleAnalysisTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let analyzed = try await aiRoleClient.analyze(
-                    pages: chapterPages,
-                    settings: configuration,
-                    apiKey: key,
-                    fallback: fallback
-                )
+                let analyzed: ReadAloudRolePlan
+                switch configuration.roleDetectionMode {
+                case .ai:
+                    analyzed = try await aiRoleClient.analyze(
+                        pages: chapterPages,
+                        settings: configuration,
+                        apiKey: key,
+                        fallback: fallback
+                    )
+                case .localModel:
+                    localRoleModelState = .analyzing
+                    analyzed = try await localRoleModel.analyze(
+                        pages: chapterPages,
+                        fallback: fallback,
+                        variant: configuration.localRoleModel
+                    )
+                case .localRules:
+                    analyzed = fallback
+                }
                 try Task.checkCancellation()
                 var combined = rolePlan.speakersByPage
                 combined.merge(analyzed.speakersByPage) { _, new in new }
                 rolePlan = ReadAloudRolePlan(speakersByPage: combined)
-                aiAnalyzedRoleChapters.insert(chapterIndex)
+                if configuration.roleDetectionMode == .ai {
+                    aiAnalyzedRoleChapters.insert(chapterIndex)
+                } else if configuration.roleDetectionMode == .localModel {
+                    localAnalyzedRoleChapters.insert(chapterIndex)
+                    localRoleModelState = .installed
+                }
             } catch is CancellationError {
                 return
             } catch {
-                // AI analysis is an enhancement. Preserve uninterrupted local
-                // rule attribution when the configured LLM is unavailable.
-                aiAnalyzedRoleChapters.insert(chapterIndex)
+                // Model analysis is an enhancement. Preserve uninterrupted
+                // local-rule attribution if the selected model is unavailable.
+                if configuration.roleDetectionMode == .ai {
+                    aiAnalyzedRoleChapters.insert(chapterIndex)
+                } else {
+                    localAnalyzedRoleChapters.insert(chapterIndex)
+                    localRoleModelState = .failed(error.localizedDescription)
+                }
             }
             roleAnalysisTask = nil
             guard let expectedLocation,

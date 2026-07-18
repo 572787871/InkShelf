@@ -34,10 +34,37 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case ai
+    case localModel
     case localRules
 
     var id: String { rawValue }
-    var title: String { self == .ai ? "AI 识别" : "本地规则" }
+    var title: String {
+        switch self {
+        case .ai: "云端 AI"
+        case .localModel: "本地大模型"
+        case .localRules: "本地规则"
+        }
+    }
+}
+
+enum LocalRoleModelVariant: String, Codable, CaseIterable, Identifiable, Sendable {
+    case qwen3_0_6B
+    case qwen3_1_7B
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .qwen3_0_6B: "Qwen3 0.6B · 轻量"
+        case .qwen3_1_7B: "Qwen3 1.7B · 精准"
+        }
+    }
+    var repositoryID: String {
+        switch self {
+        case .qwen3_0_6B: "mlx-community/Qwen3-0.6B-4bit"
+        case .qwen3_1_7B: "mlx-community/Qwen3-1.7B-4bit"
+        }
+    }
+    var approximateDownload: String { self == .qwen3_0_6B ? "约 335 MB" : "约 938 MB" }
 }
 
 enum ReadAloudAIProvider: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -54,10 +81,17 @@ enum ReadAloudAIProvider: String, Codable, CaseIterable, Identifiable, Sendable 
 
 enum ReadAloudVoiceSelectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case automatic
+    case roleBased
     case single
 
     var id: String { rawValue }
-    var title: String { self == .automatic ? "自动选择" : "指定音色" }
+    var title: String {
+        switch self {
+        case .automatic: "自动选择"
+        case .roleBased: "按类型指定"
+        case .single: "统一音色"
+        }
+    }
 }
 
 /// Persisted engine, role-detection, voice-selection and playback preferences.
@@ -68,16 +102,21 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
     var rateMultiplier = 0.9
     var allowsTextUpload = false
     var roleDetectionMode = ReadAloudRoleDetectionMode.ai
+    var localRoleModel = LocalRoleModelVariant.qwen3_0_6B
     var analysisProvider = ReadAloudAIProvider.mimo
     var analysisBaseURL = ReadAloudAIProvider.mimo.defaultBaseURL
     var analysisModel = ReadAloudAIProvider.mimo.defaultModel
     var voiceSelectionMode = ReadAloudVoiceSelectionMode.automatic
     var selectedVoiceIdentifier = ""
+    var narratorVoiceIdentifier = ""
+    var thirdPersonVoiceIdentifier = ""
+    var characterVoiceIdentifier = ""
 
     private enum CodingKeys: String, CodingKey {
         case provider, baseURL, model, rateMultiplier, allowsTextUpload
-        case roleDetectionMode, analysisProvider, analysisBaseURL, analysisModel
-        case voiceSelectionMode, selectedVoiceIdentifier
+        case roleDetectionMode, localRoleModel, analysisProvider, analysisBaseURL, analysisModel
+        case voiceSelectionMode, selectedVoiceIdentifier, narratorVoiceIdentifier
+        case thirdPersonVoiceIdentifier, characterVoiceIdentifier
     }
 
     init() {}
@@ -92,6 +131,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
         rateMultiplier = try container.decodeIfPresent(Double.self, forKey: .rateMultiplier) ?? 0.9
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
         roleDetectionMode = try container.decodeIfPresent(ReadAloudRoleDetectionMode.self, forKey: .roleDetectionMode) ?? .ai
+        localRoleModel = try container.decodeIfPresent(LocalRoleModelVariant.self, forKey: .localRoleModel) ?? .qwen3_0_6B
         analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
         analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
             ?? analysisProvider.defaultBaseURL
@@ -99,6 +139,9 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
             ?? analysisProvider.defaultModel
         voiceSelectionMode = try container.decodeIfPresent(ReadAloudVoiceSelectionMode.self, forKey: .voiceSelectionMode) ?? .automatic
         selectedVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .selectedVoiceIdentifier) ?? ""
+        narratorVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .narratorVoiceIdentifier) ?? ""
+        thirdPersonVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .thirdPersonVoiceIdentifier) ?? ""
+        characterVoiceIdentifier = try container.decodeIfPresent(String.self, forKey: .characterVoiceIdentifier) ?? ""
     }
 
     var normalized: ReadAloudSettings {
@@ -114,12 +157,13 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
 
 enum ReadAloudSpeaker: Equatable, Sendable {
     case narrator
+    case thirdPersonNarrator
     case character(String)
     case unknownDialogue(turn: Int)
 
     var isDialogue: Bool {
         switch self {
-        case .narrator: return false
+        case .narrator, .thirdPersonNarrator: return false
         case .character, .unknownDialogue: return true
         }
     }
@@ -188,7 +232,7 @@ struct ReadAloudRoleAnalyzer {
                     if let explicitSpeaker { context.remember(explicitSpeaker) }
                     context.lastUnitWasDialogue = false
                     context.unknownTurn = 0
-                    pageSpeakers.append(.narrator)
+                    pageSpeakers.append(narrationSpeaker(for: text))
                     continue
                 }
 
@@ -222,6 +266,11 @@ struct ReadAloudRoleAnalyzer {
             result[page.location] = pageSpeakers
         }
         return ReadAloudRolePlan(speakersByPage: result)
+    }
+
+    private static func narrationSpeaker(for text: String) -> ReadAloudSpeaker {
+        let firstPersonMarkers = ["我", "我们", "咱们", "本人", "我的", "我们的"]
+        return firstPersonMarkers.contains(where: text.contains) ? .narrator : .thirdPersonNarrator
     }
 
     private static func alternatingSpeaker(in context: Context) -> String? {
