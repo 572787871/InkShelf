@@ -78,8 +78,8 @@ context, not a substitute for inspecting the current code and Git history.
 - “从本页听” starts the visible page. While that book owns an active narration
   session, each visible speech segment has a play/pause control; selecting a
   different segment explicitly retargets narration to that exact text range.
-  These controls use a thin 30×21-point oval treatment aligned just before the
-  segment's first visible line.
+  These controls reproduce the 8a72918 reader treatment: an 18×18-point thin
+  oval at the leading edge of a compact 26-point first-line gutter.
 - “原进度” returns to `ReadAloudService.currentPageLocation` and keeps the
   current sentence playing.
 - If the user browses away, narration continues through its own subsequent
@@ -154,15 +154,16 @@ context, not a substitute for inspecting the current code and Git history.
 - Pagination never snaps backward to a paragraph or punctuation boundary. A
   paragraph may span pages, and every character that does not fit on the current
   page must continue at the beginning of the next page.
-- Reader pagination reserves the narration segment-control first-line gutter.
-  During narration, each paragraph's first line is indented around its control
-  while continuation lines keep the full text width; the paginator uses the
-  same metric so enabling playback cannot clip text below the page.
+- Reader pagination reserves the narration segment-control's compact 26-point
+  first-line gutter. During narration, continuation lines keep the full text
+  width; the paginator uses the same metric so enabling playback cannot clip
+  text below the page.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
-- The current spoken range uses a soft translucent marker and leading accent;
-  the immersive “原进度 / 从本页听” capsule sits closer to the bottom status row.
+- The current spoken range uses the 8a72918 neutral text-tinted, per-line rounded
+  marker without a leading accent; the immersive “原进度 / 从本页听” capsule sits
+  closer to the bottom status row.
 - Reader appearance controls use grouped cards with coordinated theme/background
   previews, brightness, precise font-size controls, named line-spacing presets
   plus numeric sliders, page margins, font, page-turn style, and screen-awake

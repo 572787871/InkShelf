@@ -74,17 +74,17 @@ struct ReaderPageVerticalFill {
     }
 }
 
-/// A compact first-line gutter keeps the segment control visually attached to
-/// its paragraph without stealing width from continuation lines.
+/// Keep the paragraph control aligned exactly as it was in the 8a72918 reader:
+/// an 18-point oval inside a compact 26-point first-line gutter.
 enum ReaderParagraphControlLayout {
-    static let buttonSize = CGSize(width: 30, height: 21)
+    static let buttonSize = CGSize(width: 18, height: 18)
 
-    static func firstLineIndent(for fontSize: CGFloat) -> CGFloat {
-        min(64, max(52, fontSize * 2 + 4))
+    static func firstLineIndent(for _: CGFloat) -> CGFloat {
+        26
     }
 
-    static func buttonLeadingInset(for fontSize: CGFloat) -> CGFloat {
-        max(10, (firstLineIndent(for: fontSize) - buttonSize.width) / 2)
+    static func buttonLeadingInset(for _: CGFloat) -> CGFloat {
+        2
     }
 }
 
@@ -460,7 +460,7 @@ private final class ReaderPageContentView: UIView {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = lineSpacing
         paragraph.alignment = .natural
-        paragraph.firstLineHeadIndent = appearance.showsParagraphControls
+        paragraph.firstLineHeadIndent = appearance.showsParagraphControls && !paragraphButtonRanges.isEmpty
             ? ReaderParagraphControlLayout.firstLineIndent(for: appearance.fontSize)
             : 0
         paragraph.headIndent = 0
@@ -547,7 +547,7 @@ private final class ReaderPageContentView: UIView {
     }
 
     private var readingHighlightColor: UIColor {
-        UIColor.systemOrange.withAlphaComponent(appearance.backgroundColor.isDark ? 0.20 : 0.13)
+        appearance.textColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.12 : 0.075)
     }
 
     private func layoutSentenceHighlight() {
@@ -571,8 +571,6 @@ private final class ReaderPageContentView: UIView {
         let visibleHighlightRange = NSIntersectionRange(highlightGlyphRange, laidOutGlyphRange)
         guard visibleHighlightRange.length > 0 else { return }
 
-        let combinedPath = UIBezierPath()
-        var firstRect: CGRect?
         textView.layoutManager.enumerateLineFragments(forGlyphRange: visibleHighlightRange) {
             [weak self] _, _, _, lineGlyphRange, _ in
             guard let self else { return }
@@ -589,19 +587,12 @@ private final class ReaderPageContentView: UIView {
             rect = rect.intersection(self.textView.frame.insetBy(dx: -2, dy: -1))
             guard !rect.isNull, rect.width > 1, rect.height > 1 else { return }
 
-            if firstRect == nil { firstRect = rect }
-            combinedPath.append(UIBezierPath(roundedRect: rect, cornerRadius: 4))
-        }
-        let marker = CAShapeLayer()
-        marker.path = combinedPath.cgPath
-        marker.fillColor = readingHighlightColor.cgColor
-        highlightDecoration.layer.addSublayer(marker)
-        if let firstRect {
-            let accent = CAShapeLayer()
-            let bar = CGRect(x: firstRect.minX - 1.5, y: firstRect.minY + 2, width: 2.5, height: max(5, firstRect.height - 4))
-            accent.path = UIBezierPath(roundedRect: bar, cornerRadius: 1.25).cgPath
-            accent.fillColor = UIColor.systemOrange.withAlphaComponent(0.72).cgColor
-            highlightDecoration.layer.addSublayer(accent)
+            let marker = CAShapeLayer()
+            marker.path = UIBezierPath(roundedRect: rect, cornerRadius: 5).cgPath
+            marker.fillColor = self.readingHighlightColor.cgColor
+            marker.strokeColor = self.appearance.textColor.withAlphaComponent(0.04).cgColor
+            marker.lineWidth = 0.5
+            self.highlightDecoration.layer.addSublayer(marker)
         }
     }
 
@@ -609,8 +600,21 @@ private final class ReaderPageContentView: UIView {
         paragraphButtons = paragraphButtonRanges.enumerated().map { index, _ in
             let button = UIButton(type: .system)
             button.tag = index
+            button.tintColor = appearance.textColor.withAlphaComponent(0.32)
+            button.backgroundColor = .clear
+            button.layer.cornerRadius = 9
+            button.layer.cornerCurve = .continuous
+            button.layer.borderWidth = 0.6
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(0.14).cgColor
+            button.setImage(
+                UIImage(
+                    systemName: "play.fill",
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)
+                ),
+                for: .normal
+            )
             button.addTarget(self, action: #selector(paragraphControlTapped(_:)), for: .touchUpInside)
-            button.accessibilityLabel = "从这一段开始朗读或暂停当前段"
+            button.accessibilityLabel = "从本段开始朗读"
             addSubview(button)
             return button
         }
@@ -626,20 +630,19 @@ private final class ReaderPageContentView: UIView {
             let isCurrent = highlightedRange.map {
                 NSIntersectionRange($0, paragraphButtonRanges[index]).length > 0
             } ?? false
-            var configuration = UIButton.Configuration.plain()
-            configuration.image = UIImage(
-                systemName: isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 7, weight: .medium)
+            let symbol = isCurrent && appearance.isReadAloudPlaying ? "pause.fill" : "play.fill"
+            button.setImage(
+                UIImage(
+                    systemName: symbol,
+                    withConfiguration: UIImage.SymbolConfiguration(pointSize: 6, weight: .semibold)
+                ),
+                for: .normal
             )
-            configuration.baseForegroundColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.72 : 0.3)
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8)
-            configuration.background.backgroundColor = isCurrent
-                ? appearance.textColor.withAlphaComponent(0.055)
-                : .clear
-            configuration.background.strokeColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.28 : 0.18)
-            configuration.background.strokeWidth = 0.7
-            configuration.background.cornerRadius = 10.5
-            button.configuration = configuration
+            button.tintColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.78 : 0.32)
+            button.backgroundColor = isCurrent
+                ? readingHighlightColor.withAlphaComponent(appearance.backgroundColor.isDark ? 0.18 : 0.1)
+                : appearance.textColor.withAlphaComponent(0.025)
+            button.layer.borderColor = appearance.textColor.withAlphaComponent(isCurrent ? 0.3 : 0.14).cgColor
             button.isHidden = !appearance.showsParagraphControls
         }
     }
@@ -690,7 +693,7 @@ private final class ReaderPageContentView: UIView {
                 for: appearance.fontSize
             )
             button.frame = CGRect(origin: CGPoint(x: x, y: y), size: buttonSize)
-            button.isHidden = !textView.frame.insetBy(dx: -2, dy: -2).contains(button.frame)
+            button.isHidden = !textView.frame.insetBy(dx: 0, dy: -2).contains(button.frame)
         }
     }
 
