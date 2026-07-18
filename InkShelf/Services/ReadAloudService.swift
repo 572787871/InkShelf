@@ -20,6 +20,13 @@ struct ReadAloudBookContext: Equatable {
     let coverStyle: Int
 }
 
+struct AudiobookTranscriptSegment: Identifiable, Equatable {
+    let id: String
+    let location: ReaderPageLocation
+    let sentenceIndex: Int
+    let text: String
+}
+
 enum NowPlayingArtworkRenderer {
     static let preferredDimension: CGFloat = 1024
 
@@ -208,6 +215,13 @@ struct ReadAloudCrossPageContinuation: Equatable, Sendable {
     let boundaryFraction: Double
 }
 
+struct ReadAloudHighlightCue: Equatable, Sendable {
+    let location: ReaderPageLocation
+    let sentenceIndex: Int
+    let range: NSRange
+    let startFraction: Double
+}
+
 struct ReadAloudSpeechRequest: Equatable, Sendable {
     let position: ReadAloudSpeechPosition
     let endingSentenceIndex: Int
@@ -215,11 +229,15 @@ struct ReadAloudSpeechRequest: Equatable, Sendable {
     let text: String
     let speaker: ReadAloudSpeaker
     let continuation: ReadAloudCrossPageContinuation?
+    let highlightCues: [ReadAloudHighlightCue]
 }
 
 enum ReadAloudLocalSpeechChunkPolicy {
-    static let maximumSentenceCount = 3
-    static let maximumUTF16Length = 180
+    // ZipVoice has a sizeable fixed inference cost. A longer block gives the
+    // rolling prefetcher enough spoken time to prepare the following blocks,
+    // while highlight cues still advance one visible segment at a time.
+    static let maximumSentenceCount = 6
+    static let maximumUTF16Length = 360
 
     static func canAppend(
         currentSentenceCount: Int,
@@ -295,8 +313,8 @@ final class ReadAloudService: NSObject, ObservableObject {
                 connectionState = .idle
                 prefetchTask?.cancel()
                 prefetchTask = nil
-                prefetchedAudio = nil
-                prefetchTarget = nil
+                prefetchedAudio.removeAll()
+                prefetchTargets.removeAll()
                 waitingForPrefetchPosition = nil
             }
             if oldValue.roleDetectionMode != settings.roleDetectionMode
@@ -314,6 +332,35 @@ final class ReadAloudService: NSObject, ObservableObject {
     var hasSession: Bool { currentPageLocation != nil && !plan.sentences.isEmpty }
     var shouldShowPersistentFloater: Bool {
         hasSession && bookContext?.id != visibleReaderBookID
+    }
+    var currentChapterTitle: String {
+        sessionPageIndex.flatMap { sessionPages.indices.contains($0) ? sessionPages[$0].chapterTitle : nil }
+            ?? "正文"
+    }
+    var currentChapterDuration: TimeInterval { timeline.duration / playbackTimelineRate }
+    var currentChapterElapsedTime: TimeInterval { estimatedNowPlayingElapsedTime() }
+    var canSkipToPreviousChapter: Bool { previousChapterPageIndex != nil }
+    var canSkipToNextChapter: Bool { nextChapterPageIndex != nil }
+    var currentTranscriptSegmentID: String? {
+        guard let location = currentPageLocation, let range = currentSentenceRange else { return nil }
+        return Self.transcriptSegmentID(location: location, utf16Location: range.location)
+    }
+    var currentChapterTranscript: [AudiobookTranscriptSegment] {
+        currentChapterPageIndices.flatMap { pageIndex -> [AudiobookTranscriptSegment] in
+            guard sessionPages.indices.contains(pageIndex) else { return [] }
+            let page = sessionPages[pageIndex]
+            return ReadAloudTextPlan(text: page.text).sentences.enumerated().map { sentenceIndex, sentence in
+                AudiobookTranscriptSegment(
+                    id: Self.transcriptSegmentID(
+                        location: page.location,
+                        utf16Location: sentence.range.location
+                    ),
+                    location: page.location,
+                    sentenceIndex: sentenceIndex,
+                    text: sentence.text
+                )
+            }
+        }
     }
 
     private let speechClient = AudiobookSpeechClient()
@@ -335,8 +382,8 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var analyzedRoleChapters: Set<Int> = []
     private var synthesisTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
-    private var prefetchedAudio: (request: ReadAloudSpeechRequest, data: Data)?
-    private var prefetchTarget: ReadAloudSpeechRequest?
+    private var prefetchedAudio: [ReadAloudSpeechPosition: (request: ReadAloudSpeechRequest, data: Data)] = [:]
+    private var prefetchTargets: Set<ReadAloudSpeechPosition> = []
     private var waitingForPrefetchPosition: ReadAloudSpeechPosition?
     private var activeRequest: ReadAloudSpeechRequest?
     private var roleAnalysisTask: Task<Void, Never>?
@@ -575,8 +622,6 @@ final class ReadAloudService: NSObject, ObservableObject {
                     allGenders.merge(cast.characterGenders) { existing, new in
                         existing == .unspecified ? new : existing
                     }
-                    detectedCharacterNames = allNames.sorted()
-                    detectedCharacterGenders = allGenders
                     wholeBookRoleProgress = WholeBookRoleAnalysisProgress(
                         bookID: book.id,
                         completedChapters: offset + 1,
@@ -591,6 +636,8 @@ final class ReadAloudService: NSObject, ObservableObject {
                 } else {
                     roleAnalysisMessage = "整书角色档案已完成：\(allNames.count) 个明确角色"
                 }
+                detectedCharacterNames = allNames.sorted()
+                detectedCharacterGenders = allGenders
             } catch is CancellationError {
                 roleAnalysisMessage = "整书分析已暂停，再次开始会从已完成章节继续"
             } catch {
@@ -1104,6 +1151,12 @@ final class ReadAloudService: NSObject, ObservableObject {
             updateNowPlayingInfo()
             return
         }
+        do {
+            try speechPlayer.beginSessionKeepAlive()
+        } catch {
+            // Spoken audio can still play without the silent continuity bed.
+            NSLog("朗读后台连续音频启动失败：%@", error.localizedDescription)
+        }
         if speechPlayer.isPaused {
             do {
                 try speechPlayer.resume()
@@ -1131,6 +1184,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     func pause() {
         freezeNowPlayingPosition()
         playbackRequested = false
+        speechPlayer.endSessionKeepAlive()
         if speechPlayer.hasScheduledAudio {
             speechPlayer.pause()
         } else if synthesisTask != nil {
@@ -1170,6 +1224,7 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private func resetSession(stoppingSpeech: Bool) {
         playbackRequested = false
+        speechPlayer.endSessionKeepAlive()
         stopVoicePreview()
         if stoppingSpeech {
             cancelSpeechPlayback()
@@ -1235,21 +1290,23 @@ final class ReadAloudService: NSObject, ObservableObject {
         synchronizeNowPlayingAnchorToCurrentSentence()
         updateNowPlayingInfo()
 
-        if prefetchTask != nil, prefetchTarget == request {
+        if let cached = prefetchedAudio.removeValue(forKey: request.position),
+           cached.request == request {
+            let token = playbackToken
+            activeRequest = request
+            waitingForPrefetchPosition = nil
+            startAudioPlayback(cached.data, request: request, token: token)
+            return
+        }
+
+        if prefetchTargets.contains(request.position) {
             waitingForPrefetchPosition = request.position
             return
         }
 
-        let token = UUID()
-        playbackToken = token
+        let token = playbackToken
         activeRequest = request
         waitingForPrefetchPosition = nil
-
-        if let prefetchedAudio, prefetchedAudio.request == request {
-            self.prefetchedAudio = nil
-            startAudioPlayback(prefetchedAudio.data, request: request, token: token)
-            return
-        }
 
         synthesisTask = Task { [weak self] in
             guard let self else { return }
@@ -1291,24 +1348,26 @@ final class ReadAloudService: NSObject, ObservableObject {
         var endingSentenceIndex = position.sentenceIndex
         var continuation: ReadAloudCrossPageContinuation?
         var text = sentence.text
+        var cueSeeds: [(location: ReaderPageLocation, sentenceIndex: Int, range: NSRange, offset: Int)] = [
+            (position.location, position.sentenceIndex, sentence.range, 0)
+        ]
         if settings.provider == .localZipVoice {
             while endingSentenceIndex + 1 < pagePlan.sentences.count,
                   ReadAloudLocalSpeechChunkPolicy.canAppend(
                     currentSentenceCount: endingSentenceIndex - position.sentenceIndex + 1,
                     currentUTF16Length: (text as NSString).length,
                     nextUTF16Length: (pagePlan.sentences[endingSentenceIndex + 1].text as NSString).length
-                  ) {
+                ) {
                 let nextSentence = pagePlan.sentences[endingSentenceIndex + 1]
                 guard nextSentence.speaker == sentence.speaker else { break }
+                let nextOffset = (text as NSString).length
                 text += nextSentence.text
                 endingSentenceIndex += 1
+                cueSeeds.append((position.location, endingSentenceIndex, nextSentence.range, nextOffset))
             }
         }
         let lastSentence = pagePlan.sentences[endingSentenceIndex]
-        let highlightedRange = NSRange(
-            location: sentence.range.location,
-            length: NSMaxRange(lastSentence.range) - sentence.range.location
-        )
+        let highlightedRange = sentence.range
         if endingSentenceIndex == pagePlan.sentences.count - 1,
            sessionPages.indices.contains(pageIndex + 1) {
             let nextPage = sessionPages[pageIndex + 1]
@@ -1330,17 +1389,31 @@ final class ReadAloudService: NSObject, ObservableObject {
                         nextUTF16Length: (nextSentence.text as NSString).length
                     )
                 guard joinsSplitSentence || canGroupAcrossPage else {
+                    let totalLength = max(1, (text as NSString).length)
                     return ReadAloudSpeechRequest(
                         position: position,
                         endingSentenceIndex: endingSentenceIndex,
                         highlightedRange: highlightedRange,
                         text: text,
                         speaker: sentence.speaker,
-                        continuation: nil
+                        continuation: nil,
+                        highlightCues: cueSeeds.map {
+                            ReadAloudHighlightCue(
+                                location: $0.location,
+                                sentenceIndex: $0.sentenceIndex,
+                                range: $0.range,
+                                startFraction: Double($0.offset) / Double(totalLength)
+                            )
+                        }
                     )
                 }
                 var targetEndingSentenceIndex = 0
                 var targetText = nextSentence.text
+                let separator = joinsSplitSentence
+                    ? Self.crossPageSeparator(from: lastSentence.text, to: nextSentence.text)
+                    : ""
+                let targetBaseOffset = (text as NSString).length + (separator as NSString).length
+                cueSeeds.append((nextPage.location, 0, nextSentence.range, targetBaseOffset))
                 if settings.provider == .localZipVoice {
                     while targetEndingSentenceIndex + 1 < nextPlan.sentences.count,
                           ReadAloudLocalSpeechChunkPolicy.canAppend(
@@ -1348,21 +1421,21 @@ final class ReadAloudService: NSObject, ObservableObject {
                                 + targetEndingSentenceIndex + 2,
                             currentUTF16Length: (text as NSString).length + (targetText as NSString).length,
                             nextUTF16Length: (nextPlan.sentences[targetEndingSentenceIndex + 1].text as NSString).length
-                          ) {
+                    ) {
                         let following = nextPlan.sentences[targetEndingSentenceIndex + 1]
                         guard following.speaker == sentence.speaker else { break }
+                        let followingOffset = targetBaseOffset + (targetText as NSString).length
                         targetText += following.text
                         targetEndingSentenceIndex += 1
+                        cueSeeds.append((
+                            nextPage.location,
+                            targetEndingSentenceIndex,
+                            following.range,
+                            followingOffset
+                        ))
                     }
                 }
-                let targetLastSentence = nextPlan.sentences[targetEndingSentenceIndex]
-                let targetHighlightedRange = NSRange(
-                    location: nextSentence.range.location,
-                    length: NSMaxRange(targetLastSentence.range) - nextSentence.range.location
-                )
-                let separator = joinsSplitSentence
-                    ? Self.crossPageSeparator(from: lastSentence.text, to: nextSentence.text)
-                    : ""
+                let targetHighlightedRange = nextSentence.range
                 let combinedText = text + separator + targetText
                 let sourceLength = max(1, (text as NSString).length)
                 let totalLength = max(sourceLength + 1, (combinedText as NSString).length)
@@ -1376,13 +1449,22 @@ final class ReadAloudService: NSObject, ObservableObject {
                 text = combinedText
             }
         }
+        let totalLength = max(1, (text as NSString).length)
         return ReadAloudSpeechRequest(
             position: position,
             endingSentenceIndex: endingSentenceIndex,
             highlightedRange: highlightedRange,
             text: text,
             speaker: sentence.speaker,
-            continuation: continuation
+            continuation: continuation,
+            highlightCues: cueSeeds.map {
+                ReadAloudHighlightCue(
+                    location: $0.location,
+                    sentenceIndex: $0.sentenceIndex,
+                    range: $0.range,
+                    startFraction: Double($0.offset) / Double(totalLength)
+                )
+            }
         )
     }
 
@@ -1409,9 +1491,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         guard let pageIndex = sessionPages.firstIndex(where: { $0.location == request.position.location }),
               sessionPages.indices.contains(pageIndex + 1) else { return nil }
         let nextPage = sessionPages[pageIndex + 1]
-        if nextPage.location.chapterIndex != request.position.location.chapterIndex {
-            return nil
-        }
         return speechRequest(at: .init(location: nextPage.location, sentenceIndex: 0))
     }
 
@@ -1479,9 +1558,15 @@ final class ReadAloudService: NSObject, ObservableObject {
         do {
             try speechPlayer.play(
                 audio,
+                preparedIdentifier: speechRequestIdentifier(request),
+                playbackRate: localPlaybackRate,
                 boundaryFraction: request.continuation?.boundaryFraction,
                 onBoundary: request.continuation.map { continuation in
                     { [weak self] in self?.crossPageBoundaryReached(continuation, token: token) }
+                },
+                cueFractions: request.highlightCues.map(\.startFraction),
+                onCue: { [weak self] index in
+                    self?.highlightCueReached(index, request: request, token: token)
                 }
             ) { [weak self] in
                 self?.sentenceAudioDidFinish(request: request, token: token)
@@ -1497,44 +1582,67 @@ final class ReadAloudService: NSObject, ObservableObject {
     }
 
     private func beginPrefetch(after request: ReadAloudSpeechRequest, token: UUID) {
-        prefetchTask?.cancel()
-        prefetchedAudio = nil
-        guard let candidate = requestAfter(request) else {
-            prefetchTask = nil
-            prefetchTarget = nil
-            return
-        }
+        guard prefetchTask == nil else { return }
+        guard requestAfter(request) != nil else { return }
         let configuration = settings
         let key = apiKey
-        prefetchTarget = candidate
         prefetchTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let audio = try await synthesizeAudio(
-                    text: candidate.text,
-                    speaker: candidate.speaker,
-                    configuration: configuration,
-                    key: key
-                )
-                try Task.checkCancellation()
-                guard playbackToken == token else { return }
-                prefetchedAudio = (candidate, audio)
-                prefetchTask = nil
-                prefetchTarget = nil
-                if waitingForPrefetchPosition == candidate.position, playbackRequested,
-                   currentPageLocation == candidate.position.location {
-                    enqueueSentence(at: candidate.position.sentenceIndex)
-                }
-            } catch {
-                guard playbackToken == token else { return }
-                prefetchTask = nil
-                prefetchTarget = nil
-                if waitingForPrefetchPosition == candidate.position, playbackRequested,
-                   currentPageLocation == candidate.position.location {
-                    enqueueSentence(at: candidate.position.sentenceIndex)
+            var candidate = requestAfter(request)
+            while let next = candidate, prefetchedAudio.count < 3 {
+                do {
+                    try Task.checkCancellation()
+                    guard playbackToken == token else { return }
+                    if prefetchedAudio[next.position] == nil {
+                        prefetchTargets.insert(next.position)
+                        let audio = try await synthesizeAudio(
+                            text: next.text,
+                            speaker: next.speaker,
+                            configuration: configuration,
+                            key: key
+                        )
+                        try Task.checkCancellation()
+                        guard playbackToken == token else { return }
+                        prefetchTargets.remove(next.position)
+                        prefetchedAudio[next.position] = (next, audio)
+                        if requestAfter(activeRequest ?? request)?.position == next.position {
+                            do {
+                                try speechPlayer.prepare(audio, identifier: speechRequestIdentifier(next))
+                            } catch {
+                                NSLog("下一朗读块预解码失败：%@", error.localizedDescription)
+                            }
+                        }
+                        if waitingForPrefetchPosition == next.position, playbackRequested,
+                           currentPageLocation == next.position.location {
+                            enqueueSentence(at: next.position.sentenceIndex)
+                        }
+                    }
+                    candidate = requestAfter(next)
+                } catch is CancellationError {
+                    prefetchTargets.remove(next.position)
+                    return
+                } catch {
+                    prefetchTargets.remove(next.position)
+                    if waitingForPrefetchPosition == next.position, playbackRequested,
+                       currentPageLocation == next.position.location {
+                        enqueueSentence(at: next.position.sentenceIndex)
+                    }
+                    break
                 }
             }
+            guard playbackToken == token else { return }
+            prefetchTask = nil
         }
+    }
+
+    private var localPlaybackRate: Float {
+        guard settings.provider == .localZipVoice, settings.rateMultiplier > 1.2 else { return 1 }
+        return Float(settings.rateMultiplier / 1.2)
+    }
+
+    private func speechRequestIdentifier(_ request: ReadAloudSpeechRequest) -> String {
+        let location = request.position.location
+        return "\(location.chapterIndex):\(location.pageIndex):\(request.position.sentenceIndex):\(request.endingSentenceIndex)"
     }
 
     private func zipVoiceProfile(
@@ -1614,8 +1722,8 @@ final class ReadAloudService: NSObject, ObservableObject {
         synthesisTask = nil
         prefetchTask?.cancel()
         prefetchTask = nil
-        prefetchedAudio = nil
-        prefetchTarget = nil
+        prefetchedAudio.removeAll()
+        prefetchTargets.removeAll()
         waitingForPrefetchPosition = nil
         speechPlayer.stop()
         activeSentenceIndex = nil
@@ -1638,6 +1746,22 @@ final class ReadAloudService: NSObject, ObservableObject {
         } else {
             advanceInBackground()
         }
+    }
+
+    private func highlightCueReached(
+        _ index: Int,
+        request: ReadAloudSpeechRequest,
+        token: UUID
+    ) {
+        guard playbackToken == token,
+              request.highlightCues.indices.contains(index),
+              playbackRequested else { return }
+        let cue = request.highlightCues[index]
+        guard currentPageLocation == cue.location else { return }
+        currentSentenceIndex = cue.sentenceIndex
+        currentSentenceRange = cue.range
+        state = .playing(sentence: cue.sentenceIndex)
+        synchronizeNowPlayingAnchorToCurrentSentence()
     }
 
     private func sentenceAudioDidFinish(request: ReadAloudSpeechRequest, token: UUID) {
@@ -1671,7 +1795,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 location: currentPageLocation ?? request.position.location,
                 sentenceIndex: candidate
             )
-            if prefetchedAudio?.request.position == candidatePosition || prefetchTask == nil {
+            if prefetchedAudio[candidatePosition] != nil || !prefetchTargets.contains(candidatePosition) {
                 enqueueSentence(at: candidate)
             } else {
                 waitingForPrefetchPosition = candidatePosition
@@ -1946,6 +2070,54 @@ final class ReadAloudService: NSObject, ObservableObject {
         analyzeCurrentChapterThenPlayIfNeeded()
     }
 
+    func seekToChapterTime(_ elapsedTime: TimeInterval) {
+        seek(to: elapsedTime * playbackTimelineRate)
+    }
+
+    func skipToPreviousChapter() {
+        skipChapter(forward: false)
+    }
+
+    func skipToNextChapter() {
+        skipChapter(forward: true)
+    }
+
+    func playChapter(at chapterIndex: Int) {
+        guard let targetIndex = sessionPages.firstIndex(where: {
+            $0.location.chapterIndex == chapterIndex
+        }) else { return }
+        let shouldContinue = isPlaying
+        sessionPageIndex = targetIndex
+        let page = sessionPages[targetIndex]
+        setPage(text: page.text, location: page.location)
+        if shouldContinue {
+            play()
+        } else {
+            playbackRequested = false
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+        }
+    }
+
+    func setPlaybackRate(_ rate: Double) {
+        let supported = [0.75, 1.0, 1.2, 1.5, 2.0]
+        let selected = supported.min(by: { abs($0 - rate) < abs($1 - rate) }) ?? 1
+        guard settings.rateMultiplier != selected else { return }
+        let shouldContinue = isPlaying
+        freezeNowPlayingPosition()
+        cancelSpeechPlayback()
+        nextSentenceIndex = currentSentenceIndex
+        settings.rateMultiplier = selected
+        if shouldContinue {
+            playbackRequested = true
+            play()
+        } else {
+            playbackRequested = false
+            state = .paused(sentence: currentSentenceIndex)
+            updateNowPlayingInfo()
+        }
+    }
+
     private func seek(to elapsedTime: TimeInterval) {
         guard let position = timeline.position(at: elapsedTime),
               currentChapterPageIndices.indices.contains(position.pageIndex) else { return }
@@ -2033,7 +2205,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 return .noActionableNowPlayingItem
             }
             let positionTime = positionEvent.positionTime
-            Task { @MainActor in self?.seek(to: positionTime) }
+            Task { @MainActor in self?.seekToChapterTime(positionTime) }
             return .success
         }
         commands.nextTrackCommand.addTarget { [weak self] _ in
@@ -2119,7 +2291,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             MPMediaItemPropertyArtist: chapterTitle,
             MPMediaItemPropertyAlbumArtist: bookContext.author,
             MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue,
-            MPMediaItemPropertyPlaybackDuration: timeline.duration,
+            MPMediaItemPropertyPlaybackDuration: currentChapterDuration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedTime,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1 : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1,
@@ -2138,6 +2310,13 @@ final class ReadAloudService: NSObject, ObservableObject {
             let chapterIndex = page.location.chapterIndex
             if indices.last != chapterIndex { indices.append(chapterIndex) }
         }
+    }
+
+    private static func transcriptSegmentID(
+        location: ReaderPageLocation,
+        utf16Location: Int
+    ) -> String {
+        "\(location.chapterIndex):\(location.pageIndex):\(utf16Location)"
     }
 
     private func makeNowPlayingArtwork(for context: ReadAloudBookContext) -> MPMediaItemArtwork? {
@@ -2165,7 +2344,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         nowPlayingAnchorElapsed = timeline.elapsedTime(
             pageIndex: chapterPageIndex,
             utf16Location: currentSentenceRange?.location ?? 0
-        )
+        ) / playbackTimelineRate
         nowPlayingAnchorDate = isPlaying ? .now : nil
     }
 
@@ -2176,12 +2355,16 @@ final class ReadAloudService: NSObject, ObservableObject {
         } else {
             elapsedSinceAnchor = 0
         }
-        return min(timeline.duration, max(0, nowPlayingAnchorElapsed + elapsedSinceAnchor))
+        return min(currentChapterDuration, max(0, nowPlayingAnchorElapsed + elapsedSinceAnchor))
     }
 
     private func freezeNowPlayingPosition() {
         nowPlayingAnchorElapsed = estimatedNowPlayingElapsedTime()
         nowPlayingAnchorDate = nil
+    }
+
+    private var playbackTimelineRate: Double {
+        min(2, max(0.5, settings.rateMultiplier))
     }
 
     private func rebuildCurrentChapterTimeline(force: Bool = false) {

@@ -10,6 +10,7 @@ struct BookshelfView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingImporter = false
     @State private var showingSettings = false
+    @State private var showingAudiobookPlayer = false
     @State private var searchText = ""
     @State private var selectedBookID: UUID?
     @State private var readerBlocksEdgeDismiss = false
@@ -62,8 +63,8 @@ struct BookshelfView: View {
                         PersistentReadAloudOverlay(
                             readAloud: readAloud,
                             onOpenBook: { bookID in
-                                guard let book = library.book(id: bookID) else { return }
-                                openReader(book)
+                                guard library.book(id: bookID) != nil else { return }
+                                showingAudiobookPlayer = true
                             }
                         )
                     }
@@ -140,6 +141,13 @@ struct BookshelfView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .fullScreenCover(isPresented: $showingAudiobookPlayer) {
+                if let context = readAloud.bookContext,
+                   let book = library.book(id: context.id) {
+                    AudiobookPlayerView(book: book)
+                        .environmentObject(readAloud)
+                }
+            }
             .photosPicker(
                 isPresented: $showingCoverPicker,
                 selection: $selectedCoverPhoto,

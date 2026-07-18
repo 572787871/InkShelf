@@ -697,42 +697,95 @@ actor AICharacterRoleClient {
 @MainActor
 final class AudiobookAudioPlayer: NSObject, @preconcurrency AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
+    private var preparedPlayer: AVAudioPlayer?
+    private var preparedIdentifier: String?
+    private var keepAlivePlayer: AVAudioPlayer?
     private var completion: (() -> Void)?
-    private var boundaryTimer: Timer?
+    private var progressTimer: Timer?
     private var boundaryHandler: (() -> Void)?
     private var boundaryTime: TimeInterval?
+    private var cueFractions: [Double] = []
+    private var nextCueIndex = 0
+    private var cueHandler: ((Int) -> Void)?
     private(set) var isPaused = false
 
     var hasScheduledAudio: Bool { player != nil }
 
     func play(
         _ data: Data,
+        preparedIdentifier: String? = nil,
+        playbackRate: Float = 1,
         boundaryFraction: Double? = nil,
         onBoundary: (() -> Void)? = nil,
+        cueFractions: [Double] = [],
+        onCue: ((Int) -> Void)? = nil,
         completion: @escaping () -> Void
     ) throws {
-        stop()
-        let player = try AVAudioPlayer(data: data)
+        stopCurrentSpeech()
+        let player: AVAudioPlayer
+        if let preparedIdentifier,
+           self.preparedIdentifier == preparedIdentifier,
+           let preparedPlayer {
+            player = preparedPlayer
+            self.preparedPlayer = nil
+            self.preparedIdentifier = nil
+        } else {
+            player = try AVAudioPlayer(data: data)
+            player.prepareToPlay()
+        }
         self.player = player
         self.completion = completion
         boundaryHandler = onBoundary
         player.delegate = self
-        player.prepareToPlay()
+        player.enableRate = true
+        player.rate = min(2, max(0.5, playbackRate))
+        self.cueFractions = cueFractions.map { min(0.995, max(0, $0)) }
+        nextCueIndex = self.cueFractions.firstIndex(where: { $0 > 0.001 }) ?? self.cueFractions.count
+        cueHandler = onCue
         guard player.play() else {
-            stop()
+            stopCurrentSpeech()
             throw AudiobookSpeechError.invalidResponse
         }
         if let boundaryFraction, onBoundary != nil {
             let fraction = min(0.98, max(0.02, boundaryFraction))
             boundaryTime = player.duration * fraction
-            boundaryTimer = Timer.scheduledTimer(
+        }
+        if boundaryTime != nil || nextCueIndex < self.cueFractions.count {
+            progressTimer = Timer.scheduledTimer(
                 timeInterval: 0.05,
                 target: self,
-                selector: #selector(checkBoundary),
+                selector: #selector(checkPlaybackProgress),
                 userInfo: nil,
                 repeats: true
             )
         }
+    }
+
+    func prepare(_ data: Data, identifier: String) throws {
+        guard preparedIdentifier != identifier else { return }
+        let player = try AVAudioPlayer(data: data)
+        player.prepareToPlay()
+        preparedPlayer?.stop()
+        preparedPlayer = player
+        preparedIdentifier = identifier
+    }
+
+    /// Keeps the background-audio session alive while the next local block is
+    /// still being generated. The silent bed is inaudible and is stopped for a
+    /// real user pause, so lock-screen controls continue to reflect intent.
+    func beginSessionKeepAlive() throws {
+        guard keepAlivePlayer == nil else { return }
+        let player = try AVAudioPlayer(data: Self.silentWAVData)
+        player.numberOfLoops = -1
+        player.volume = 0.0001
+        player.prepareToPlay()
+        guard player.play() else { throw AudiobookSpeechError.invalidResponse }
+        keepAlivePlayer = player
+    }
+
+    func endSessionKeepAlive() {
+        keepAlivePlayer?.stop()
+        keepAlivePlayer = nil
     }
 
     func pause() {
@@ -747,36 +800,86 @@ final class AudiobookAudioPlayer: NSObject, @preconcurrency AVAudioPlayerDelegat
     }
 
     func stop() {
-        boundaryTimer?.invalidate()
-        boundaryTimer = nil
-        boundaryHandler = nil
-        boundaryTime = nil
-        player?.stop()
-        player = nil
-        completion = nil
-        isPaused = false
+        stopCurrentSpeech()
+        preparedPlayer?.stop()
+        preparedPlayer = nil
+        preparedIdentifier = nil
+        endSessionKeepAlive()
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         guard let currentPlayer = self.player, player === currentPlayer else { return }
         let completion = self.completion
-        boundaryTimer?.invalidate()
-        boundaryTimer = nil
-        boundaryHandler = nil
-        boundaryTime = nil
-        self.player = nil
-        self.completion = nil
-        isPaused = false
+        clearCurrentSpeechState()
         if flag { completion?() }
     }
 
-    @objc private func checkBoundary() {
-        guard let player, let boundaryTime, player.currentTime >= boundaryTime else { return }
-        boundaryTimer?.invalidate()
-        boundaryTimer = nil
-        self.boundaryTime = nil
-        let handler = boundaryHandler
-        boundaryHandler = nil
-        handler?()
+    @objc private func checkPlaybackProgress() {
+        guard let player, player.duration > 0 else { return }
+        let fraction = player.currentTime / player.duration
+        if let boundaryTime, player.currentTime >= boundaryTime {
+            self.boundaryTime = nil
+            let handler = boundaryHandler
+            boundaryHandler = nil
+            handler?()
+        }
+        while nextCueIndex < cueFractions.count, fraction >= cueFractions[nextCueIndex] {
+            let cueIndex = nextCueIndex
+            nextCueIndex += 1
+            cueHandler?(cueIndex)
+        }
+        if boundaryTime == nil, nextCueIndex >= cueFractions.count {
+            progressTimer?.invalidate()
+            progressTimer = nil
+        }
     }
+
+    private func stopCurrentSpeech() {
+        player?.stop()
+        clearCurrentSpeechState()
+    }
+
+    private func clearCurrentSpeechState() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+        boundaryHandler = nil
+        boundaryTime = nil
+        cueFractions = []
+        nextCueIndex = 0
+        cueHandler = nil
+        player = nil
+        completion = nil
+        isPaused = false
+    }
+
+    private static let silentWAVData: Data = {
+        let sampleRate: UInt32 = 24_000
+        let sampleCount: UInt32 = 6_000
+        let bytesPerSample: UInt16 = 2
+        let dataSize = sampleCount * UInt32(bytesPerSample)
+        var data = Data()
+
+        func appendASCII(_ value: String) {
+            data.append(contentsOf: value.utf8)
+        }
+        func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
+            var littleEndian = value.littleEndian
+            withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+        }
+
+        appendASCII("RIFF")
+        appendLittleEndian(UInt32(36) + dataSize)
+        appendASCII("WAVEfmt ")
+        appendLittleEndian(UInt32(16))
+        appendLittleEndian(UInt16(1))
+        appendLittleEndian(UInt16(1))
+        appendLittleEndian(sampleRate)
+        appendLittleEndian(sampleRate * UInt32(bytesPerSample))
+        appendLittleEndian(bytesPerSample)
+        appendLittleEndian(UInt16(16))
+        appendASCII("data")
+        appendLittleEndian(dataSize)
+        data.append(Data(count: Int(dataSize)))
+        return data
+    }()
 }

@@ -20,6 +20,7 @@ struct ReaderView: View {
     @State private var showingIndex = false
     @State private var showingAppearance = false
     @State private var showingNote = false
+    @State private var showingAudiobookPlayer = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
     @State private var isBrowsingAwayFromReadAloud = false
@@ -223,6 +224,12 @@ struct ReaderView: View {
             )
             .preferredColorScheme(.dark)
         }
+        .fullScreenCover(isPresented: $showingAudiobookPlayer) {
+            if let book {
+                AudiobookPlayerView(book: book)
+                    .environmentObject(readAloud)
+            }
+        }
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -283,7 +290,6 @@ struct ReaderView: View {
     }
 
     private func pageAppearance(book: NovelBook) -> ReaderPageAppearance {
-        let ownsReadAloudSession = isCurrentReadAloudSession
         return ReaderPageAppearance(
             themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)|\(customToneRaw)|\(customBlurRaw)|\(customTransparency)",
             bookTitle: book.title,
@@ -298,8 +304,8 @@ struct ReaderView: View {
             fontSize: fontSize,
             lineSpacing: lineSpacing,
             horizontalMargin: margin,
-            highlightedLocation: ownsReadAloudSession ? readAloud.currentPageLocation : nil,
-            highlightedRange: ownsReadAloudSession ? readAloud.currentSentenceRange : nil,
+            highlightedLocation: nil,
+            highlightedRange: nil,
             allowsParagraphLongPress: !showingAppearance
                 && !isScrubbingWholeBookProgress
                 && !interactionDisabled,
@@ -419,6 +425,7 @@ struct ReaderView: View {
             pages: catalog.pages,
             location: page.location
         )
+        showingAudiobookPlayer = true
     }
 
     private func startReadAloudFromParagraph(
@@ -438,6 +445,7 @@ struct ReaderView: View {
             location: pageLocation,
             startAtUTF16Location: range.location
         )
+        showingAudiobookPlayer = true
     }
 
     private func attachPageFinishHandler() {
@@ -595,7 +603,7 @@ struct ReaderView: View {
                     }
                     ChromeAction(icon: "waveform", label: "朗读") {
                         if isCurrentReadAloudSession {
-                            readAloud.togglePlayback()
+                            showingAudiobookPlayer = true
                         } else {
                             startReadingCurrentPage()
                         }
@@ -641,7 +649,7 @@ struct ReaderView: View {
             bookTitle: book.title,
             coverImage: coverImage,
             coverSignature: coverSignature,
-            onCoverTap: nil,
+            onCoverTap: { showingAudiobookPlayer = true },
             onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()

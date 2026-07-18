@@ -969,20 +969,20 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(analysis.characterGenders["苏桐"], .female)
     }
 
-    func testLocalSpeechChunksPrioritizeFirstAudioLatency() {
+    func testLocalSpeechChunksProvideEnoughRunwayForRollingPrefetch() {
         XCTAssertTrue(ReadAloudLocalSpeechChunkPolicy.canAppend(
-            currentSentenceCount: 2,
-            currentUTF16Length: 120,
+            currentSentenceCount: 5,
+            currentUTF16Length: 300,
             nextUTF16Length: 60
         ))
         XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
-            currentSentenceCount: 3,
+            currentSentenceCount: 6,
             currentUTF16Length: 100,
             nextUTF16Length: 10
         ))
         XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
             currentSentenceCount: 1,
-            currentUTF16Length: 170,
+            currentUTF16Length: 350,
             nextUTF16Length: 11
         ))
     }

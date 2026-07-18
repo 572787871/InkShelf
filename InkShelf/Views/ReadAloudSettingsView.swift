@@ -132,7 +132,7 @@ struct ReadAloudSettingsView: View {
             }
 
             Section("播放") {
-                Slider(value: settingBinding(\.rateMultiplier), in: 0.7...1.2, step: 0.05)
+                Slider(value: settingBinding(\.rateMultiplier), in: 0.75...2.0, step: 0.05)
                 LabeledContent("语速", value: String(format: "%.2f×", readAloud.settings.rateMultiplier))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -230,14 +230,12 @@ struct ReadAloudSettingsView: View {
             voicePicker("第一人称旁白", selection: voiceSettingBinding(\.narratorVoiceIdentifier))
             voicePicker("第三人称旁白", selection: voiceSettingBinding(\.thirdPersonVoiceIdentifier))
             voicePicker("未识别角色", selection: voiceSettingBinding(\.characterVoiceIdentifier))
-            ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
-                let gender = readAloud.detectedCharacterGenders[name]?.title ?? "未定"
-                voicePicker("角色 · \(name) · \(gender)", selection: characterVoiceBinding(name))
-            }
             if readAloud.detectedCharacterNames.isEmpty {
-                Text("建立整书角色档案后，每个明确人物都会显示独立音色选项；本地与云端语音引擎都支持。")
+                Text("建立整书角色档案后会显示识别数量。具体人物不会在分析过程中逐个弹出。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if readAloud.wholeBookRoleProgress == nil {
+                LabeledContent("已识别角色", value: "\(readAloud.detectedCharacterNames.count) 个")
             }
         }
         Text(voiceSelectionHelp)

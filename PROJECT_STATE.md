@@ -22,11 +22,14 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Views/ReaderView.swift`
   - reader state, pagination integration, chrome/settings, narration UI and
     visible-page/narration-page coordination
+- `InkShelf/Views/AudiobookPlayerView.swift`
+  - dedicated full-screen audiobook UI with transcript following/manual scroll,
+    chapter directory, speed/options, chapter controls and scrub timeline
 - `InkShelf/Views/InteractivePageTurnView.swift`
   - UIKit/Core Animation page curl and cover-turn engines, caches and gestures
 - `InkShelf/Services/ReadAloudService.swift`
   - automatic audiobook session, persisted whole-book smart casting, cloud/local TTS
-    orchestration, next-sentence pre-generation, sentence highlighting,
+    orchestration, rolling speech pre-generation, transcript position,
     background audio, chapter timeline and MediaPlayer controls
 - `InkShelf/Services/AudiobookSpeechKit.swift`
   - MiMo and OpenAI-compatible speech clients, AI chapter role analysis,
@@ -89,9 +92,8 @@ context, not a substitute for inspecting the current code and Git history.
   pages without forcing the visible page back.
 - If the visible page still matches narration, finishing a page can perform the
   normal automatic page-turn animation.
-- Opening the active book from either its shelf card or the floating cover must
-  land on the current narration page.
-- The floating circular cover opens the narrated book. It rotates while playing,
+- Opening the active book from its shelf card must land on the current narration
+  page. The floating circular cover opens the dedicated audiobook screen. It rotates while playing,
   freezes at its current angle while paused, and resumes from that angle.
 - Background audio and Apple lock-screen/Control Center controls are supported.
 - Role attribution can run as an enhanced, fully offline whole-book parser or a
@@ -102,6 +104,9 @@ context, not a substitute for inspecting the current code and Git history.
   waits for AI. Each chapter is content-signed and assignments use source UTF-16
   ranges, so font or pagination changes do not invalidate the cast. The prior
   downloadable MLX/Qwen model remains removed.
+- Whole-book local/AI analysis updates one progress row while it is running; it
+  does not continually expand the settings form with every newly found character.
+  The final settings summary shows only the detected count.
 - Automatic voice selection keeps narration and named characters stable. Users
   can instead separately choose first-person narrator, third-person narrator,
   unknown-character and every detected named-character voice; the old unified
@@ -126,15 +131,18 @@ context, not a substitute for inspecting the current code and Git history.
   `/audio/speech` service, or ZipVoice through sherpa-onnx + ONNX Runtime on the
   iPhone. The official bilingual INT8 model/vocoder is downloaded from the
   sherpa-onnx release and checksum-verified instead of being bundled in the IPA.
-- While a sentence is playing, the next sentence is synthesized concurrently
-  and consumed from a page-and-sentence-keyed pre-generation slot. If pagination
+- While a speech block is playing, up to three following blocks are synthesized
+  into a rolling page-and-sentence-keyed buffer. The immediately following audio
+  is decoded before handoff, and a silent audio-session continuity bed keeps
+  audiobook background execution alive while an uncached block is generated. If pagination
   cuts through a sentence, the two page fragments are synthesized as one audio
   request and the visible/session page advances during that audio instead of
   inserting a new utterance boundary.
-- For local ZipVoice, low-latency blocks contain at most three adjacent
-  same-speaker sentences / 180 UTF-16 units, including the next page when space
-  allows. The distilled model uses the official four-step inference setting,
-  pre-generates the following block while audio plays, and keeps a bounded
+- For local ZipVoice, buffered blocks contain at most six adjacent same-speaker
+  sentences / 360 UTF-16 units, including the next page when space allows. This
+  reduces repeated model startup overhead and gives rolling generation more
+  spoken runway. The distilled model uses the official four-step inference setting,
+  pre-generates following blocks while audio plays, and keeps a bounded
   in-memory replay cache. Edge-silence trimming, DC correction, bounded gain and
   short fades remain; speaker changes retain intentional boundaries.
 - The sherpa bridge keeps one ZipVoice engine, queries
@@ -148,9 +156,13 @@ context, not a substitute for inspecting the current code and Git history.
   model download; whole-book smart analysis is optional, resumable network work
   and cached chapters remain available offline.
 - Read-aloud settings are available only from the homepage top-right Settings
-  screen. The reader's bottom “朗读” action starts or pauses immediately; when
-  configuration is incomplete it only directs the user back to homepage
-  Settings. Connection testing synthesizes one short narrator sample.
+  screen. The reader's bottom “朗读” action opens the dedicated audiobook screen;
+  that screen hides the floating controller and provides cover, title/chapter,
+  following transcript with manual scrolling, directory, speed/options, chapter
+  skip, pause/play, scrubbing and time labels. Closing it leaves narration running
+  and restores the floating controller. When configuration is incomplete it only
+  directs the user back to homepage Settings. Connection testing synthesizes one
+  short narrator sample.
 - Automatic visible-page turns are accepted transactionally by the curl/cover
   engines. Programmatic turns have engine and reader-level completion fallbacks
   so a missing UIKit animation callback cannot leave narration waiting at the
@@ -173,10 +185,9 @@ context, not a substitute for inspecting the current code and Git history.
 - Pages retain those conservative text boundaries but distribute unused vertical
   space into capped per-page line spacing, so short pages visually reach toward
   the footer without pulling hidden text back from the following page.
-- The current spoken range uses one reusable neutral text-tinted shape layer.
-  Line markers stay inside their own line boxes and are composited once, so
-  repeated layout cannot stack translucent highlights. The immersive “原进度 /
-  从本页听” capsule sits closer to the bottom status row.
+- The reading page no longer renders narration highlights. Spoken-position
+  emphasis and automatic text following belong only to the dedicated audiobook
+  transcript, so normal reading layout remains visually untouched.
 - Reader appearance controls use grouped cards with coordinated theme/background
   previews, brightness, precise font-size controls, named line-spacing presets
   plus numeric sliders, page margins, font, page-turn style, and screen-awake
