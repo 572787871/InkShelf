@@ -2,7 +2,17 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@interface ISZipVoiceSynthesisCancellation : NSObject
+
+@property(atomic, readonly, getter=isCancelled) BOOL cancelled;
+
+- (void)cancel;
+
+@end
+
 @interface ISZipVoiceTTSBridge : NSObject
+
+@property(nonatomic, readonly) NSInteger modelSampleRate;
 
 - (nullable instancetype)initWithEncoderPath:(NSString *)encoderPath
                                   decoderPath:(NSString *)decoderPath
@@ -16,8 +26,11 @@ NS_ASSUME_NONNULL_BEGIN
                  referenceAudioPath:(NSString *)referenceAudioPath
                       referenceText:(NSString *)referenceText
                               speed:(float)speed
+                       cancellation:(nullable ISZipVoiceSynthesisCancellation *)cancellation
                          sampleRate:(NSInteger *)sampleRate
                               error:(NSError **)error;
+
+- (void)clearReferenceAudioCacheKeepingPath:(nullable NSString *)referenceAudioPath;
 
 - (instancetype)init NS_UNAVAILABLE;
 

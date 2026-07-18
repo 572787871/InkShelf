@@ -18,16 +18,6 @@ enum ZipVoiceProfileGender: String, Codable, CaseIterable, Identifiable, Sendabl
     }
 }
 
-struct ZipVoiceProfile: Identifiable, Codable, Equatable, Sendable {
-    let id: UUID
-    var name: String
-    var gender: ZipVoiceProfileGender
-    var referenceText: String
-    let audioFileName: String
-
-    var voiceIdentifier: String { "zipvoice::\(id.uuidString.lowercased())" }
-}
-
 struct ZipVoiceModelPaths: Equatable, Sendable {
     let tokens: URL
     let encoder: URL
@@ -57,6 +47,7 @@ enum ZipVoiceError: LocalizedError, Equatable {
     case missingModelFile(String)
     case modelNotInstalled
     case noVoiceProfile
+    case unauthorizedVoice
     case synthesisFailed(String)
 
     var errorDescription: String? {
@@ -72,6 +63,7 @@ enum ZipVoiceError: LocalizedError, Equatable {
         case let .missingModelFile(file): "ZipVoice 模型缺少文件：\(file)"
         case .modelNotInstalled: "请先下载 ZipVoice 本地模型"
         case .noVoiceProfile: "请先导入至少一个本地参考音色"
+        case .unauthorizedVoice: "该模拟音色缺少声音所有者授权，请重新创建"
         case let .synthesisFailed(message): "ZipVoice 生成失败：\(message)"
         }
     }
@@ -95,15 +87,22 @@ enum ZipVoiceBuiltInProfiles {
         let bundle = Bundle.main
         let url = bundle.url(forResource: "catalog", withExtension: "json", subdirectory: "Voices")
             ?? bundle.url(forResource: "catalog", withExtension: "json")
-        guard let url,
-              let data = try? Data(contentsOf: url),
-              let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else {
+        guard let url else {
             return Catalog(
                 transcript: "愿每一个故事，都有属于自己的声音。",
                 voices: []
             )
         }
-        return catalog
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(Catalog.self, from: data)
+        } catch {
+            assertionFailure("内置音色目录无法读取：\(error.localizedDescription)")
+            return Catalog(
+                transcript: "愿每一个故事，都有属于自己的声音。",
+                voices: []
+            )
+        }
     }()
 
     static let transcript = catalog.transcript
@@ -139,22 +138,28 @@ enum ZipVoiceCatalog {
     static let vocoderBytes: Int64 = 54_157_409
     static let vocoderSHA256 = "bcb3b970e384161c4d634f0bb9e999ff1c471b34c9bc0b1049a5014065ed3cc0"
     static let totalBytes = archiveBytes + vocoderBytes
+    static let modelVersion = "\(modelID)-sherpa-onnx-1.13.1"
 }
 
 struct ZipVoiceStore: Sendable {
     private static let profilesFileName = "profiles.json"
+    private static let profileFileName = "profile.json"
     let rootURL: URL
+    let voiceProfilesRootURL: URL
 
     init(rootURL: URL? = nil) {
         if let rootURL {
             self.rootURL = rootURL
+            self.voiceProfilesRootURL = rootURL.appendingPathComponent("VoiceProfiles", isDirectory: true)
         } else {
             let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             self.rootURL = support.appendingPathComponent("ZipVoice", isDirectory: true)
+            self.voiceProfilesRootURL = support.appendingPathComponent("VoiceProfiles", isDirectory: true)
         }
     }
 
     var modelDirectory: URL { rootURL.appendingPathComponent("Model", isDirectory: true) }
+    /// Legacy flat directory retained only for one-time migration.
     var profilesDirectory: URL { rootURL.appendingPathComponent("Profiles", isDirectory: true) }
 
     func modelPaths() -> ZipVoiceModelPaths? {
@@ -169,13 +174,51 @@ struct ZipVoiceStore: Sendable {
         return validate(paths) ? paths : nil
     }
 
-    func profiles() -> [ZipVoiceProfile] {
-        let url = profilesDirectory.appendingPathComponent(Self.profilesFileName)
-        guard let data = try? Data(contentsOf: url),
-              let profiles = try? JSONDecoder().decode([ZipVoiceProfile].self, from: data) else { return [] }
-        return profiles.filter {
-            FileManager.default.fileExists(atPath: audioURL(for: $0).path)
+    func profiles(bundle: Bundle = .main) throws -> [ZipVoiceProfile] {
+        let builtIns = try ZipVoiceBuiltInProfiles.definitions.compactMap { definition -> ZipVoiceProfile? in
+            guard let audioURL = bundle.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? bundle.url(forResource: definition.resource, withExtension: "wav") else { return nil }
+            let file = try AVAudioFile(forReading: audioURL)
+            return VoiceProfile(
+                id: definition.id,
+                name: definition.name,
+                sourceType: .builtIn,
+                referenceAudioRelativePath: "Bundled/Voices/\(definition.resource).wav",
+                originalAudioRelativePath: nil,
+                referenceText: definition.referenceText ?? ZipVoiceBuiltInProfiles.transcript,
+                previewAudioRelativePath: nil,
+                originalFilename: nil,
+                sampleRate: file.processingFormat.sampleRate,
+                duration: Double(file.length) / max(1, file.processingFormat.sampleRate),
+                voiceCategory: definition.gender,
+                modelVersion: ZipVoiceCatalog.modelVersion,
+                isAuthorized: true,
+                createdAt: .distantPast
+            )
         }
+        guard FileManager.default.fileExists(atPath: voiceProfilesRootURL.path) else { return builtIns }
+        let directories = try FileManager.default.contentsOfDirectory(
+            at: voiceProfilesRootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        var custom: [VoiceProfile] = []
+        for directory in directories {
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey])
+            guard values.isDirectory == true else { continue }
+            let metadataURL = directory.appendingPathComponent(Self.profileFileName)
+            guard FileManager.default.fileExists(atPath: metadataURL.path) else { continue }
+            let data = try Data(contentsOf: metadataURL)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let profile = try decoder.decode(VoiceProfile.self, from: data)
+            guard FileManager.default.fileExists(atPath: audioURL(for: profile).path) else { continue }
+            custom.append(profile)
+        }
+        return builtIns + custom.sorted { $0.createdAt > $1.createdAt }
     }
 
     func audioURL(for profile: ZipVoiceProfile) -> URL {
@@ -187,54 +230,141 @@ struct ZipVoiceStore: Sendable {
            ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav") {
             return bundled
         }
-        return profilesDirectory.appendingPathComponent(profile.audioFileName)
+        return voiceProfilesRootURL.appendingPathComponent(profile.referenceAudioRelativePath)
     }
 
-    func addProfile(
-        from sourceURL: URL,
+    func originalAudioURL(for profile: VoiceProfile) -> URL? {
+        guard let path = profile.originalAudioRelativePath else { return nil }
+        return voiceProfilesRootURL.appendingPathComponent(path)
+    }
+
+    func previewAudioURL(for profile: VoiceProfile) -> URL? {
+        guard let path = profile.previewAudioRelativePath else { return nil }
+        return voiceProfilesRootURL.appendingPathComponent(path)
+    }
+
+    func saveProfile(
         name: String,
-        gender: ZipVoiceProfileGender,
-        referenceText: String
-    ) async throws -> ZipVoiceProfile {
-        try await Task.detached(priority: .userInitiated) {
-            try self.addProfileSynchronously(
-                from: sourceURL,
-                name: name,
-                gender: gender,
-                referenceText: referenceText
+        sourceType: VoiceProfileSourceType,
+        voiceCategory: ZipVoiceProfileGender,
+        originalURL: URL,
+        processedAudio: ProcessedVoiceAudio,
+        referenceText: String,
+        previewURL: URL,
+        originalFilename: String?,
+        isAuthorized: Bool
+    ) throws -> VoiceProfile {
+        guard isAuthorized else { throw LocalVoiceError.authorizationRequired }
+        let transcript = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { throw LocalVoiceError.emptyReferenceText }
+        let identifier = UUID()
+        let directoryName = identifier.uuidString.lowercased()
+        let finalDirectory = voiceProfilesRootURL.appendingPathComponent(directoryName, isDirectory: true)
+        let staging = voiceProfilesRootURL.appendingPathComponent(".\(directoryName)-staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: voiceProfilesRootURL, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: staging.path) { try FileManager.default.removeItem(at: staging) }
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        do {
+            let sourceExtension = supportedOriginalExtension(originalURL.pathExtension)
+            let originalName = "original.\(sourceExtension)"
+            let stagedOriginal = staging.appendingPathComponent(originalName)
+            try FileManager.default.copyItem(at: originalURL, to: stagedOriginal)
+            try FileManager.default.copyItem(
+                at: processedAudio.referenceURL,
+                to: staging.appendingPathComponent("reference.wav")
             )
-        }.value
+            try FileManager.default.copyItem(at: previewURL, to: staging.appendingPathComponent("preview.wav"))
+            try Data(transcript.utf8).write(to: staging.appendingPathComponent("reference.txt"), options: .atomic)
+
+            let profile = VoiceProfile(
+                id: identifier,
+                name: normalizedName(name),
+                sourceType: sourceType,
+                referenceAudioRelativePath: "\(directoryName)/reference.wav",
+                originalAudioRelativePath: "\(directoryName)/\(originalName)",
+                referenceText: transcript,
+                previewAudioRelativePath: "\(directoryName)/preview.wav",
+                originalFilename: originalFilename,
+                sampleRate: processedAudio.sampleRate,
+                duration: processedAudio.duration,
+                voiceCategory: voiceCategory,
+                modelVersion: ZipVoiceCatalog.modelVersion,
+                isAuthorized: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(profile).write(
+                to: staging.appendingPathComponent(Self.profileFileName),
+                options: .atomic
+            )
+            let consent = VoiceConsentRecord(
+                voiceID: identifier,
+                isAuthorized: true,
+                confirmedAt: Date(),
+                sourceType: sourceType,
+                statement: "我确认这是本人的声音，或我已经获得声音所有者的明确授权。我不会使用该功能进行冒充、欺骗或侵犯他人权益。"
+            )
+            try encoder.encode(consent).write(
+                to: staging.appendingPathComponent("consent.json"),
+                options: .atomic
+            )
+            if FileManager.default.fileExists(atPath: finalDirectory.path) {
+                try FileManager.default.removeItem(at: finalDirectory)
+            }
+            try FileManager.default.moveItem(at: staging, to: finalDirectory)
+            return profile
+        } catch {
+            if FileManager.default.fileExists(atPath: staging.path) {
+                do {
+                    try FileManager.default.removeItem(at: staging)
+                } catch let cleanupError {
+                    throw ZipVoiceError.synthesisFailed(
+                        "保存音色失败：\(error.localizedDescription)；临时文件清理失败：\(cleanupError.localizedDescription)"
+                    )
+                }
+            }
+            throw error
+        }
     }
 
     func ensureBuiltInProfiles(bundle: Bundle = .main) throws {
-        try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
-        var all = profiles()
-        for profile in all where ZipVoiceBuiltInProfiles.isRetired(profile) {
-            try? FileManager.default.removeItem(at: audioURL(for: profile))
-        }
-        all.removeAll(where: ZipVoiceBuiltInProfiles.isRetired)
-        for definition in ZipVoiceBuiltInProfiles.definitions where !all.contains(where: { $0.id == definition.id }) {
-            guard let _ = bundle.url(
-                forResource: definition.resource,
-                withExtension: "wav",
-                subdirectory: "Voices"
-            ) ?? bundle.url(forResource: definition.resource, withExtension: "wav") else { continue }
-            all.append(ZipVoiceProfile(
-                id: definition.id,
-                name: definition.name,
-                gender: definition.gender,
-                referenceText: definition.referenceText ?? ZipVoiceBuiltInProfiles.transcript,
-                audioFileName: "\(definition.resource).wav"
-            ))
-        }
-        try persist(all)
+        try FileManager.default.createDirectory(at: voiceProfilesRootURL, withIntermediateDirectories: true)
+        try migrateLegacyProfiles(bundle: bundle)
     }
 
     func removeProfile(_ profile: ZipVoiceProfile) throws {
-        var all = profiles()
-        all.removeAll { $0.id == profile.id }
-        try? FileManager.default.removeItem(at: audioURL(for: profile))
-        try persist(all)
+        guard profile.sourceType != .builtIn else { throw LocalVoiceError.cannotRemoveBuiltIn }
+        let directory = voiceProfilesRootURL.appendingPathComponent(profile.id.uuidString.lowercased(), isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { throw LocalVoiceError.profileNotFound }
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    func updateProfile(_ profile: VoiceProfile) throws {
+        guard profile.sourceType != .builtIn else { throw LocalVoiceError.cannotRemoveBuiltIn }
+        let directory = voiceProfilesRootURL.appendingPathComponent(profile.id.uuidString.lowercased(), isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { throw LocalVoiceError.profileNotFound }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(profile).write(
+            to: directory.appendingPathComponent(Self.profileFileName),
+            options: .atomic
+        )
+    }
+
+    func replacePreview(for profile: VoiceProfile, from sourceURL: URL) throws -> VoiceProfile {
+        guard profile.sourceType != .builtIn else { throw LocalVoiceError.cannotRemoveBuiltIn }
+        var updated = profile
+        let directoryName = profile.id.uuidString.lowercased()
+        let destination = voiceProfilesRootURL
+            .appendingPathComponent(directoryName, isDirectory: true)
+            .appendingPathComponent("preview.wav")
+        if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+        try FileManager.default.copyItem(at: sourceURL, to: destination)
+        updated.previewAudioRelativePath = "\(directoryName)/preview.wav"
+        try updateProfile(updated)
+        return updated
     }
 
     func installModel(archiveURL: URL, vocoderURL: URL) async throws {
@@ -245,7 +375,7 @@ struct ZipVoiceStore: Sendable {
 
     static func sha256(of fileURL: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
+        defer { handle.closeFile() }
         var hasher = SHA256()
         while true {
             let data = try handle.read(upToCount: 1_048_576) ?? Data()
@@ -255,112 +385,57 @@ struct ZipVoiceStore: Sendable {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private func addProfileSynchronously(
-        from sourceURL: URL,
-        name: String,
-        gender: ZipVoiceProfileGender,
-        referenceText: String
-    ) throws -> ZipVoiceProfile {
-        let transcript = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { throw ZipVoiceError.invalidTranscript }
-        let hasScope = sourceURL.startAccessingSecurityScopedResource()
-        defer { if hasScope { sourceURL.stopAccessingSecurityScopedResource() } }
-        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
-            throw ZipVoiceError.inaccessibleAudio
+    private func migrateLegacyProfiles(bundle: Bundle) throws {
+        let legacyURL = profilesDirectory.appendingPathComponent(Self.profilesFileName)
+        guard FileManager.default.fileExists(atPath: legacyURL.path) else { return }
+        let data = try Data(contentsOf: legacyURL)
+        let profiles = try JSONDecoder().decode([VoiceProfile].self, from: data)
+        for legacy in profiles where ZipVoiceBuiltInProfiles.definition(for: legacy) == nil {
+            let finalDirectory = voiceProfilesRootURL
+                .appendingPathComponent(legacy.id.uuidString.lowercased(), isDirectory: true)
+            guard !FileManager.default.fileExists(atPath: finalDirectory.path) else { continue }
+            let legacyAudio = profilesDirectory.appendingPathComponent(legacy.audioFileName)
+            guard FileManager.default.fileExists(atPath: legacyAudio.path) else { continue }
+            let audioFile = try AVAudioFile(forReading: legacyAudio)
+            try FileManager.default.createDirectory(at: finalDirectory, withIntermediateDirectories: true)
+            let referenceDestination = finalDirectory.appendingPathComponent("reference.wav")
+            try FileManager.default.copyItem(at: legacyAudio, to: referenceDestination)
+            let directoryName = legacy.id.uuidString.lowercased()
+            let migrated = VoiceProfile(
+                id: legacy.id,
+                name: legacy.name,
+                sourceType: .imported,
+                referenceAudioRelativePath: "\(directoryName)/reference.wav",
+                originalAudioRelativePath: nil,
+                referenceText: legacy.referenceText,
+                previewAudioRelativePath: nil,
+                originalFilename: nil,
+                sampleRate: audioFile.processingFormat.sampleRate,
+                duration: Double(audioFile.length) / max(1, audioFile.processingFormat.sampleRate),
+                voiceCategory: legacy.gender,
+                modelVersion: ZipVoiceCatalog.modelVersion,
+                isAuthorized: legacy.isAuthorized,
+                createdAt: legacy.createdAt
+            )
+            try Data(migrated.referenceText.utf8).write(
+                to: finalDirectory.appendingPathComponent("reference.txt"),
+                options: .atomic
+            )
+            try updateProfile(migrated)
         }
-        try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
-        let id = UUID()
-        let fileName = "\(id.uuidString.lowercased()).wav"
-        let destination = profilesDirectory.appendingPathComponent(fileName)
-        do {
-            try convertToReferenceWAV(sourceURL, destination: destination)
-        } catch let error as ZipVoiceError {
-            try? FileManager.default.removeItem(at: destination)
-            throw error
-        } catch {
-            try? FileManager.default.removeItem(at: destination)
-            throw ZipVoiceError.invalidAudio
-        }
-        let profile = ZipVoiceProfile(
-            id: id,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "本地音色" : name,
-            gender: gender,
-            referenceText: transcript,
-            audioFileName: fileName
-        )
-        var all = profiles()
-        all.append(profile)
-        try persist(all)
-        return profile
+        let migratedURL = profilesDirectory.appendingPathComponent("profiles.migrated.json")
+        if FileManager.default.fileExists(atPath: migratedURL.path) { try FileManager.default.removeItem(at: migratedURL) }
+        try FileManager.default.moveItem(at: legacyURL, to: migratedURL)
     }
 
-    private func convertToReferenceWAV(_ source: URL, destination: URL) throws {
-        let inputFile = try AVAudioFile(forReading: source)
-        let duration = Double(inputFile.length) / max(1, inputFile.processingFormat.sampleRate)
-        guard (2...30).contains(duration) else { throw ZipVoiceError.invalidDuration }
-        guard inputFile.length > 0,
-              let outputFormat = AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
-                sampleRate: 24_000,
-                channels: 1,
-                interleaved: true
-              ),
-              let converter = AVAudioConverter(from: inputFile.processingFormat, to: outputFormat) else {
-            throw ZipVoiceError.invalidAudio
-        }
-        try? FileManager.default.removeItem(at: destination)
-        let outputFile = try AVAudioFile(
-            forWriting: destination,
-            settings: outputFormat.settings,
-            commonFormat: .pcmFormatInt16,
-            interleaved: true
-        )
-        let inputCapacity: AVAudioFrameCount = 4_096
-        var reachedEnd = false
-        while !reachedEnd {
-            guard let outputBuffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: inputCapacity
-            ) else { throw ZipVoiceError.invalidAudio }
-            var conversionError: NSError?
-            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, inputStatus in
-                guard let inputBuffer = AVAudioPCMBuffer(
-                    pcmFormat: inputFile.processingFormat,
-                    frameCapacity: inputCapacity
-                ) else {
-                    inputStatus.pointee = .noDataNow
-                    return nil
-                }
-                do {
-                    try inputFile.read(into: inputBuffer)
-                    if inputBuffer.frameLength == 0 {
-                        reachedEnd = true
-                        inputStatus.pointee = .endOfStream
-                        return nil
-                    }
-                    inputStatus.pointee = .haveData
-                    return inputBuffer
-                } catch {
-                    reachedEnd = true
-                    inputStatus.pointee = .endOfStream
-                    return nil
-                }
-            }
-            if let conversionError { throw conversionError }
-            if outputBuffer.frameLength > 0 { try outputFile.write(from: outputBuffer) }
-            if status == .error { throw ZipVoiceError.invalidAudio }
-            if status == .endOfStream { reachedEnd = true }
-        }
-        guard outputFile.length > 0 else { throw ZipVoiceError.invalidAudio }
+    private func normalizedName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "我的模拟音色" : String(trimmed.prefix(30))
     }
 
-    private func persist(_ profiles: [ZipVoiceProfile]) throws {
-        try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(profiles)
-        try data.write(
-            to: profilesDirectory.appendingPathComponent(Self.profilesFileName),
-            options: .atomic
-        )
+    private func supportedOriginalExtension(_ value: String) -> String {
+        let normalized = value.lowercased()
+        return ["wav", "m4a", "mp3", "aac", "caf"].contains(normalized) ? normalized : "audio"
     }
 
     private func installSynchronously(archiveURL: URL, vocoderURL: URL) throws {
@@ -372,7 +447,15 @@ struct ZipVoiceStore: Sendable {
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let staging = rootURL.appendingPathComponent(".model-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: staging) }
+        defer {
+            if fileManager.fileExists(atPath: staging.path) {
+                do {
+                    try fileManager.removeItem(at: staging)
+                } catch {
+                    assertionFailure("ZipVoice 模型临时目录清理失败：\(error.localizedDescription)")
+                }
+            }
+        }
 
         var compressed = try Data(contentsOf: archiveURL, options: .mappedIfSafe)
         var tarData = try BZip2.decompress(data: compressed)
@@ -436,6 +519,14 @@ struct ZipVoiceStore: Sendable {
     private func isSafe(_ path: String) -> Bool {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\") else { return false }
         return !path.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+    }
+
+    private struct VoiceConsentRecord: Codable {
+        let voiceID: UUID
+        let isAuthorized: Bool
+        let confirmedAt: Date
+        let sourceType: VoiceProfileSourceType
+        let statement: String
     }
 }
 
@@ -521,13 +612,49 @@ actor ZipVoiceSynthesizer {
         loadedPaths = nil
     }
 
+    func modelSampleRate(model: ZipVoiceModelPaths) throws -> Int {
+        let bridge = try loadBridgeIfNeeded(model: model)
+        let sampleRate = bridge.modelSampleRate
+        guard sampleRate > 0 else { throw LocalVoiceError.modelSampleRateUnavailable }
+        return sampleRate
+    }
+
+    func releaseReferenceAudioCache(keeping audioURL: URL?) throws {
+        bridge?.clearReferenceAudioCache(keepingPath: audioURL?.path)
+    }
+
     func synthesize(
         text: String,
         model: ZipVoiceModelPaths,
         profile: ZipVoiceProfile,
         audioURL: URL,
-        speed: Float
+        speed: Float,
+        cancellation: ISZipVoiceSynthesisCancellation? = nil
     ) throws -> ZipVoiceSynthesizedAudio {
+        guard profile.isAuthorized else { throw ZipVoiceError.unauthorizedVoice }
+        let bridge = try loadBridgeIfNeeded(model: model)
+        var sampleRate = 0
+        let pcm: Data
+        do {
+            pcm = try bridge.synthesizeText(
+                text,
+                referenceAudioPath: audioURL.path,
+                referenceText: profile.referenceText,
+                speed: speed,
+                cancellation: cancellation,
+                sampleRate: &sampleRate
+            )
+        } catch {
+            if cancellation?.isCancelled == true { throw CancellationError() }
+            throw error
+        }
+        guard !pcm.isEmpty, sampleRate > 0 else {
+            throw ZipVoiceError.synthesisFailed("模型没有返回音频")
+        }
+        return .init(pcmFloat32: pcm, sampleRate: Double(sampleRate))
+    }
+
+    private func loadBridgeIfNeeded(model: ZipVoiceModelPaths) throws -> ISZipVoiceTTSBridge {
         if bridge == nil || loadedPaths != model {
             bridge = try ISZipVoiceTTSBridge(
                 encoderPath: model.encoder.path,
@@ -540,17 +667,6 @@ actor ZipVoiceSynthesizer {
             loadedPaths = model
         }
         guard let bridge else { throw ZipVoiceError.modelNotInstalled }
-        var sampleRate = 0
-        let pcm = try bridge.synthesizeText(
-            text,
-            referenceAudioPath: audioURL.path,
-            referenceText: profile.referenceText,
-            speed: speed,
-            sampleRate: &sampleRate
-        )
-        guard !pcm.isEmpty, sampleRate > 0 else {
-            throw ZipVoiceError.synthesisFailed("模型没有返回音频")
-        }
-        return .init(pcmFloat32: pcm, sampleRate: Double(sampleRate))
+        return bridge
     }
 }

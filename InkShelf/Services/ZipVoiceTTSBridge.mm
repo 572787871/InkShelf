@@ -1,10 +1,38 @@
 #import "ZipVoiceTTSBridge.h"
 #include <sherpa-onnx/c-api/c-api.h>
+#include <atomic>
 
 static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
 
+@implementation ISZipVoiceSynthesisCancellation {
+    std::atomic_bool _cancelled;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) _cancelled.store(false);
+    return self;
+}
+
+- (BOOL)isCancelled {
+    return _cancelled.load();
+}
+
+- (void)cancel {
+    _cancelled.store(true);
+}
+
+@end
+
+static int32_t ISZipVoiceProgressCallback(const float *, int32_t, float, void *arg) {
+    if (!arg) return 1;
+    ISZipVoiceSynthesisCancellation *cancellation = (__bridge ISZipVoiceSynthesisCancellation *)arg;
+    return cancellation.isCancelled ? 0 : 1;
+}
+
 @implementation ISZipVoiceTTSBridge {
     const SherpaOnnxOfflineTts *_tts;
+    NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *_referenceAudioCache;
 }
 
 - (nullable instancetype)initWithEncoderPath:(NSString *)encoderPath
@@ -41,7 +69,12 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
         }];
         return nil;
     }
+    _referenceAudioCache = [NSMutableDictionary dictionary];
     return self;
+}
+
+- (NSInteger)modelSampleRate {
+    return _tts ? SherpaOnnxOfflineTtsSampleRate(_tts) : 0;
 }
 
 - (void)dealloc {
@@ -55,6 +88,7 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
                  referenceAudioPath:(NSString *)referenceAudioPath
                       referenceText:(NSString *)referenceText
                               speed:(float)speed
+                       cancellation:(nullable ISZipVoiceSynthesisCancellation *)cancellation
                          sampleRate:(NSInteger *)sampleRate
                               error:(NSError **)error {
     if (!_tts || text.length == 0 || referenceText.length == 0) {
@@ -63,21 +97,35 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
         }];
         return nil;
     }
-    const SherpaOnnxWave *wave = SherpaOnnxReadWave(referenceAudioPath.UTF8String);
-    if (!wave || !wave->samples || wave->num_samples <= 0) {
-        if (wave) SherpaOnnxFreeWave(wave);
-        if (error) *error = [NSError errorWithDomain:ISZipVoiceErrorDomain code:3 userInfo:@{
-            NSLocalizedDescriptionKey: @"参考 WAV 无法读取，请使用 PCM WAV 文件"
-        }];
-        return nil;
+    NSDictionary<NSString *, id> *cached = _referenceAudioCache[referenceAudioPath];
+    if (!cached) {
+        const SherpaOnnxWave *wave = SherpaOnnxReadWave(referenceAudioPath.UTF8String);
+        if (!wave || !wave->samples || wave->num_samples <= 0) {
+            if (wave) SherpaOnnxFreeWave(wave);
+            if (error) *error = [NSError errorWithDomain:ISZipVoiceErrorDomain code:3 userInfo:@{
+                NSLocalizedDescriptionKey: @"参考 WAV 无法读取，请使用 PCM WAV 文件"
+            }];
+            return nil;
+        }
+        NSData *samples = [NSData dataWithBytes:wave->samples length:(NSUInteger)wave->num_samples * sizeof(float)];
+        cached = @{
+            @"samples": samples,
+            @"count": @(wave->num_samples),
+            @"sampleRate": @(wave->sample_rate)
+        };
+        _referenceAudioCache[referenceAudioPath] = cached;
+        SherpaOnnxFreeWave(wave);
     }
+    NSData *referenceSamples = cached[@"samples"];
+    NSNumber *referenceCount = cached[@"count"];
+    NSNumber *referenceRate = cached[@"sampleRate"];
 
     SherpaOnnxGenerationConfig generation = {};
     generation.silence_scale = 0.04f;
     generation.speed = MAX(0.7f, MIN(1.2f, speed));
-    generation.reference_audio = wave->samples;
-    generation.reference_audio_len = wave->num_samples;
-    generation.reference_sample_rate = wave->sample_rate;
+    generation.reference_audio = (const float *)referenceSamples.bytes;
+    generation.reference_audio_len = referenceCount.intValue;
+    generation.reference_sample_rate = referenceRate.intValue;
     generation.reference_text = referenceText.UTF8String;
     // Four flow-matching steps are the official distilled ZipVoice setting.
     // Eight doubled first-audio latency on iPhone without being required by
@@ -86,11 +134,20 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     generation.extra = "{\"min_char_in_sentence\":\"10\",\"max_char_in_sentence\":\"120\"}";
 
     const SherpaOnnxGeneratedAudio *audio = SherpaOnnxOfflineTtsGenerateWithConfig(
-        _tts, text.UTF8String, &generation, nullptr, nullptr
+        _tts,
+        text.UTF8String,
+        &generation,
+        cancellation ? ISZipVoiceProgressCallback : nullptr,
+        cancellation ? (__bridge void *)cancellation : nullptr
     );
-    SherpaOnnxFreeWave(wave);
     if (!audio || !audio->samples || audio->n <= 0 || audio->sample_rate <= 0) {
         if (audio) SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
+        if (cancellation.isCancelled) {
+            if (error) *error = [NSError errorWithDomain:ISZipVoiceErrorDomain code:5 userInfo:@{
+                NSLocalizedDescriptionKey: @"ZipVoice 生成已取消"
+            }];
+            return nil;
+        }
         if (error) *error = [NSError errorWithDomain:ISZipVoiceErrorDomain code:4 userInfo:@{
             NSLocalizedDescriptionKey: @"ZipVoice 没有生成有效音频"
         }];
@@ -100,6 +157,16 @@ static NSString *const ISZipVoiceErrorDomain = @"InkShelf.ZipVoice";
     if (sampleRate) *sampleRate = audio->sample_rate;
     SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio);
     return pcm;
+}
+
+- (void)clearReferenceAudioCacheKeepingPath:(nullable NSString *)referenceAudioPath {
+    if (!referenceAudioPath) {
+        [_referenceAudioCache removeAllObjects];
+        return;
+    }
+    NSDictionary<NSString *, id> *retained = _referenceAudioCache[referenceAudioPath];
+    [_referenceAudioCache removeAllObjects];
+    if (retained) _referenceAudioCache[referenceAudioPath] = retained;
 }
 
 @end

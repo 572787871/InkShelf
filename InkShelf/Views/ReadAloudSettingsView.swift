@@ -1,17 +1,13 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
     @EnvironmentObject private var library: LibraryStore
+    @State private var showingAuthorization = false
+    @State private var authorizationIntent = VoiceCreationIntent.record
+    @State private var showingRecorder = false
     @State private var showingVoiceImporter = false
-    @State private var showingVoiceEditor = false
-    @State private var pendingVoiceURL: URL?
-    @State private var draftVoiceName = ""
-    @State private var draftVoiceGender = ZipVoiceProfileGender.unspecified
-    @State private var draftReferenceText = ""
-    @State private var isSavingVoice = false
-    @State private var isStagingVoice = false
+    @State private var importedVoiceSource: ImportedVoiceSource?
     @State private var selectedRoleBookID: UUID?
     @State private var localError: String?
 
@@ -183,21 +179,34 @@ struct ReadAloudSettingsView: View {
         .onAppear(perform: selectDefaultRoleBook)
         .onChange(of: selectedRoleBookID) { _, _ in loadSelectedBookCast() }
         .onDisappear { readAloud.stopVoicePreview() }
-        .fileImporter(
-            isPresented: $showingVoiceImporter,
-            allowedContentTypes: [.audio, .data],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case let .success(urls):
-                guard let url = urls.first else { return }
-                stageImportedAudio(url)
-            case let .failure(error):
-                localError = error.localizedDescription
+        .alert("声音授权确认", isPresented: $showingAuthorization) {
+            Button("取消", role: .cancel) { }
+            Button("我确认并继续") { continueAuthorizedCreation() }
+        } message: {
+            Text("我确认这是本人的声音，或我已经获得声音所有者的明确授权。我不会使用该功能进行冒充、欺骗或侵犯他人权益。")
+        }
+        .sheet(isPresented: $showingRecorder) {
+            NavigationStack {
+                LocalVoiceRecordingView { }
             }
         }
-        .sheet(isPresented: $showingVoiceEditor, onDismiss: discardStagedAudio) {
-            voiceEditor
+        .sheet(isPresented: $showingVoiceImporter) {
+            LocalVoiceDocumentPicker { result in
+                showingVoiceImporter = false
+                switch result {
+                case let .success(source):
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        importedVoiceSource = source
+                    }
+                case let .failure(error):
+                    localError = "无法读取所选音频：\(error.localizedDescription)"
+                }
+            }
+        }
+        .sheet(item: $importedVoiceSource) { source in
+            NavigationStack {
+                ImportedVoiceEditorView(source: source) { }
+            }
         }
         .alert("本地朗读设置失败", isPresented: Binding(
             get: { localError != nil },
@@ -218,9 +227,9 @@ struct ReadAloudSettingsView: View {
         }
 
         if readAloud.settings.voiceSelectionMode == .roleBased {
-            voicePicker("第一人称旁白", selection: settingBinding(\.narratorVoiceIdentifier))
-            voicePicker("第三人称旁白", selection: settingBinding(\.thirdPersonVoiceIdentifier))
-            voicePicker("未识别角色", selection: settingBinding(\.characterVoiceIdentifier))
+            voicePicker("第一人称旁白", selection: voiceSettingBinding(\.narratorVoiceIdentifier))
+            voicePicker("第三人称旁白", selection: voiceSettingBinding(\.thirdPersonVoiceIdentifier))
+            voicePicker("未识别角色", selection: voiceSettingBinding(\.characterVoiceIdentifier))
             ForEach(readAloud.detectedCharacterNames, id: \.self) { name in
                 let gender = readAloud.detectedCharacterGenders[name]?.title ?? "未定"
                 voicePicker("角色 · \(name) · \(gender)", selection: characterVoiceBinding(name))
@@ -249,14 +258,23 @@ struct ReadAloudSettingsView: View {
             modelAction
         }
 
-        Button { showingVoiceImporter = true } label: {
-            HStack {
-                Label("导入参考音频", systemImage: "waveform.badge.plus")
-                Spacer()
-                if isStagingVoice { ProgressView().controlSize(.small) }
-            }
+        Button {
+            requestAuthorization(for: .record)
+        } label: {
+            Label("录制我的声音", systemImage: "mic.circle")
         }
-        .disabled(isStagingVoice)
+
+        Button {
+            requestAuthorization(for: .importFile)
+        } label: {
+            Label("导入音频文件", systemImage: "waveform.badge.plus")
+        }
+
+        NavigationLink {
+            MyVoiceProfilesView()
+        } label: {
+            LabeledContent("我的模拟音色", value: "\(customVoices.count)")
+        }
 
         DisclosureGroup("内置女声 · \(builtInFemaleVoices.count)") {
             ForEach(builtInFemaleVoices) { profile in
@@ -268,11 +286,7 @@ struct ReadAloudSettingsView: View {
                 voiceProfileRow(profile, removable: false)
             }
         }
-        ForEach(importedVoices) { profile in
-            voiceProfileRow(profile, removable: true)
-        }
-
-        Text("支持 WAV、M4A、MP3、AAC 等系统可读取的音频，导入后统一转为 24kHz 单声道 WAV。建议使用 2–30 秒、无配乐和环境噪声的清晰人声；参考文字必须逐字一致。")
+        Text("录音和导入文件都只在 iPhone 本地处理。支持 WAV、M4A、MP3、AAC、CAF；App 会读取当前 ZipVoice 模型的实际采样率，再统一转换、裁静音并检查有效人声。")
             .font(.footnote)
             .foregroundStyle(.secondary)
 
@@ -295,8 +309,8 @@ struct ReadAloudSettingsView: View {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    private var importedVoices: [ZipVoiceProfile] {
-        readAloud.zipVoiceProfiles.filter { !ZipVoiceBuiltInProfiles.contains($0) }
+    private var customVoices: [ZipVoiceProfile] {
+        readAloud.zipVoiceProfiles.filter { $0.sourceType != .builtIn }
     }
 
     private func voiceProfileRow(_ profile: ZipVoiceProfile, removable: Bool) -> some View {
@@ -316,15 +330,6 @@ struct ReadAloudSettingsView: View {
             .buttonStyle(.borderless)
             .disabled(readAloud.connectionState == .testing)
             .accessibilityLabel("试听\(profile.name)")
-            if removable {
-                Button(role: .destructive) {
-                    do { try readAloud.removeZipVoiceProfile(profile) }
-                    catch { localError = error.localizedDescription }
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-            }
         }
     }
 
@@ -354,40 +359,6 @@ struct ReadAloudSettingsView: View {
         }
     }
 
-    private var voiceEditor: some View {
-        NavigationStack {
-            Form {
-                Section("音色资料") {
-                    TextField("名称", text: $draftVoiceName)
-                    Picker("声音类型", selection: $draftVoiceGender) {
-                        ForEach(ZipVoiceProfileGender.allCases) { gender in
-                            Text(gender.title).tag(gender)
-                        }
-                    }
-                }
-                Section("参考音频逐字稿") {
-                    TextEditor(text: $draftReferenceText)
-                        .frame(minHeight: 130)
-                    Text("必须逐字对应音频中的语音，标点可以不同，但不要漏字或添加说明。App 会自动转换音频格式。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .navigationTitle("导入本地音色")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showingVoiceEditor = false }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { saveVoiceProfile() }
-                        .disabled(draftReferenceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSavingVoice)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
     private var requiresNetwork: Bool {
         readAloud.settings.provider != .localZipVoice
             || readAloud.settings.roleDetectionMode == .ai
@@ -396,8 +367,28 @@ struct ReadAloudSettingsView: View {
     private func voicePicker(_ title: String, selection: Binding<String>) -> some View {
         Picker(title, selection: selection) {
             Text("自动").tag("")
-            ForEach(readAloud.availableVoiceChoices) { voice in
-                Text(voice.name).tag(voice.id)
+            if readAloud.settings.provider == .localZipVoice {
+                if !customVoices.isEmpty {
+                    Section("我的模拟音色") {
+                        ForEach(customVoices) { profile in
+                            Text(profile.name).tag(profile.voiceIdentifier)
+                        }
+                    }
+                }
+                Section("内置女声") {
+                    ForEach(builtInFemaleVoices) { profile in
+                        Text(profile.name).tag(profile.voiceIdentifier)
+                    }
+                }
+                Section("内置男声") {
+                    ForEach(builtInMaleVoices) { profile in
+                        Text(profile.name).tag(profile.voiceIdentifier)
+                    }
+                }
+            } else {
+                ForEach(readAloud.availableVoiceChoices) { voice in
+                    Text(voice.name).tag(voice.id)
+                }
             }
         }
     }
@@ -442,10 +433,25 @@ struct ReadAloudSettingsView: View {
         )
     }
 
+    private func voiceSettingBinding(_ keyPath: WritableKeyPath<ReadAloudSettings, String>) -> Binding<String> {
+        Binding(
+            get: { readAloud.settings[keyPath: keyPath] },
+            set: {
+                readAloud.settings[keyPath: keyPath] = $0
+                do { try readAloud.refreshVoiceProfileBindings() }
+                catch { localError = error.localizedDescription }
+            }
+        )
+    }
+
     private func characterVoiceBinding(_ name: String) -> Binding<String> {
         Binding(
             get: { readAloud.settings.characterVoiceIdentifiers[name] ?? "" },
-            set: { readAloud.settings.characterVoiceIdentifiers[name] = $0 }
+            set: {
+                readAloud.settings.characterVoiceIdentifiers[name] = $0
+                do { try readAloud.refreshVoiceProfileBindings() }
+                catch { localError = error.localizedDescription }
+            }
         )
     }
 
@@ -473,74 +479,20 @@ struct ReadAloudSettingsView: View {
         readAloud.analyzeWholeBook(selectedRoleBook)
     }
 
-    private func stageImportedAudio(_ url: URL) {
-        isStagingVoice = true
-        Task {
-            do {
-                let staged = try await Task.detached(priority: .userInitiated) {
-                    let hasScope = url.startAccessingSecurityScopedResource()
-                    defer { if hasScope { url.stopAccessingSecurityScopedResource() } }
-                    let directory = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("InkShelfVoiceImports", isDirectory: true)
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    let fileName = "\(UUID().uuidString).\(url.pathExtension.isEmpty ? "audio" : url.pathExtension)"
-                    let staged = directory.appendingPathComponent(fileName)
-                    var coordinationError: NSError?
-                    var copyError: Error?
-                    NSFileCoordinator().coordinate(
-                        readingItemAt: url,
-                        options: [],
-                        error: &coordinationError
-                    ) { readableURL in
-                        do {
-                            try FileManager.default.copyItem(at: readableURL, to: staged)
-                        } catch {
-                            copyError = error
-                        }
-                    }
-                    if let coordinationError { throw coordinationError }
-                    if let copyError { throw copyError }
-                    guard FileManager.default.fileExists(atPath: staged.path) else {
-                        throw CocoaError(.fileReadUnknown)
-                    }
-                    return staged
-                }.value
-                pendingVoiceURL = staged
-                draftVoiceName = url.deletingPathExtension().lastPathComponent
-                draftVoiceGender = .unspecified
-                draftReferenceText = ""
-                showingVoiceEditor = true
-            } catch {
-                localError = "无法读取所选音频：\(error.localizedDescription)"
-            }
-            isStagingVoice = false
+    private func requestAuthorization(for intent: VoiceCreationIntent) {
+        authorizationIntent = intent
+        showingAuthorization = true
+    }
+
+    private func continueAuthorizedCreation() {
+        switch authorizationIntent {
+        case .record: showingRecorder = true
+        case .importFile: showingVoiceImporter = true
         }
     }
 
-    private func saveVoiceProfile() {
-        guard let pendingVoiceURL else { return }
-        isSavingVoice = true
-        Task { @MainActor in
-            defer { isSavingVoice = false }
-            do {
-                try await readAloud.addZipVoiceProfile(
-                    from: pendingVoiceURL,
-                    name: draftVoiceName,
-                    gender: draftVoiceGender,
-                    referenceText: draftReferenceText
-                )
-                showingVoiceEditor = false
-                try? FileManager.default.removeItem(at: pendingVoiceURL)
-                self.pendingVoiceURL = nil
-            } catch {
-                localError = error.localizedDescription
-            }
-        }
-    }
-
-    private func discardStagedAudio() {
-        guard let pendingVoiceURL else { return }
-        try? FileManager.default.removeItem(at: pendingVoiceURL)
-        self.pendingVoiceURL = nil
+    private enum VoiceCreationIntent {
+        case record
+        case importFile
     }
 }

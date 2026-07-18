@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import AVFoundation
 import UniformTypeIdentifiers
 import CoreFoundation
 @testable import InkShelf
@@ -714,14 +715,14 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(result.plan.speakers(for: page.location)?.first, .character("苏桐"))
     }
 
-    func testBundledReferenceCatalogContainsEveryPublishedSpeaker() {
+    func testBundledReferenceCatalogContainsCuratedLocalVoices() {
         let definitions = ZipVoiceBuiltInProfiles.definitions
 
-        XCTAssertEqual(definitions.count, 103)
-        XCTAssertEqual(Set(definitions.map(\.id)).count, 103)
-        XCTAssertEqual(Set(definitions.map(\.name)).count, 103)
-        XCTAssertEqual(definitions.filter { $0.gender == .female }.count, 58)
-        XCTAssertEqual(definitions.filter { $0.gender == .male }.count, 45)
+        XCTAssertEqual(definitions.count, 5)
+        XCTAssertEqual(Set(definitions.map(\.id)).count, 5)
+        XCTAssertEqual(Set(definitions.map(\.name)).count, 5)
+        XCTAssertEqual(definitions.filter { $0.gender == .female }.count, 3)
+        XCTAssertEqual(definitions.filter { $0.gender == .male }.count, 2)
         for definition in definitions {
             let url = Bundle.main.url(
                 forResource: definition.resource,
@@ -730,6 +731,58 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
             ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav")
             XCTAssertNotNil(url, "缺少内置声线资源：\(definition.resource)")
         }
+    }
+
+    func testVoiceProfileRoundTripKeepsOnlyRelativePaths() throws {
+        let profile = VoiceProfile(
+            name: "我的音色",
+            sourceType: .recorded,
+            referenceAudioRelativePath: "123/reference.wav",
+            originalAudioRelativePath: "123/original.m4a",
+            referenceText: "测试参考文字",
+            previewAudioRelativePath: "123/preview.wav",
+            originalFilename: "录音.m4a",
+            sampleRate: 24_000,
+            duration: 6.5,
+            voiceCategory: .female,
+            modelVersion: ZipVoiceCatalog.modelVersion,
+            isAuthorized: true,
+            boundCharacterIds: ["第一人称旁白", "角色 · 苏桐"]
+        )
+
+        let data = try JSONEncoder().encode(profile)
+        let decoded = try JSONDecoder().decode(VoiceProfile.self, from: data)
+
+        XCTAssertEqual(decoded, profile)
+        XCTAssertFalse(decoded.referenceAudioRelativePath.hasPrefix("/"))
+        XCTAssertFalse(try XCTUnwrap(decoded.originalAudioRelativePath).hasPrefix("/"))
+        XCTAssertFalse(try XCTUnwrap(decoded.previewAudioRelativePath).hasPrefix("/"))
+    }
+
+    func testAudioPreprocessorProducesModelRateMonoReference() throws {
+        let definition = try XCTUnwrap(ZipVoiceBuiltInProfiles.definitions.first)
+        let source = try XCTUnwrap(
+            Bundle.main.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav")
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioPreprocessorTests-\(UUID().uuidString)", isDirectory: true)
+        let output = directory.appendingPathComponent("reference.wav")
+        let result = try AudioPreprocessor().process(
+            sourceURL: source,
+            destinationURL: output,
+            targetSampleRate: 24_000
+        )
+        let file = try AVAudioFile(forReading: output)
+
+        XCTAssertEqual(file.processingFormat.sampleRate, 24_000, accuracy: 0.1)
+        XCTAssertEqual(file.processingFormat.channelCount, 1)
+        XCTAssertGreaterThanOrEqual(result.effectiveVoiceDuration, 3)
+        XCTAssertGreaterThan(result.duration, 3)
+        try FileManager.default.removeItem(at: directory)
     }
 
     func testAutomaticCastingKeepsNamedCharacterVoiceStable() {

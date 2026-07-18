@@ -1,8 +1,10 @@
 # Bundled ZipVoice reference catalog
 
-The `studio_*.wav` files are clean, full-utterance reference prompts generated
-from all 103 speaker vectors (100 Chinese plus 3 English) published with
-`hexgrad/Kokoro-82M-v1.1-zh`.
+The five `studio_*.wav` files are clean, full-utterance reference prompts
+selected from the Chinese speaker vectors published with
+`hexgrad/Kokoro-82M-v1.1-zh`. The catalog was reduced from 103 entries after
+checking duration, RMS level, clipping and silence ratio, keeping three female
+and two male references with distinct delivery styles.
 
 Source model and speaker vectors:
 <https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh>
@@ -14,11 +16,9 @@ generated locally with the repository's official `KModel`/`KPipeline` path at
 and stored as mono 16-bit PCM WAV files. They were not made by duplicating or
 renaming the two demonstration WAV files in the upstream repository.
 
-The 100 Chinese files speak this exact transcript:
+All five files speak this exact transcript:
 
 `夜色沉静，微风吹过长街。愿每一个故事，都有属于自己的声音。`
-
-The three English files carry their exact English transcript in `catalog.json`.
 
 `catalog.json` provides stable product-facing Chinese names and gender metadata.
 The upstream model name is intentionally not used as a voice name in the app;
