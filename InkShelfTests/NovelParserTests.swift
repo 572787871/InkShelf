@@ -667,8 +667,8 @@ final class ReaderThemeTests: XCTestCase {
 }
 
 final class ReadAloudRoleAnalyzerTests: XCTestCase {
-    func testWholeBookSmartRoleDetectionReplacesDownloadedModelModes() {
-        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["ai"])
+    func testWholeBookRoleDetectionSupportsLocalAndAIWithoutDownloadedModels() {
+        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["localRules", "ai"])
         XCTAssertEqual(ReadAloudVoiceSelectionMode.allCases.map(\.rawValue), ["automatic", "roleBased"])
     }
 

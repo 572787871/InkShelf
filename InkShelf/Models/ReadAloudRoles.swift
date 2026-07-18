@@ -430,6 +430,17 @@ struct ReadAloudRoleAnalyzer {
             }
         }
 
+        let speechVerbSuffixes = [
+            "开口道", "提醒道", "解释道", "补充道", "回应道", "回答道",
+            "说道", "问道", "答道", "喊道", "叫道", "应道", "笑道", "哭道",
+            "追问", "反问", "质问", "询问", "回答", "提醒", "解释", "补充",
+            "回应", "开口", "说罢", "说", "问", "答", "喊", "叫", "道"
+        ]
+        if let suffix = speechVerbSuffixes.first(where: { name.hasSuffix($0) }),
+           name.count > suffix.count {
+            name.removeLast(suffix.count)
+        }
+
         let honorificSuffixes = ["小姐", "先生", "姑娘", "夫人", "公子", "少爷", "女士"]
         if let suffix = honorificSuffixes.first(where: { name.hasSuffix($0) }),
            name.count - suffix.count >= 2 {
