@@ -497,11 +497,12 @@ actor AICharacterRoleClient {
 }
 
 @MainActor
-final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
+final class AudiobookAudioPlayer: NSObject, @preconcurrency AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     private var completion: (() -> Void)?
     private var boundaryTimer: Timer?
     private var boundaryHandler: (() -> Void)?
+    private var boundaryTime: TimeInterval?
     private(set) var isPaused = false
 
     var hasScheduledAudio: Bool { player != nil }
@@ -525,19 +526,14 @@ final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
         }
         if let boundaryFraction, onBoundary != nil {
             let fraction = min(0.98, max(0.02, boundaryFraction))
-            let boundaryTime = player.duration * fraction
-            boundaryTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak player] timer in
-                guard let self, let player, self.player === player else {
-                    timer.invalidate()
-                    return
-                }
-                guard player.currentTime >= boundaryTime else { return }
-                timer.invalidate()
-                self.boundaryTimer = nil
-                let handler = self.boundaryHandler
-                self.boundaryHandler = nil
-                handler?()
-            }
+            boundaryTime = player.duration * fraction
+            boundaryTimer = Timer.scheduledTimer(
+                timeInterval: 0.05,
+                target: self,
+                selector: #selector(checkBoundary),
+                userInfo: nil,
+                repeats: true
+            )
         }
     }
 
@@ -556,6 +552,7 @@ final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
         boundaryTimer?.invalidate()
         boundaryTimer = nil
         boundaryHandler = nil
+        boundaryTime = nil
         player?.stop()
         player = nil
         completion = nil
@@ -568,9 +565,20 @@ final class AudiobookAudioPlayer: NSObject, AVAudioPlayerDelegate {
         boundaryTimer?.invalidate()
         boundaryTimer = nil
         boundaryHandler = nil
+        boundaryTime = nil
         self.player = nil
         self.completion = nil
         isPaused = false
         if flag { completion?() }
+    }
+
+    @objc private func checkBoundary() {
+        guard let player, let boundaryTime, player.currentTime >= boundaryTime else { return }
+        boundaryTimer?.invalidate()
+        boundaryTimer = nil
+        self.boundaryTime = nil
+        let handler = boundaryHandler
+        boundaryHandler = nil
+        handler?()
     }
 }

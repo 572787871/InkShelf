@@ -432,8 +432,8 @@ final class ReadAloudService: NSObject, ObservableObject {
             do {
                 try await localRoleModel.download(variant) { [weak self] progress in
                     Task { @MainActor in
-                        guard let self, settings.localRoleModel == variant else { return }
-                        localRoleModelState = .downloading(progress: progress)
+                        guard let self, self.settings.localRoleModel == variant else { return }
+                        self.localRoleModelState = .downloading(progress: progress)
                     }
                 }
                 try Task.checkCancellation()
