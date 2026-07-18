@@ -532,7 +532,9 @@ final class ReadAloudService: NSObject, ObservableObject {
             } catch is CancellationError {
                 refreshLocalRoleModelState()
             } catch {
-                localRoleModelState = .failed(error.localizedDescription)
+                localRoleModelState = LocalNovelRoleModel.isInstalled(variant)
+                    ? .installed
+                    : .failed(error.localizedDescription)
                 localRoleAnalysisMessage = "识别失败：\(error.localizedDescription)"
             }
             roleAnalysisTask = nil
@@ -1380,7 +1382,10 @@ final class ReadAloudService: NSObject, ObservableObject {
                     aiAnalyzedRoleChapters.insert(chapterIndex)
                 } else {
                     localAnalyzedRoleChapters.insert(chapterIndex)
-                    localRoleModelState = .failed(error.localizedDescription)
+                    localRoleModelState = LocalNovelRoleModel.isInstalled(configuration.localRoleModel)
+                        ? .installed
+                        : .failed(error.localizedDescription)
+                    localRoleAnalysisMessage = "识别失败：\(error.localizedDescription)"
                 }
             }
             roleAnalysisTask = nil
