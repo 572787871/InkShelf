@@ -441,6 +441,21 @@ struct ReadAloudRoleAnalyzer {
             name.removeLast(suffix.count)
         }
 
+        let speechModifierSuffixes = [
+            "叹息着", "犹豫着", "笑着", "哭着", "轻声", "低声", "高声",
+            "沉声", "冷声", "柔声", "小声", "大声", "缓缓", "认真", "急忙",
+            "连忙", "咬牙", "皱眉", "点头", "摇头"
+        ]
+        var removedModifier = true
+        while removedModifier {
+            removedModifier = false
+            if let suffix = speechModifierSuffixes.first(where: { name.hasSuffix($0) }),
+               name.count > suffix.count {
+                name.removeLast(suffix.count)
+                removedModifier = true
+            }
+        }
+
         let honorificSuffixes = ["小姐", "先生", "姑娘", "夫人", "公子", "少爷", "女士"]
         if let suffix = honorificSuffixes.first(where: { name.hasSuffix($0) }),
            name.count - suffix.count >= 2 {
