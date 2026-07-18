@@ -37,6 +37,9 @@ context, not a substitute for inspecting the current code and Git history.
 - `InkShelf/Services/ZipVoiceKit.swift` and `ZipVoiceTTSBridge.{h,mm}`
   - official ZipVoice model download/install, reference-voice profiles,
     Swift-to-sherpa-onnx bridge and iPhone ONNX inference
+- `InkShelf/Services/LocalVoiceKit.swift` and `InkShelf/Views/LocalVoiceViews.swift`
+  - authorized App recording / Files import, shared audio preprocessing,
+    simulated-voice storage, quality checks, trimming and voice management UI
 - `InkShelf/Models/ReadAloudRoles.swift`
   - enhanced offline dialogue attribution (quotes, speech/action verbs,
     honorifics, context and turn continuity), stable character/unknown speaker
@@ -103,14 +106,20 @@ context, not a substitute for inspecting the current code and Git history.
   can instead separately choose first-person narrator, third-person narrator,
   unknown-character and every detected named-character voice; the old unified
   voice mode is removed. MiMo exposes its eight published preset IDs. Local
-  ZipVoice accepts system-readable audio formats, asynchronously coordinates and
-  stages file-provider URLs, converts them to its reference WAV format, and
-  includes 103 full-utterance, 24 kHz reference prompts generated from all
-  Apache-licensed speaker vectors in the upstream Kokoro catalog (100 Chinese
-  and 3 English),
-  presented under product-facing Chinese voice names, alongside user-authorized
-  audio/transcript pairs. The former short demo and low-quality eSpeak reference
-  prompts are migrated out.
+  ZipVoice accepts WAV/M4A/MP3/AAC/CAF, coordinates security-scoped Files URLs,
+  and supports authorized App recording. Both creation paths use one
+  `AudioPreprocessor` to decode, select/crop at most 30 seconds, convert to mono,
+  read the loaded sherpa model's actual output rate, trim edge silence, measure
+  effective speech, normalize conservatively, and flag clipping, low level or
+  excessive silence. Five curated full-utterance 24 kHz references (three
+  female, two male) remain from the former 103-entry catalog, presented under
+  product-facing Chinese names alongside user-created voices.
+- User-created voices live under
+  `Application Support/VoiceProfiles/{voice-id}/` with relative paths only:
+  original audio, `reference.wav`, `reference.txt`, `preview.wav`, `profile.json`
+  and `consent.json`. Legacy flat user imports migrate on first launch. Recording
+  or import requires explicit ownership/authorization confirmation; the App
+  does not provide a celebrity or platform-voice cloning workflow.
 - Apple system voices, runtime Kokoro/VITS packages and the old model store are
   not used.
   Speech can use MiMo chat audio, a configurable OpenAI-compatible
@@ -128,6 +137,12 @@ context, not a substitute for inspecting the current code and Git history.
   pre-generates the following block while audio plays, and keeps a bounded
   in-memory replay cache. Edge-silence trimming, DC correction, bounded gain and
   short fades remain; speaker changes retain intentional boundaries.
+- The sherpa bridge keeps one ZipVoice engine, queries
+  `SherpaOnnxOfflineTtsSampleRate`, caches decoded reference PCM, and uses the
+  real generation progress callback for cancellation. Generated previews are
+  stored with their profiles; book fragments use a bounded memory cache plus a
+  SHA-256-keyed disk cache that never puts novel text in filenames. A memory
+  warning retains only the currently active reference cache.
 - API keys are stored in the iOS Keychain and text upload is disabled until the
   user explicitly consents. Local ZipVoice playback needs no network after its
   model download; whole-book smart analysis is optional, resumable network work
