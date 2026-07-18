@@ -373,6 +373,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         do {
             try zipVoiceStore.ensureBuiltInProfiles()
             zipVoiceProfiles = try zipVoiceStore.profiles()
+            removeUnavailableZipVoiceAssignments()
         } catch {
             zipVoiceInstallState = .failed("音色资料无法读取：\(error.localizedDescription)")
         }
@@ -858,6 +859,18 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     func originalAudioURL(for profile: VoiceProfile) -> URL? {
         zipVoiceStore.originalAudioURL(for: profile)
+    }
+
+    private func removeUnavailableZipVoiceAssignments() {
+        let valid = Set(zipVoiceProfiles.map(\.voiceIdentifier))
+        func normalized(_ identifier: String) -> String {
+            guard identifier.hasPrefix("zipvoice::"), !valid.contains(identifier) else { return identifier }
+            return ""
+        }
+        settings.narratorVoiceIdentifier = normalized(settings.narratorVoiceIdentifier)
+        settings.thirdPersonVoiceIdentifier = normalized(settings.thirdPersonVoiceIdentifier)
+        settings.characterVoiceIdentifier = normalized(settings.characterVoiceIdentifier)
+        settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.mapValues(normalized)
     }
 
     private func synchronizeProfileBindings() throws {

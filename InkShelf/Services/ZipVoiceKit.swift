@@ -391,6 +391,13 @@ struct ZipVoiceStore: Sendable {
         let data = try Data(contentsOf: legacyURL)
         let profiles = try JSONDecoder().decode([VoiceProfile].self, from: data)
         for legacy in profiles where ZipVoiceBuiltInProfiles.definition(for: legacy) == nil {
+            if ZipVoiceBuiltInProfiles.isRetired(legacy) {
+                let retiredAudio = profilesDirectory.appendingPathComponent(legacy.audioFileName)
+                if FileManager.default.fileExists(atPath: retiredAudio.path) {
+                    try FileManager.default.removeItem(at: retiredAudio)
+                }
+                continue
+            }
             let finalDirectory = voiceProfilesRootURL
                 .appendingPathComponent(legacy.id.uuidString.lowercased(), isDirectory: true)
             guard !FileManager.default.fileExists(atPath: finalDirectory.path) else { continue }
@@ -422,6 +429,20 @@ struct ZipVoiceStore: Sendable {
                 options: .atomic
             )
             try updateProfile(migrated)
+            let consent = VoiceConsentRecord(
+                voiceID: migrated.id,
+                isAuthorized: migrated.isAuthorized,
+                confirmedAt: migrated.createdAt,
+                sourceType: .imported,
+                statement: "旧版本用户主动导入记录（迁移）"
+            )
+            let consentEncoder = JSONEncoder()
+            consentEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            consentEncoder.dateEncodingStrategy = .iso8601
+            try consentEncoder.encode(consent).write(
+                to: finalDirectory.appendingPathComponent("consent.json"),
+                options: .atomic
+            )
         }
         let migratedURL = profilesDirectory.appendingPathComponent("profiles.migrated.json")
         if FileManager.default.fileExists(atPath: migratedURL.path) { try FileManager.default.removeItem(at: migratedURL) }
