@@ -232,23 +232,6 @@ struct ReadAloudSpeechRequest: Equatable, Sendable {
     let highlightCues: [ReadAloudHighlightCue]
 }
 
-enum ReadAloudLocalSpeechChunkPolicy {
-    // ZipVoice has a sizeable fixed inference cost. A longer block gives the
-    // rolling prefetcher enough spoken time to prepare the following blocks,
-    // while highlight cues still advance one visible segment at a time.
-    static let maximumSentenceCount = 6
-    static let maximumUTF16Length = 360
-
-    static func canAppend(
-        currentSentenceCount: Int,
-        currentUTF16Length: Int,
-        nextUTF16Length: Int
-    ) -> Bool {
-        currentSentenceCount < maximumSentenceCount
-            && currentUTF16Length + nextUTF16Length <= maximumUTF16Length
-    }
-}
-
 enum ReadAloudPageBoundary {
     private static let terminalPunctuation = CharacterSet(charactersIn: "。！？!?；;…")
     private static let trailingClosers = CharacterSet(charactersIn: "\"'”’」』】）》〉〕）]}")
@@ -293,9 +276,6 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var applicationIsActive = true
     @Published private(set) var playbackRequested = false
     @Published private(set) var connectionState = AudiobookConnectionState.idle
-    @Published private(set) var zipVoiceInstallState = ZipVoiceInstallState.notInstalled
-    @Published private(set) var zipVoiceProfiles: [ZipVoiceProfile] = []
-    @Published private(set) var localVoiceGenerationState = LocalVoiceGenerationState.idle
     @Published private(set) var detectedCharacterNames: [String] = []
     @Published private(set) var detectedCharacterGenders: [String: NovelCharacterGender] = [:]
     @Published private(set) var wholeBookRoleProgress: WholeBookRoleAnalysisProgress?
@@ -359,11 +339,8 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     private let speechClient = AudiobookSpeechClient()
     private let novelCastStore = NovelCastStore()
-    private let zipVoiceStore = ZipVoiceStore()
-    private let zipVoiceSynthesizer = ZipVoiceSynthesizer()
     private let speechPlayer = AudiobookAudioPlayer()
     private let previewPlayer = AudiobookAudioPlayer()
-    private let localVoiceDiskCache = ZipVoiceAudioDiskCache()
     private let localAudioCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.countLimit = 16
@@ -380,9 +357,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     private var waitingForPrefetchPosition: ReadAloudSpeechPosition?
     private var activeRequest: ReadAloudSpeechRequest?
     private var wholeBookRoleAnalysisTask: Task<Void, Never>?
-    private var modelDownloadTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
-    private var localVoiceCancellation: ISZipVoiceSynthesisCancellation?
     private var playbackToken = UUID()
     private var previewToken = UUID()
     private var activeSentenceIndex: Int?
@@ -404,17 +379,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         apiKey = AudiobookCredentialStore.loadAPIKey()
         settings = Self.loadSettings()
         super.init()
-        Task.detached(priority: .utility) { Self.removeRetiredLocalRoleModels() }
-        zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
-        // The built-in catalog is available before the inference model is
-        // downloaded, so users can inspect and assign voices up front.
-        do {
-            try zipVoiceStore.ensureBuiltInProfiles()
-            zipVoiceProfiles = try zipVoiceStore.profiles()
-            removeUnavailableZipVoiceAssignments()
-        } catch {
-            zipVoiceInstallState = .failed("音色资料无法读取：\(error.localizedDescription)")
-        }
+        Task.detached(priority: .utility) { }
         UIApplication.shared.beginReceivingRemoteControlEvents()
         configureRemoteCommands()
         observeAudioInterruptions()
@@ -593,313 +558,10 @@ final class ReadAloudService: NSObject, ObservableObject {
         wholeBookRoleAnalysisTask?.cancel()
     }
 
-    func downloadZipVoiceModel() {
-        guard modelDownloadTask == nil else { return }
-        zipVoiceInstallState = .downloading(progress: 0)
-        modelDownloadTask = Task { [weak self] in
-            guard let self else { return }
-            let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("ZipVoiceDownloads", isDirectory: true)
-            do {
-                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-                let archive = try await download(
-                    ZipVoiceCatalog.archiveURL,
-                    to: cache.appendingPathComponent("model.tar.bz2")
-                )
-                zipVoiceInstallState = .downloading(progress: 0.68)
-                let vocoder = try await download(
-                    ZipVoiceCatalog.vocoderURL,
-                    to: cache.appendingPathComponent("vocos_24khz.onnx")
-                )
-                try Task.checkCancellation()
-                zipVoiceInstallState = .installing
-                try await zipVoiceStore.installModel(archiveURL: archive, vocoderURL: vocoder)
-                if FileManager.default.fileExists(atPath: cache.path) {
-                    try FileManager.default.removeItem(at: cache)
-                }
-                try zipVoiceStore.ensureBuiltInProfiles()
-                zipVoiceProfiles = try zipVoiceStore.profiles()
-                zipVoiceInstallState = .installed
-            } catch is CancellationError {
-                zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
-            } catch {
-                zipVoiceInstallState = .failed(error.localizedDescription)
-            }
-            modelDownloadTask = nil
-        }
-    }
-
-    func cancelZipVoiceDownload() {
-        modelDownloadTask?.cancel()
-        modelDownloadTask = nil
-        zipVoiceInstallState = zipVoiceStore.modelPaths() == nil ? .notInstalled : .installed
-    }
-
-    func prepareLocalVoiceAudio(
-        from url: URL,
-        trimRange: ClosedRange<TimeInterval>? = nil
-    ) async throws -> ProcessedVoiceAudio {
-        guard let model = zipVoiceStore.modelPaths() else { throw ZipVoiceError.modelNotInstalled }
-        localVoiceGenerationState = .loadingModel
-        let sampleRate = try await zipVoiceSynthesizer.modelSampleRate(model: model)
-        guard sampleRate > 0 else { throw LocalVoiceError.modelSampleRateUnavailable }
-        localVoiceGenerationState = .processingReference
-        let destinationDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("InkShelfVoiceDrafts", isDirectory: true)
-        let destination = destinationDirectory
-            .appendingPathComponent("reference-\(UUID().uuidString.lowercased()).wav")
-        do {
-            return try await Task.detached(priority: .userInitiated) {
-                try AudioPreprocessor().process(
-                    sourceURL: url,
-                    destinationURL: destination,
-                    targetSampleRate: Double(sampleRate),
-                    trimRange: trimRange
-                )
-            }.value
-        } catch {
-            localVoiceGenerationState = .failed(error.localizedDescription)
-            throw error
-        }
-    }
-
-    func generateLocalVoicePreview(
-        referenceURL: URL,
-        referenceText: String,
-        speed: Double = 1
-    ) async throws -> URL {
-        let transcript = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { throw LocalVoiceError.emptyReferenceText }
-        guard let model = zipVoiceStore.modelPaths() else { throw ZipVoiceError.modelNotInstalled }
-        localVoiceCancellation?.cancel()
-        let cancellation = ISZipVoiceSynthesisCancellation()
-        localVoiceCancellation = cancellation
-        localVoiceGenerationState = .generatingPreview
-        let temporaryProfile = VoiceProfile(
-            name: "试听",
-            sourceType: .imported,
-            referenceAudioRelativePath: referenceURL.lastPathComponent,
-            originalAudioRelativePath: nil,
-            referenceText: transcript,
-            previewAudioRelativePath: nil,
-            originalFilename: nil,
-            sampleRate: 0,
-            duration: 0,
-            voiceCategory: .unspecified,
-            modelVersion: ZipVoiceCatalog.modelVersion,
-            isAuthorized: true
-        )
-        do {
-            let audio = try await zipVoiceSynthesizer.synthesize(
-                text: "夜色渐深，他终于推开了那扇尘封多年的门。",
-                model: model,
-                profile: temporaryProfile,
-                audioURL: referenceURL,
-                speed: Float(speed),
-                cancellation: cancellation
-            )
-            try Task.checkCancellation()
-            guard !cancellation.isCancelled else { throw CancellationError() }
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("InkShelfVoiceDrafts", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let output = directory.appendingPathComponent("preview-\(UUID().uuidString.lowercased()).wav")
-            try audio.wavData.write(to: output, options: .atomic)
-            localVoiceCancellation = nil
-            localVoiceGenerationState = .completed
-            return output
-        } catch is CancellationError {
-            localVoiceCancellation = nil
-            localVoiceGenerationState = .idle
-            throw CancellationError()
-        } catch {
-            localVoiceCancellation = nil
-            localVoiceGenerationState = .failed(error.localizedDescription)
-            throw error
-        }
-    }
-
-    func cancelLocalVoiceGeneration() {
-        localVoiceCancellation?.cancel()
-        localVoiceCancellation = nil
-        localVoiceGenerationState = .idle
-    }
-
-    func saveLocalVoiceProfile(
-        name: String,
-        sourceType: VoiceProfileSourceType,
-        voiceCategory: ZipVoiceProfileGender,
-        originalURL: URL,
-        processedAudio: ProcessedVoiceAudio,
-        referenceText: String,
-        previewURL: URL,
-        originalFilename: String?,
-        isAuthorized: Bool
-    ) async throws -> VoiceProfile {
-        let store = zipVoiceStore
-        let profile = try await Task.detached(priority: .userInitiated) {
-            try store.saveProfile(
-                name: name,
-                sourceType: sourceType,
-                voiceCategory: voiceCategory,
-                originalURL: originalURL,
-                processedAudio: processedAudio,
-                referenceText: referenceText,
-                previewURL: previewURL,
-                originalFilename: originalFilename,
-                isAuthorized: isAuthorized
-            )
-        }.value
-        zipVoiceProfiles = try zipVoiceStore.profiles()
-        localVoiceGenerationState = .completed
-        return profile
-    }
-
-    func removeZipVoiceProfile(_ profile: ZipVoiceProfile) throws {
-        try zipVoiceStore.removeProfile(profile)
-        do {
-            try localVoiceDiskCache.invalidate(profileID: profile.id)
-        } catch {
-            NSLog("已删除音色，但关联音频缓存清理失败：%@", error.localizedDescription)
-        }
-        localAudioCache.removeAllObjects()
-        if settings.narratorVoiceIdentifier == profile.voiceIdentifier { settings.narratorVoiceIdentifier = "" }
-        if settings.thirdPersonVoiceIdentifier == profile.voiceIdentifier { settings.thirdPersonVoiceIdentifier = "" }
-        if settings.characterVoiceIdentifier == profile.voiceIdentifier { settings.characterVoiceIdentifier = "" }
-        settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.filter {
-            $0.value != profile.voiceIdentifier
-        }
-        zipVoiceProfiles = try zipVoiceStore.profiles()
-    }
-
-    func renameVoiceProfile(_ profile: VoiceProfile, to name: String) throws {
-        var updated = profile
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        updated.name = String(trimmed.prefix(30))
-        try zipVoiceStore.updateProfile(updated)
-        zipVoiceProfiles = try zipVoiceStore.profiles()
-    }
-
-    func voiceProfileBindings(_ profile: VoiceProfile) -> [String] {
-        var bindings: [String] = []
-        if settings.narratorVoiceIdentifier == profile.voiceIdentifier { bindings.append("第一人称旁白") }
-        if settings.thirdPersonVoiceIdentifier == profile.voiceIdentifier { bindings.append("第三人称旁白") }
-        if settings.characterVoiceIdentifier == profile.voiceIdentifier { bindings.append("未识别角色") }
-        bindings += settings.characterVoiceIdentifiers
-            .filter { $0.value == profile.voiceIdentifier }
-            .map { "角色 · \($0.key)" }
-            .sorted()
-        return bindings
-    }
-
-    func assignVoiceProfile(_ profile: VoiceProfile, to binding: String) throws {
-        switch binding {
-        case "第一人称旁白": settings.narratorVoiceIdentifier = profile.voiceIdentifier
-        case "第三人称旁白": settings.thirdPersonVoiceIdentifier = profile.voiceIdentifier
-        case "未识别角色": settings.characterVoiceIdentifier = profile.voiceIdentifier
-        default: settings.characterVoiceIdentifiers[binding] = profile.voiceIdentifier
-        }
-        try synchronizeProfileBindings()
-    }
-
-    func unbindVoiceProfile(_ profile: VoiceProfile, from binding: String) throws {
-        switch binding {
-        case "第一人称旁白":
-            if settings.narratorVoiceIdentifier == profile.voiceIdentifier { settings.narratorVoiceIdentifier = "" }
-        case "第三人称旁白":
-            if settings.thirdPersonVoiceIdentifier == profile.voiceIdentifier { settings.thirdPersonVoiceIdentifier = "" }
-        case "未识别角色":
-            if settings.characterVoiceIdentifier == profile.voiceIdentifier { settings.characterVoiceIdentifier = "" }
-        default:
-            if settings.characterVoiceIdentifiers[binding] == profile.voiceIdentifier {
-                settings.characterVoiceIdentifiers[binding] = nil
-            }
-        }
-        try synchronizeProfileBindings()
-    }
-
-    func refreshVoiceProfileBindings() throws {
-        try synchronizeProfileBindings()
-    }
-
-    func playStoredVoicePreview(_ profile: VoiceProfile) throws {
-        guard let previewURL = zipVoiceStore.previewAudioURL(for: profile),
-              FileManager.default.fileExists(atPath: previewURL.path) else {
-            previewVoice(profile.voiceIdentifier)
-            return
-        }
-        stopVoicePreview()
-        guard configureAudioSession() else { return }
-        try previewPlayer.play(Data(contentsOf: previewURL)) { }
-    }
-
-    func regenerateVoiceProfilePreview(_ profile: VoiceProfile) async throws {
-        let preview = try await generateLocalVoicePreview(
-            referenceURL: zipVoiceStore.audioURL(for: profile),
-            referenceText: profile.referenceText
-        )
-        _ = try zipVoiceStore.replacePreview(for: profile, from: preview)
-        try localVoiceDiskCache.invalidate(profileID: profile.id)
-        localAudioCache.removeAllObjects()
-        zipVoiceProfiles = try zipVoiceStore.profiles()
-    }
-
-    func originalAudioURL(for profile: VoiceProfile) -> URL? {
-        zipVoiceStore.originalAudioURL(for: profile)
-    }
-
-    private func removeUnavailableZipVoiceAssignments() {
-        let valid = Set(zipVoiceProfiles.map(\.voiceIdentifier))
-        func normalized(_ identifier: String) -> String {
-            guard identifier.hasPrefix("zipvoice::"), !valid.contains(identifier) else { return identifier }
-            return ""
-        }
-        settings.narratorVoiceIdentifier = normalized(settings.narratorVoiceIdentifier)
-        settings.thirdPersonVoiceIdentifier = normalized(settings.thirdPersonVoiceIdentifier)
-        settings.characterVoiceIdentifier = normalized(settings.characterVoiceIdentifier)
-        settings.characterVoiceIdentifiers = settings.characterVoiceIdentifiers.mapValues(normalized)
-    }
-
-    private func synchronizeProfileBindings() throws {
-        var changed = false
-        for profile in zipVoiceProfiles where profile.sourceType != .builtIn {
-            var updated = profile
-            let current = voiceProfileBindings(profile)
-            if updated.boundCharacterIds != current {
-                updated.boundCharacterIds = current
-                try zipVoiceStore.updateProfile(updated)
-                changed = true
-            }
-        }
-        if changed { zipVoiceProfiles = try zipVoiceStore.profiles() }
-    }
-
-    private func download(_ source: URL, to destination: URL) async throws -> URL {
-        let (temporary, response) = try await URLSession.shared.download(from: source)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw ZipVoiceError.downloadFailed("服务器没有返回有效文件")
-        }
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.moveItem(at: temporary, to: destination)
-        return destination
-    }
-
     func testConnection() {
-        previewVoice(nil)
-    }
-
-    func previewVoice(_ voiceIdentifier: String?) {
         guard connectionState != .testing else { return }
         stopVoicePreview()
         connectionState = .testing
-        var configuration = settings
-        if let voiceIdentifier {
-            configuration.voiceSelectionMode = .roleBased
-            configuration.narratorVoiceIdentifier = voiceIdentifier
-        }
         let key = apiKey
         let token = UUID()
         previewToken = token
@@ -909,7 +571,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 let audio = try await synthesizeAudio(
                     text: "夜色渐深，故事从这里缓缓开始。",
                     speaker: .narrator,
-                    configuration: configuration,
+                    configuration: settings,
                     key: key
                 )
                 try Task.checkCancellation()
@@ -1287,21 +949,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         var cueSeeds: [(location: ReaderPageLocation, sentenceIndex: Int, range: NSRange, offset: Int)] = [
             (position.location, position.sentenceIndex, sentence.range, 0)
         ]
-        if settings.provider == .localZipVoice {
-            while endingSentenceIndex + 1 < pagePlan.sentences.count,
-                  ReadAloudLocalSpeechChunkPolicy.canAppend(
-                    currentSentenceCount: endingSentenceIndex - position.sentenceIndex + 1,
-                    currentUTF16Length: (text as NSString).length,
-                    nextUTF16Length: (pagePlan.sentences[endingSentenceIndex + 1].text as NSString).length
-                ) {
-                let nextSentence = pagePlan.sentences[endingSentenceIndex + 1]
-                guard nextSentence.speaker == sentence.speaker else { break }
-                let nextOffset = (text as NSString).length
-                text += nextSentence.text
-                endingSentenceIndex += 1
-                cueSeeds.append((position.location, endingSentenceIndex, nextSentence.range, nextOffset))
-            }
-        }
         let lastSentence = pagePlan.sentences[endingSentenceIndex]
         let highlightedRange = sentence.range
         if endingSentenceIndex == pagePlan.sentences.count - 1,
@@ -1317,14 +964,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                     lastFragment: lastSentence.text,
                     nextFragment: nextSentence.text
                 )
-                let canGroupAcrossPage = settings.provider == .localZipVoice
-                    && nextSentence.speaker == sentence.speaker
-                    && ReadAloudLocalSpeechChunkPolicy.canAppend(
-                        currentSentenceCount: endingSentenceIndex - position.sentenceIndex + 1,
-                        currentUTF16Length: (text as NSString).length,
-                        nextUTF16Length: (nextSentence.text as NSString).length
-                    )
-                guard joinsSplitSentence || canGroupAcrossPage else {
+                guard joinsSplitSentence else {
                     let totalLength = max(1, (text as NSString).length)
                     return ReadAloudSpeechRequest(
                         position: position,
@@ -1350,18 +990,6 @@ final class ReadAloudService: NSObject, ObservableObject {
                     : ""
                 let targetBaseOffset = (text as NSString).length + (separator as NSString).length
                 cueSeeds.append((nextPage.location, 0, nextSentence.range, targetBaseOffset))
-                if settings.provider == .localZipVoice {
-                    while targetEndingSentenceIndex + 1 < nextPlan.sentences.count,
-                          ReadAloudLocalSpeechChunkPolicy.canAppend(
-                            currentSentenceCount: endingSentenceIndex - position.sentenceIndex
-                                + targetEndingSentenceIndex + 2,
-                            currentUTF16Length: (text as NSString).length + (targetText as NSString).length,
-                            nextUTF16Length: (nextPlan.sentences[targetEndingSentenceIndex + 1].text as NSString).length
-                    ) {
-                        let following = nextPlan.sentences[targetEndingSentenceIndex + 1]
-                        guard following.speaker == sentence.speaker else { break }
-                        let followingOffset = targetBaseOffset + (targetText as NSString).length
-                        targetText += following.text
                         targetEndingSentenceIndex += 1
                         cueSeeds.append((
                             nextPage.location,
@@ -1450,7 +1078,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             try speechPlayer.play(
                 audio,
                 preparedIdentifier: speechRequestIdentifier(request),
-                playbackRate: localPlaybackRate,
+                playbackRate: 1,
                 boundaryFraction: request.continuation?.boundaryFraction,
                 onBoundary: request.continuation.map { continuation in
                     { [weak self] in self?.crossPageBoundaryReached(continuation, token: token) }
@@ -1526,64 +1154,9 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    private var localPlaybackRate: Float { 1 }
-
     private func speechRequestIdentifier(_ request: ReadAloudSpeechRequest) -> String {
         let location = request.position.location
         return "\(location.chapterIndex):\(location.pageIndex):\(request.position.sentenceIndex):\(request.endingSentenceIndex)"
-    }
-
-    private func zipVoiceProfile(
-        for speaker: ReadAloudSpeaker,
-        settings: ReadAloudSettings
-    ) -> ZipVoiceProfile? {
-        guard !zipVoiceProfiles.isEmpty else { return nil }
-        if settings.voiceSelectionMode == .roleBased {
-            let identifier: String
-            switch speaker {
-            case .narrator: identifier = settings.narratorVoiceIdentifier
-            case .thirdPersonNarrator: identifier = settings.thirdPersonVoiceIdentifier
-            case let .character(name):
-                identifier = settings.characterVoiceIdentifiers[name] ?? settings.characterVoiceIdentifier
-            case .unknownDialogue: identifier = settings.characterVoiceIdentifier
-            }
-            if let selected = zipVoiceProfiles.first(where: { $0.voiceIdentifier == identifier }) {
-                return selected
-            }
-        }
-        let preferredGender: ZipVoiceProfileGender?
-        let stableKey: String
-        switch speaker {
-        case .narrator:
-            preferredGender = .female
-            stableKey = "first-person-narrator"
-        case .thirdPersonNarrator:
-            preferredGender = .male
-            stableKey = "third-person-narrator"
-        case let .unknownDialogue(turn):
-            preferredGender = turn.isMultiple(of: 2) ? .female : .male
-            stableKey = "unknown-dialogue-\(turn)"
-        case let .character(name):
-            switch detectedCharacterGenders[name] {
-            case .female: preferredGender = .female
-            case .male: preferredGender = .male
-            case .unspecified, .none: preferredGender = nil
-            }
-            stableKey = name
-        }
-        let candidates = preferredGender.map { gender in
-            zipVoiceProfiles.filter { $0.gender == gender }
-        }.flatMap { $0.isEmpty ? nil : $0 } ?? zipVoiceProfiles
-        return candidates[stableVoiceIndex(stableKey, count: candidates.count)]
-    }
-
-    private func stableVoiceIndex(_ value: String, count: Int) -> Int {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in value.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return Int(hash % UInt64(count))
     }
 
     private func configureAudioSession() -> Bool {
@@ -1727,7 +1300,6 @@ final class ReadAloudService: NSObject, ObservableObject {
             detectedCharacterGenders.merge(cast.characterGenders) { existing, new in
                 existing == .unspecified ? new : existing
             }
-            aiAnalyzedRoleChapters.insert(chapterIndex)
         }
         var combined = rolePlan.speakersByPage
         combined.merge(chapterPlan.speakersByPage) { _, new in new }
@@ -1811,31 +1383,6 @@ final class ReadAloudService: NSObject, ObservableObject {
         } catch {
             NSLog("朗读设置读取失败，将使用默认设置：%@", error.localizedDescription)
             return ReadAloudSettings()
-        }
-    }
-
-    /// The removed MLX role-model flow stored its two supported repositories
-    /// under the app's Documents/huggingface model snapshot directory. Delete
-    /// only those exact retired targets so upgrading users recover the space.
-    nonisolated private static func removeRetiredLocalRoleModels() {
-        guard let documents = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        ).first else { return }
-        let root = documents
-            .appendingPathComponent("huggingface", isDirectory: true)
-            .appendingPathComponent("models", isDirectory: true)
-            .appendingPathComponent("mlx-community", isDirectory: true)
-            .standardizedFileURL
-        for modelName in ["Qwen3-0.6B-4bit", "Qwen3-1.7B-4bit"] {
-            let target = root.appendingPathComponent(modelName, isDirectory: true).standardizedFileURL
-            guard target.deletingLastPathComponent() == root,
-                  FileManager.default.fileExists(atPath: target.path) else { continue }
-            do {
-                try FileManager.default.removeItem(at: target)
-            } catch {
-                NSLog("旧本地角色模型清理失败：%@", error.localizedDescription)
-            }
         }
     }
 
