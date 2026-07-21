@@ -1,7 +1,6 @@
 import Foundation
 
 enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case localZipVoice
     case mimo
     case openAICompatible
 
@@ -9,7 +8,6 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .localZipVoice: "本地 ZipVoice"
         case .mimo: "小米 MiMo"
         case .openAICompatible: "OpenAI 兼容"
         }
@@ -17,7 +15,6 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var defaultBaseURL: String {
         switch self {
-        case .localZipVoice: ""
         case .mimo: "https://api.xiaomimimo.com/v1"
         case .openAICompatible: "https://api.openai.com/v1"
         }
@@ -25,7 +22,6 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var defaultModel: String {
         switch self {
-        case .localZipVoice: "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia"
         case .mimo: "mimo-v2.5-tts"
         case .openAICompatible: "gpt-4o-mini-tts"
         }
@@ -34,13 +30,11 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case localRules
-    case ai
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .localRules: "本地增强解析"
-        case .ai: "AI 智能分析（本地兜底）"
         }
     }
 }
@@ -77,7 +71,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
     var model = ReadAloudProvider.mimo.defaultModel
     var rateMultiplier = 0.9
     var allowsTextUpload = false
-    var roleDetectionMode = ReadAloudRoleDetectionMode.ai
+    var roleDetectionMode = ReadAloudRoleDetectionMode.localRules
     var analysisProvider = ReadAloudAIProvider.mimo
     var analysisBaseURL = ReadAloudAIProvider.mimo.defaultBaseURL
     var analysisModel = ReadAloudAIProvider.mimo.defaultModel
@@ -111,7 +105,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
         let roleModeRaw = try container.decodeIfPresent(String.self, forKey: .roleDetectionMode)
         roleDetectionMode = roleModeRaw.flatMap(ReadAloudRoleDetectionMode.init(rawValue:))
-            ?? .ai
+            ?? .localRules
         analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
         analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
             ?? analysisProvider.defaultBaseURL
