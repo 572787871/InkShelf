@@ -3,11 +3,6 @@ import SwiftUI
 struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
     @EnvironmentObject private var library: LibraryStore
-    @State private var showingAuthorization = false
-    @State private var authorizationIntent = VoiceCreationIntent.record
-    @State private var showingRecorder = false
-    @State private var showingVoiceImporter = false
-    @State private var importedVoiceSource: ImportedVoiceSource?
     @State private var selectedRoleBookID: UUID?
     @State private var localError: String?
 
