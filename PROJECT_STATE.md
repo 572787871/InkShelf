@@ -228,6 +228,26 @@ context, not a substitute for inspecting the current code and Git history.
 5. On success, report the run and unsigned IPA artifact. On failure, inspect the
    failed step logs and fix before reporting completion.
 
+## Agent module routing
+
+The global Codex skills `reader`, `audio`, `library`, `ui`, and `build` provide
+focused context for long-term work. Use the smallest relevant set and combine
+them for cross-domain changes:
+
+- Reader changes: `$reader` + `$ui`; add `$audio` when narration location or
+  playback coordination is involved.
+- Audio changes: `$audio` + `$reader` for page/session coupling; add `$ui` for
+  the audiobook screen or transcript interaction.
+- Library changes: `$library` + `$reader` for progress/pagination; add `$ui` for
+  shelf and import presentation.
+- Any visual or animation change: `$ui` plus the owning domain skill.
+- Every change that needs compilation, tests, CI, an IPA, or release evidence:
+  `$build` (and `$ios-agent-verification` when broader Apple-platform safety
+  checks are needed).
+
+Sync and StoreKit skills are intentionally deferred until those product domains
+have real implementation files and persistence contracts.
+
 ## Real-device checks still matter
 
 Actions proves compilation and automated tests, not touch feel, page-curl visual
