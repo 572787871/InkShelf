@@ -230,6 +230,8 @@ struct ReadAloudRoleAnalyzer {
         var knownCharacters: Set<String>
         var characterGenders: [String: NovelCharacterGender] = [:]
         var chapterSpeakers: Set<String> = []
+        var dialogueQuoteDepth = 0
+        var straightQuoteIsOpen = false
 
         init(knownCharacters: [String]) {
             self.knownCharacters = Set(knownCharacters)
@@ -243,6 +245,8 @@ struct ReadAloudRoleAnalyzer {
             lastUnitWasDialogue = false
             unknownTurn = 0
             chapterSpeakers.removeAll()
+            dialogueQuoteDepth = 0
+            straightQuoteIsOpen = false
         }
 
         mutating func remember(_ name: String) {
@@ -260,6 +264,21 @@ struct ReadAloudRoleAnalyzer {
             let male = maleMarkers.contains { text.contains(name + $0) || text.contains($0 + name) || name.contains($0) }
             guard female != male else { return }
             characterGenders[name] = female ? .female : .male
+        }
+
+        var isInsideDialogue: Bool {
+            dialogueQuoteDepth > 0 || straightQuoteIsOpen
+        }
+
+        mutating func updateDialogueQuotes(in text: String) {
+            for character in text {
+                switch character {
+                case "“", "「", "『": dialogueQuoteDepth += 1
+                case "”", "」", "』": dialogueQuoteDepth = max(0, dialogueQuoteDepth - 1)
+                case "\"": straightQuoteIsOpen.toggle()
+                default: break
+                }
+            }
         }
 
         func speaker(forPronoun pronoun: String) -> String? {
@@ -311,10 +330,11 @@ struct ReadAloudRoleAnalyzer {
 
             for index in sentences.indices {
                 let text = sentences[index].text
+                let wasInsideDialogue = context.isInsideDialogue
                 let explicitSpeaker = consumedLookahead.contains(index)
                     ? nil
                     : attributedSpeaker(in: text, context: context)
-                let dialogue = containsDialogue(in: text)
+                let dialogue = containsDialogue(in: text) || wasInsideDialogue
 
                 if !dialogue {
                     context.pendingSpeaker = explicitSpeaker
@@ -326,6 +346,7 @@ struct ReadAloudRoleAnalyzer {
                     context.unknownTurn = 0
                     pageSpeakers.append(narrationSpeaker(for: text))
                     pageConfidence.append(0.96)
+                    context.updateDialogueQuotes(in: text)
                     continue
                 }
 
@@ -344,6 +365,12 @@ struct ReadAloudRoleAnalyzer {
                 if resolvedSpeaker == nil {
                     resolvedSpeaker = context.pendingSpeaker
                     if resolvedSpeaker != nil { confidence = 0.82 }
+                }
+                if resolvedSpeaker == nil,
+                   wasInsideDialogue,
+                   let continuingSpeaker = context.lastDialogueSpeaker {
+                    resolvedSpeaker = continuingSpeaker
+                    confidence = 0.86
                 }
                 if resolvedSpeaker == nil, alternatesUnattributedDialogue {
                     resolvedSpeaker = alternatingSpeaker(in: context)
@@ -367,6 +394,7 @@ struct ReadAloudRoleAnalyzer {
                 pageConfidence.append(confidence)
                 context.pendingSpeaker = nil
                 context.lastUnitWasDialogue = true
+                context.updateDialogueQuotes(in: text)
             }
             result[page.location] = pageSpeakers
             confidenceResult[page.location] = pageConfidence

@@ -835,6 +835,20 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertTrue(analysis.detectedCharacters.contains("张三"))
     }
 
+    func testOneQuotedSpeechBlockKeepsOneSpeakerAcrossSentenceBoundaries() {
+        let page = page(
+            chapter: 10,
+            index: 0,
+            text: "张三说道：“老板，你看这鱼亮上面的包浆！新鲜的东西，哪有这么油光发亮的？这是上了年代的古物！卖你八百，敬你是识货人了！”"
+        )
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page])
+            .speakers(for: page.location)
+
+        XCTAssertNotNil(speakers)
+        XCTAssertTrue(speakers?.dropFirst().allSatisfy { $0 == .character("张三") } == true)
+    }
+
     func testPersistedCastKeepsRoleConfidenceAfterPaginationRemap() throws {
         let text = "张三说道：“你好。”"
         let sourceLocation = ReaderPageLocation(chapterIndex: 9, pageIndex: 0)

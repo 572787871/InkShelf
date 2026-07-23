@@ -174,6 +174,8 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
 }
 
 struct NovelCastStore: Sendable {
+    private static let analysisVersion = "role-director-v2"
+
     let rootURL: URL
 
     init(rootURL: URL? = nil) {
@@ -217,7 +219,7 @@ struct NovelCastStore: Sendable {
     }
 
     static func signature(for text: String) -> String {
-        SHA256.hash(data: Data(text.utf8))
+        SHA256.hash(data: Data("\(analysisVersion)\n\(text)".utf8))
             .map { String(format: "%02x", $0) }
             .joined()
     }
