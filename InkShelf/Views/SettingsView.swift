@@ -60,7 +60,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("功能设置")
                                 Text(readAloud.canStartReading
-                                    ? "\(readAloud.settings.provider.title) · \(readAloud.settings.roleDetectionMode.title)"
+                                    ? readAloud.settings.provider.title
                                     : "待配置语音服务")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -69,7 +69,7 @@ struct SettingsView: View {
                             Image(systemName: "waveform")
                         }
                     }
-                    Text("支持可续传的整书角色档案、自动或指定音色，以及 ZipVoice iPhone 本地生成。所有设置只保留在这里。")
+                    Text("支持云端语音引擎、自动或指定音色；API Key 只保存在本机钥匙串。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -453,7 +453,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("ZipVoice 语音生成完全在设备上完成。建立整书角色档案或使用云端语音时，只有在你明确允许后，章节短批次或正在预生成的朗读文本才会发送到配置的服务。角色档案和 API Key 分别保存在设备沙盒与钥匙串中；服务方如何处理数据由其隐私政策决定。")
+            Text("使用云端语音时，只有在你明确允许后，正在预生成的朗读文本才会发送到配置的服务。API Key 保存在设备钥匙串中；服务方如何处理数据由其隐私政策决定。")
         }.navigationTitle("隐私说明")
     }
 }

@@ -48,9 +48,9 @@ context, not a substitute for inspecting the current code and Git history.
     honorifics, context and turn continuity), stable character/unknown speaker
     assignments, and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
-  - homepage-only engine, resumable whole-book role analysis,
-    automatic/per-character voices directly below the selected synthesis engine,
-    ZipVoice model/profile, API key, privacy, speed and preview UI
+  - homepage-only cloud speech-engine selection, service URL/model/API key directly
+    below the engine, automatic/per-character voice selection, privacy, speed and
+    preview UI; local model and role-analysis controls are intentionally absent
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -156,7 +156,9 @@ context, not a substitute for inspecting the current code and Git history.
   model download; whole-book smart analysis is optional, resumable network work
   and cached chapters remain available offline.
 - Read-aloud settings are available only from the homepage top-right Settings
-  screen. The reader's bottom “朗读” action opens the dedicated audiobook screen;
+  screen. The settings surface exposes cloud speech engines and places the API
+  key directly below the engine fields; local model and AI/offline role-analysis
+  controls are not shown. The reader's bottom “朗读” action opens the dedicated audiobook screen;
   that screen hides the floating controller and provides cover, title/chapter,
   following transcript with manual scrolling, directory, speed/options, chapter
   skip, pause/play, scrubbing and time labels. Closing it leaves narration running
