@@ -12,14 +12,20 @@ struct NovelCastAssignment: Codable, Equatable, Sendable {
     let utf16Location: Int
     let utf16Length: Int
     let voice: Voice
+    let confidence: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case utf16Location, utf16Length, voice, confidence
+    }
 
     var range: NSRange {
         NSRange(location: utf16Location, length: utf16Length)
     }
 
-    init(range: NSRange, speaker: ReadAloudSpeaker) {
+    init(range: NSRange, speaker: ReadAloudSpeaker, confidence: Double = 1) {
         utf16Location = range.location
         utf16Length = range.length
+        self.confidence = confidence
         switch speaker {
         case .narrator:
             voice = .firstPersonNarrator
@@ -30,6 +36,14 @@ struct NovelCastAssignment: Codable, Equatable, Sendable {
         case let .unknownDialogue(turn):
             voice = .unknownDialogue(turn)
         }
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        utf16Location = try values.decode(Int.self, forKey: .utf16Location)
+        utf16Length = try values.decode(Int.self, forKey: .utf16Length)
+        voice = try values.decode(Voice.self, forKey: .voice)
+        confidence = try values.decodeIfPresent(Double.self, forKey: .confidence) ?? 1
     }
 
     var speaker: ReadAloudSpeaker {
@@ -91,7 +105,11 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
         let assignments: [NovelCastAssignment] = sentences.enumerated().compactMap {
             index, sentence -> NovelCastAssignment? in
             guard speakers.indices.contains(index) else { return nil }
-            return NovelCastAssignment(range: sentence.range, speaker: speakers[index])
+            return NovelCastAssignment(
+                range: sentence.range,
+                speaker: speakers[index],
+                confidence: plan.confidence(for: location, sentenceIndex: index)
+            )
         }
         return NovelCastChapter(
             chapterIndex: chapterIndex,
@@ -111,6 +129,7 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
             return fallback
         }
         var combined = fallback.speakersByPage
+        var confidences = fallback.confidenceByPage
         var chapterOffset = 0
         var assignmentIndex = 0
 
@@ -118,6 +137,8 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
             let sentences = ReadAloudTextPlan(text: page.text).sentences
             var speakers = combined[page.location]
                 ?? Array(repeating: ReadAloudSpeaker.thirdPersonNarrator, count: sentences.count)
+            var pageConfidences = confidences[page.location]
+                ?? Array(repeating: 0.5, count: sentences.count)
             for (sentenceIndex, sentence) in sentences.enumerated() {
                 let globalRange = NSRange(
                     location: chapterOffset + sentence.range.location,
@@ -132,12 +153,16 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
                 if NSIntersectionRange(globalRange, assignment.range).length > 0,
                    speakers.indices.contains(sentenceIndex) {
                     speakers[sentenceIndex] = assignment.speaker
+                    if pageConfidences.indices.contains(sentenceIndex) {
+                        pageConfidences[sentenceIndex] = assignment.confidence
+                    }
                 }
             }
             combined[page.location] = speakers
+            confidences[page.location] = pageConfidences
             chapterOffset += (page.text as NSString).length
         }
-        return ReadAloudRolePlan(speakersByPage: combined)
+        return ReadAloudRolePlan(speakersByPage: combined, confidenceByPage: confidences)
     }
 
     var characterNames: [String] {

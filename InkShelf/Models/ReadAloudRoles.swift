@@ -180,17 +180,34 @@ enum NovelCharacterGender: String, Codable, Equatable, Sendable {
 
 struct ReadAloudRolePlan: Equatable, Sendable {
     let speakersByPage: [ReaderPageLocation: [ReadAloudSpeaker]]
+    let confidenceByPage: [ReaderPageLocation: [Double]]
+
+    init(
+        speakersByPage: [ReaderPageLocation: [ReadAloudSpeaker]],
+        confidenceByPage: [ReaderPageLocation: [Double]] = [:]
+    ) {
+        self.speakersByPage = speakersByPage
+        self.confidenceByPage = confidenceByPage
+    }
 
     static let empty = ReadAloudRolePlan(speakersByPage: [:])
 
     func speakers(for location: ReaderPageLocation) -> [ReadAloudSpeaker]? {
         speakersByPage[location]
     }
+
+    func confidence(for location: ReaderPageLocation, sentenceIndex: Int) -> Double {
+        guard let values = confidenceByPage[location], values.indices.contains(sentenceIndex) else {
+            return 1
+        }
+        return values[sentenceIndex]
+    }
 }
 
 struct ReadAloudLocalRoleAnalysis: Equatable, Sendable {
     let plan: ReadAloudRolePlan
     let characterGenders: [String: NovelCharacterGender]
+    let detectedCharacters: [String]
 }
 
 /// A deterministic, local-first dialogue attribution pass. It deliberately
@@ -212,6 +229,7 @@ struct ReadAloudRoleAnalyzer {
         var unknownTurn = 0
         var knownCharacters: Set<String>
         var characterGenders: [String: NovelCharacterGender] = [:]
+        var chapterSpeakers: Set<String> = []
 
         init(knownCharacters: [String]) {
             self.knownCharacters = Set(knownCharacters)
@@ -224,10 +242,12 @@ struct ReadAloudRoleAnalyzer {
             lastDialogueSpeaker = nil
             lastUnitWasDialogue = false
             unknownTurn = 0
+            chapterSpeakers.removeAll()
         }
 
         mutating func remember(_ name: String) {
             knownCharacters.insert(name)
+            chapterSpeakers.insert(name)
             recentSpeakers.removeAll { $0 == name }
             recentSpeakers.append(name)
             if recentSpeakers.count > 2 { recentSpeakers.removeFirst() }
@@ -277,6 +297,7 @@ struct ReadAloudRoleAnalyzer {
         knownCharacters: [String] = []
     ) -> ReadAloudLocalRoleAnalysis {
         var result: [ReaderPageLocation: [ReadAloudSpeaker]] = [:]
+        var confidenceResult: [ReaderPageLocation: [Double]] = [:]
         var context = Context(knownCharacters: knownCharacters)
 
         for page in pages {
@@ -286,6 +307,7 @@ struct ReadAloudRoleAnalyzer {
             let sentences = ReadAloudTextPlan(text: page.text).sentences
             var consumedLookahead = Set<Int>()
             var pageSpeakers: [ReadAloudSpeaker] = []
+            var pageConfidence: [Double] = []
 
             for index in sentences.indices {
                 let text = sentences[index].text
@@ -303,22 +325,29 @@ struct ReadAloudRoleAnalyzer {
                     context.lastUnitWasDialogue = false
                     context.unknownTurn = 0
                     pageSpeakers.append(narrationSpeaker(for: text))
+                    pageConfidence.append(0.96)
                     continue
                 }
 
                 var resolvedSpeaker = explicitSpeaker
+                var confidence = explicitSpeaker == nil ? 0.0 : 0.98
                 if resolvedSpeaker == nil, sentences.indices.contains(index + 1) {
                     resolvedSpeaker = attributedSpeaker(
                         in: sentences[index + 1].text,
                         context: context
                     )
-                    if resolvedSpeaker != nil { consumedLookahead.insert(index + 1) }
+                    if resolvedSpeaker != nil {
+                        consumedLookahead.insert(index + 1)
+                        confidence = 0.90
+                    }
                 }
                 if resolvedSpeaker == nil {
                     resolvedSpeaker = context.pendingSpeaker
+                    if resolvedSpeaker != nil { confidence = 0.82 }
                 }
                 if resolvedSpeaker == nil, alternatesUnattributedDialogue {
                     resolvedSpeaker = alternatingSpeaker(in: context)
+                    if resolvedSpeaker != nil { confidence = 0.64 }
                 }
 
                 if let resolvedSpeaker {
@@ -333,15 +362,19 @@ struct ReadAloudRoleAnalyzer {
                     if alternatesUnattributedDialogue {
                         context.unknownTurn = context.lastUnitWasDialogue ? (turn + 1) % 2 : 1
                     }
+                    confidence = 0.25
                 }
+                pageConfidence.append(confidence)
                 context.pendingSpeaker = nil
                 context.lastUnitWasDialogue = true
             }
             result[page.location] = pageSpeakers
+            confidenceResult[page.location] = pageConfidence
         }
         return ReadAloudLocalRoleAnalysis(
-            plan: ReadAloudRolePlan(speakersByPage: result),
-            characterGenders: context.characterGenders
+            plan: ReadAloudRolePlan(speakersByPage: result, confidenceByPage: confidenceResult),
+            characterGenders: context.characterGenders,
+            detectedCharacters: context.knownCharacters.sorted()
         )
     }
 

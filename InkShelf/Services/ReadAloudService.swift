@@ -300,6 +300,7 @@ final class ReadAloudService: NSObject, ObservableObject {
     @Published private(set) var detectedCharacterGenders: [String: NovelCharacterGender] = [:]
     @Published private(set) var wholeBookRoleProgress: WholeBookRoleAnalysisProgress?
     @Published private(set) var roleAnalysisMessage: String?
+    @Published private(set) var roleAnalysisAverageConfidence: Double?
     @Published var apiKey: String {
         didSet {
             guard apiKey != oldValue else { return }
@@ -531,7 +532,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    func analyzeWholeBook(_ book: NovelBook) {
+    func analyzeWholeBook(_ book: NovelBook, forceLocal: Bool = false) {
         guard wholeBookRoleAnalysisTask == nil else {
             roleAnalysisMessage = "整书角色分析正在运行"
             return
@@ -545,14 +546,16 @@ final class ReadAloudService: NSObject, ObservableObject {
         let key = apiKey
         let store = novelCastStore
         let total = book.chapters.count
-        let usesAI = configuration.roleDetectionMode == .ai
+        let usesAI = !forceLocal
+            && configuration.roleDetectionMode == .ai
             && configuration.allowsTextUpload
             && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !configuration.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !configuration.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        roleAnalysisMessage = configuration.roleDetectionMode == .localRules
+        roleAnalysisMessage = forceLocal || configuration.roleDetectionMode == .localRules
             ? "正在本地解析《\(book.title)》…"
             : "正在建立《\(book.title)》角色档案…"
+        roleAnalysisAverageConfidence = nil
         wholeBookRoleProgress = WholeBookRoleAnalysisProgress(
             bookID: book.id,
             completedChapters: 0,
@@ -563,6 +566,8 @@ final class ReadAloudService: NSObject, ObservableObject {
             guard let self else { return }
             var allNames = Set<String>()
             var allGenders: [String: NovelCharacterGender] = [:]
+            var confidenceTotal = 0.0
+            var confidenceCount = 0
             var usedLocalFallback = configuration.roleDetectionMode == .ai && !usesAI
             do {
                 for (offset, chapter) in book.chapters.enumerated() {
@@ -619,6 +624,11 @@ final class ReadAloudService: NSObject, ObservableObject {
                         }.value
                     }
                     allNames.formUnion(cast.characterNames)
+                    confidenceTotal += cast.assignments.reduce(0) { $0 + $1.confidence }
+                    confidenceCount += cast.assignments.count
+                    roleAnalysisAverageConfidence = confidenceCount == 0
+                        ? nil
+                        : confidenceTotal / Double(confidenceCount)
                     allGenders.merge(cast.characterGenders) { existing, new in
                         existing == .unspecified ? new : existing
                     }
@@ -629,7 +639,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                         chapterTitle: chapter.title
                     )
                 }
-                if configuration.roleDetectionMode == .localRules {
+                if forceLocal || configuration.roleDetectionMode == .localRules {
                     roleAnalysisMessage = "本地角色解析已完成：\(allNames.count) 个明确角色"
                 } else if usedLocalFallback {
                     roleAnalysisMessage = "角色档案已完成：\(allNames.count) 个明确角色；AI 不可用的章节已用本地增强解析"

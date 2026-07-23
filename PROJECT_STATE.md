@@ -49,8 +49,9 @@ context, not a substitute for inspecting the current code and Git history.
     assignments, and persisted provider/playback preferences
 - `InkShelf/Views/ReadAloudSettingsView.swift`
   - homepage-only cloud speech-engine selection, service URL/model/API key directly
-    below the engine, automatic/per-character voice selection, privacy, speed and
-    preview UI; local model and role-analysis controls are intentionally absent
+    below the engine, automatic/per-character voice selection, local role-director
+    analysis, privacy, speed and preview UI; local speech models and AI role
+    analysis controls are intentionally absent
 - `InkShelf/Services/LibraryStore.swift`
   - books, reading progress, persistence, import result/error state
 - `InkShelf/Services/NovelImporter.swift`
@@ -157,8 +158,10 @@ context, not a substitute for inspecting the current code and Git history.
   and cached chapters remain available offline.
 - Read-aloud settings are available only from the homepage top-right Settings
   screen. The settings surface exposes cloud speech engines and places the API
-  key directly below the engine fields; local model and AI/offline role-analysis
-  controls are not shown. The reader's bottom “朗读” action opens the dedicated audiobook screen;
+  key directly below the engine fields; local speech models and AI role-analysis
+  controls are not shown. A local role-director action analyzes a selected book,
+  persists per-chapter speaker assignments with confidence, and feeds the same
+  role plan used by cloud TTS. The reader's bottom “朗读” action opens the dedicated audiobook screen;
   that screen hides the floating controller and provides cover, title/chapter,
   following transcript with manual scrolling, directory, speed/options, chapter
   skip, pause/play, scrubbing and time labels. Closing it leaves narration running

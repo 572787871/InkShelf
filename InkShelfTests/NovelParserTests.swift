@@ -813,6 +813,45 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertTrue(["苏打", "白桦"].contains(male.voiceID))
     }
 
+    func testLocalRoleAnalysisExposesConfidenceForExplicitAndAlternatingDialogue() {
+        let page = page(
+            chapter: 8,
+            index: 0,
+            text: "张三说道：“你好。”\n“你好。”李四回答。\n“再见。”"
+        )
+
+        let analysis = ReadAloudRoleAnalyzer.analyze(
+            pages: [page],
+            alternatesUnattributedDialogue: true
+        )
+        let speakers = try! XCTUnwrap(analysis.plan.speakers(for: page.location))
+        let confidences = speakers.indices.map {
+            analysis.plan.confidence(for: page.location, sentenceIndex: $0)
+        }
+
+        XCTAssertEqual(speakers.first, .character("张三"))
+        XCTAssertTrue(confidences.first ?? 0 >= 0.9)
+        XCTAssertTrue(confidences.allSatisfy { $0 >= 0 && $0 <= 1 })
+        XCTAssertTrue(analysis.detectedCharacters.contains("张三"))
+    }
+
+    func testPersistedCastKeepsRoleConfidenceAfterPaginationRemap() throws {
+        let text = "张三说道：“你好。”"
+        let sourceLocation = ReaderPageLocation(chapterIndex: 9, pageIndex: 0)
+        let sourcePage = page(chapter: 9, index: 0, text: text)
+        let analysis = ReadAloudRoleAnalyzer.analyze(pages: [sourcePage])
+        let cast = NovelCastChapter.make(
+            chapterIndex: 9,
+            text: text,
+            plan: analysis.plan,
+            characterGenders: analysis.characterGenders
+        )
+        let remapped = cast.plan(for: [sourcePage], fallback: .empty)
+
+        XCTAssertEqual(remapped.speakers(for: sourceLocation)?.first, .character("张三"))
+        XCTAssertGreaterThan(remapped.confidence(for: sourceLocation, sentenceIndex: 0), 0.9)
+    }
+
     func testUnknownDialogueAlternatesAutomaticVoices() {
         let settings = ReadAloudSettings()
         let first = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 0), settings: settings)

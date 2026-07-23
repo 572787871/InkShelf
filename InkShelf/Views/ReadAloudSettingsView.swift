@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
+    @EnvironmentObject private var library: LibraryStore
+    @State private var selectedRoleBookID: UUID?
 
     var body: some View {
         Form {
@@ -53,6 +55,44 @@ struct ReadAloudSettingsView: View {
                 voiceAssignmentRows
             }
 
+            Section("本地角色导演") {
+                Text("仅在本机分析对白、说话人和连续对话，不上传小说正文。分析结果会按章节保存，并在朗读时直接用于角色声线分配。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Picker("分析书籍", selection: $selectedRoleBookID) {
+                    Text("请选择").tag(UUID?.none)
+                    ForEach(library.books) { book in
+                        Text(book.title).tag(Optional(book.id))
+                    }
+                }
+                if let progress = readAloud.wholeBookRoleProgress,
+                   progress.bookID == selectedRoleBookID {
+                    ProgressView(value: progress.fraction)
+                    Text("\(progress.completedChapters)/\(progress.totalChapters) · \(progress.chapterTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button(role: .destructive, action: readAloud.cancelWholeBookRoleAnalysis) {
+                        Label("暂停本地分析", systemImage: "pause.circle")
+                    }
+                } else {
+                    Button(action: analyzeSelectedBookLocally) {
+                        Label("分析整本书的角色", systemImage: "person.3.sequence.fill")
+                    }
+                    .disabled(selectedRoleBook == nil)
+                }
+                if let confidence = readAloud.roleAnalysisAverageConfidence {
+                    LabeledContent("平均归因置信度", value: "\(Int((confidence * 100).rounded()))%")
+                        .font(.footnote)
+                }
+                if let message = readAloud.roleAnalysisMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(message.contains("失败") ? .red : .secondary)
+                }
+                LabeledContent("已识别角色", value: "\(readAloud.detectedCharacterNames.count) 个")
+                    .font(.footnote)
+            }
+
             Section("播放") {
                 Slider(value: settingBinding(\.rateMultiplier), in: 0.75...2.0, step: 0.05)
                 LabeledContent("语速", value: String(format: "%.2f×", readAloud.settings.rateMultiplier))
@@ -87,7 +127,11 @@ struct ReadAloudSettingsView: View {
         }
         .navigationTitle("朗读服务")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: normalizeProvider)
+        .onAppear {
+            normalizeProvider()
+            selectDefaultRoleBook()
+        }
+        .onChange(of: selectedRoleBookID) { _, _ in loadSelectedBookCast() }
         .onDisappear { readAloud.stopVoicePreview() }
     }
 
@@ -169,5 +213,29 @@ struct ReadAloudSettingsView: View {
         if readAloud.settings.provider == .localZipVoice {
             readAloud.applyProviderDefaults(for: .mimo)
         }
+    }
+
+    private var selectedRoleBook: NovelBook? {
+        guard let selectedRoleBookID else { return nil }
+        return library.books.first { $0.id == selectedRoleBookID }
+    }
+
+    private func selectDefaultRoleBook() {
+        guard selectedRoleBookID == nil else { return }
+        let defaultBook = library.books.max {
+            ($0.lastReadAt ?? $0.importedAt) < ($1.lastReadAt ?? $1.importedAt)
+        }
+        selectedRoleBookID = defaultBook?.id
+        if let defaultBook { readAloud.loadStoredCastCharacters(for: defaultBook) }
+    }
+
+    private func loadSelectedBookCast() {
+        guard let selectedRoleBook else { return }
+        readAloud.loadStoredCastCharacters(for: selectedRoleBook)
+    }
+
+    private func analyzeSelectedBookLocally() {
+        guard let selectedRoleBook else { return }
+        readAloud.analyzeWholeBook(selectedRoleBook, forceLocal: true)
     }
 }
