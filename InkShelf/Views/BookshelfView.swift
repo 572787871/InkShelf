@@ -194,11 +194,14 @@ struct BookshelfView: View {
                 } label: {
                     HeaderButton(systemName: libraryLayout.symbolName)
                 }
+                .buttonStyle(InkShelfPressFeedbackStyle())
                 .accessibilityLabel("书架显示和排序")
                 Button { showingImporter = true } label: { HeaderButton(systemName: "plus") }
+                    .buttonStyle(InkShelfPressFeedbackStyle())
                     .accessibilityLabel("导入小说")
                     .disabled(library.isImporting)
                 Button { showingSettings = true } label: { HeaderButton(systemName: "person.crop.circle") }
+                    .buttonStyle(InkShelfPressFeedbackStyle())
                     .accessibilityLabel("用户与设置")
             }
             HStack(spacing: 8) {
@@ -206,7 +209,12 @@ struct BookshelfView: View {
                 TextField("搜索书名或作者", text: $searchText)
                     .textInputAutocapitalization(.never)
                     .focused($searchFieldFocused)
-                if !searchText.isEmpty { Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) } }
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(InkShelfPressFeedbackStyle())
+                }
             }
             .padding(.horizontal, 13).frame(height: 42)
             .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 13))
@@ -268,6 +276,7 @@ struct BookshelfView: View {
         .simultaneousGesture(
             TapGesture().onEnded { dismissSearchKeyboard() }
         )
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: layoutRaw)
     }
 
     private var importingOverlay: some View {
@@ -406,8 +415,9 @@ private struct BookGridItem: View {
                 .frame(width: BookGridLayout.coverWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+                }
+                .buttonStyle(.plain)
+                .buttonStyle(InkShelfPressFeedbackStyle())
 
             HStack(spacing: 1) {
                 Text("\(book.readChapterCount)章/\(book.displayChapterCount)章")
@@ -488,6 +498,7 @@ private struct BookListItem: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .buttonStyle(InkShelfPressFeedbackStyle())
 
             Menu {
                 Button { onChooseCover(book) } label: {
@@ -609,6 +620,20 @@ private struct HeaderButton: View {
     var body: some View {
         Image(systemName: systemName).font(.system(size: 16, weight: .semibold)).foregroundStyle(Color(hex: "3D332B"))
             .frame(width: 39, height: 39).background(.white.opacity(0.75), in: Circle())
+    }
+}
+
+struct InkShelfPressFeedbackStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: 0.14),
+                value: configuration.isPressed
+            )
     }
 }
 

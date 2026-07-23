@@ -1211,6 +1211,7 @@ struct ReaderView: View {
 
 struct ReaderReadAloudFloater: View {
     @ObservedObject var readAloud: ReadAloudService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bookID: UUID
     let bookTitle: String
     let coverImage: UIImage?
@@ -1241,6 +1242,7 @@ struct ReaderReadAloudFloater: View {
                             rotatingCover(at: timeline.date)
                         }
                         .buttonStyle(.plain)
+                        .buttonStyle(InkShelfPressFeedbackStyle())
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
                         .accessibilityLabel("打开正在朗读的《\(bookTitle)》")
@@ -1258,6 +1260,7 @@ struct ReaderReadAloudFloater: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .buttonStyle(InkShelfPressFeedbackStyle())
                 .background(.white.opacity(0.18), in: Circle())
             .accessibilityLabel(readAloud.isPlaying ? "暂停朗读" : "继续朗读")
 
@@ -1268,6 +1271,7 @@ struct ReaderReadAloudFloater: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .buttonStyle(InkShelfPressFeedbackStyle())
             .accessibilityLabel("关闭朗读")
         }
         .foregroundStyle(.white)
@@ -1291,8 +1295,15 @@ struct ReaderReadAloudFloater: View {
             DragGesture(minimumDistance: 12)
                 .updating($dragOffset) { value, state, _ in state = value.translation }
                 .onEnded { value in
-                    settledOffset.width += value.translation.width
-                    settledOffset.height += value.translation.height
+                    if reduceMotion {
+                        settledOffset.width += value.translation.width
+                        settledOffset.height += value.translation.height
+                    } else {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                            settledOffset.width += value.translation.width
+                            settledOffset.height += value.translation.height
+                        }
+                    }
                 }
         )
         .onAppear { updateCoverRotation(isPlaying: readAloud.isPlaying) }

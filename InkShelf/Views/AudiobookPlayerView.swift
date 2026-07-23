@@ -51,6 +51,7 @@ struct AudiobookPlayerView: View {
                     .font(.title3.weight(.semibold))
                     .frame(width: 44, height: 44)
             }
+            .buttonStyle(InkShelfPressFeedbackStyle())
             Spacer()
             Text("听书")
                 .font(.headline)
@@ -153,10 +154,12 @@ struct AudiobookPlayerView: View {
                     Label("小说目录", systemImage: "list.bullet")
                         .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(InkShelfPressFeedbackStyle())
                 Button { showingOptions = true } label: {
                     Label("朗读选项", systemImage: "slider.horizontal.3")
                         .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(InkShelfPressFeedbackStyle())
             }
             .font(.subheadline.weight(.semibold))
             .buttonStyle(.bordered)
@@ -202,6 +205,7 @@ struct AudiobookPlayerView: View {
                         .shadow(color: .black.opacity(0.2), radius: 12, y: 5)
                 }
                 .accessibilityLabel(readAloud.isPlaying ? "暂停" : "播放")
+                .buttonStyle(InkShelfPressFeedbackStyle())
                 Spacer()
                 chapterButton(
                     title: "下一章",
@@ -232,6 +236,7 @@ struct AudiobookPlayerView: View {
         }
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.32)
+        .buttonStyle(InkShelfPressFeedbackStyle())
     }
 
     private func handleScrubbing(_ editing: Bool) {
