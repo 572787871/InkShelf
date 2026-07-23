@@ -849,6 +849,19 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertTrue(speakers?.dropFirst().allSatisfy { $0 == .character("张三") } == true)
     }
 
+    func testQuotedSpeechDoesNotSwitchOnAttributionWordsInsideQuote() {
+        let page = page(
+            chapter: 11,
+            index: 0,
+            text: "张三说道：“老板，你听他说的！这句话不能改变说话人。”"
+        )
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page])
+            .speakers(for: page.location)
+
+        XCTAssertTrue(speakers?.dropFirst().allSatisfy { $0 == .character("张三") } == true)
+    }
+
     func testPersistedCastKeepsRoleConfidenceAfterPaginationRemap() throws {
         let text = "张三说道：“你好。”"
         let sourceLocation = ReaderPageLocation(chapterIndex: 9, pageIndex: 0)

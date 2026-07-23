@@ -352,6 +352,16 @@ struct ReadAloudRoleAnalyzer {
 
                 var resolvedSpeaker = explicitSpeaker
                 var confidence = explicitSpeaker == nil ? 0.0 : 0.98
+                // A sentence inside an already-open quote belongs to the current
+                // speaker. Do this before look-ahead attribution: dialogue text
+                // often contains words such as “他说” that describe content,
+                // not a new turn, and must not cause a voice switch mid-quote.
+                if resolvedSpeaker == nil,
+                   wasInsideDialogue,
+                   let continuingSpeaker = context.lastDialogueSpeaker {
+                    resolvedSpeaker = continuingSpeaker
+                    confidence = 0.90
+                }
                 if resolvedSpeaker == nil, sentences.indices.contains(index + 1) {
                     resolvedSpeaker = attributedSpeaker(
                         in: sentences[index + 1].text,
@@ -365,12 +375,6 @@ struct ReadAloudRoleAnalyzer {
                 if resolvedSpeaker == nil {
                     resolvedSpeaker = context.pendingSpeaker
                     if resolvedSpeaker != nil { confidence = 0.82 }
-                }
-                if resolvedSpeaker == nil,
-                   wasInsideDialogue,
-                   let continuingSpeaker = context.lastDialogueSpeaker {
-                    resolvedSpeaker = continuingSpeaker
-                    confidence = 0.86
                 }
                 if resolvedSpeaker == nil, alternatesUnattributedDialogue {
                     resolvedSpeaker = alternatingSpeaker(in: context)
