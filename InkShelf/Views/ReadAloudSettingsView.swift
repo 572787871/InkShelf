@@ -81,7 +81,7 @@ struct ReadAloudSettingsView: View {
                     .disabled(selectedRoleBook == nil)
                 }
                 if let confidence = readAloud.roleAnalysisAverageConfidence {
-                    LabeledContent("平均归因置信度", value: "\(Int((confidence * 100).rounded()))%")
+                    LabeledContent("规则归因置信度（估计）", value: "\(Int((confidence * 100).rounded()))%")
                         .font(.footnote)
                 }
                 if let message = readAloud.roleAnalysisMessage {
