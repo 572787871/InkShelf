@@ -74,6 +74,21 @@ struct ReadAloudSettingsView: View {
             }
 
             Section("角色识别 AI") {
+                Picker("服务商", selection: Binding(
+                    get: { readAloud.settings.analysisProvider },
+                    set: { readAloud.applyAnalysisProviderDefaults(for: $0) }
+                )) {
+                    ForEach(ReadAloudAIProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+                TextField("角色识别服务地址", text: settingBinding(\.analysisBaseURL))
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+                TextField("角色识别模型", text: settingBinding(\.analysisModel))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                 HStack(spacing: 8) {
                     Group {
                         if isAnalysisAPIKeyVisible {
