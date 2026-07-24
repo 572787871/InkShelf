@@ -11,6 +11,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare ZipVoice runtime
+        run: bash scripts/bootstrap-zipvoice.sh
       - name: Resolve packages
         run: xcodebuild -resolvePackageDependencies -project InkShelf.xcodeproj -scheme InkShelf
       - name: Build and test

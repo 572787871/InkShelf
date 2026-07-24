@@ -35,8 +35,9 @@ editing, then verify its potentially stale details against the working tree.
 
 ## Product invariants
 
-- Manual page browsing during narration must not retarget narration. Only
-  “从本页听” or an explicit paragraph play button changes the narration start.
+- Manual page browsing during narration must not retarget narration. “从本页听”
+  and an explicit tap on a visible segment's play button may change the
+  narration start; passive page turns and progress browsing may not.
 - “原进度” returns the visible reader to the page currently being narrated
   without stopping or restarting speech.
 - Opening the narrated book from its shelf cover or the floating player must

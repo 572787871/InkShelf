@@ -1,0 +1,35 @@
+{
+  "transcript": "夜色沉静，微风吹过长街。愿每一个故事，都有属于自己的声音。",
+  "voices": [
+    {
+      "id": "347D8335-91A6-4D9D-91B8-67C50445A008",
+      "resource": "studio_zf_008",
+      "name": "清柔·星澜",
+      "gender": "female"
+    },
+    {
+      "id": "347D8335-91A6-4D9D-91B8-67C50445A00D",
+      "resource": "studio_zf_022",
+      "name": "温润·云舒",
+      "gender": "female"
+    },
+    {
+      "id": "347D8335-91A6-4D9D-91B8-67C50445A01A",
+      "resource": "studio_zf_044",
+      "name": "明澈·南枝",
+      "gender": "female"
+    },
+    {
+      "id": "347D8335-91A6-4D9D-91B8-67C50445A03B",
+      "resource": "studio_zm_012",
+      "name": "沉稳·墨川",
+      "gender": "male"
+    },
+    {
+      "id": "347D8335-91A6-4D9D-91B8-67C50445A042",
+      "resource": "studio_zm_029",
+      "name": "清朗·远川",
+      "gender": "male"
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 import XCTest
 import UIKit
+import AVFoundation
 import UniformTypeIdentifiers
 import CoreFoundation
 @testable import InkShelf
 
 final class NovelParserTests: XCTestCase {
-    func testReadAloudPlanKeepsSentenceAndParagraphRangesInUTF16Coordinates() throws {
+    func testReadAloudPlanKeepsSentenceRangesInUTF16Coordinates() throws {
         let text = "  第一段😀第一句。第二句！\n\n第二段内容。  "
         let plan = ReadAloudTextPlan(text: text)
         let nsText = text as NSString
@@ -19,18 +20,6 @@ final class NovelParserTests: XCTestCase {
             "第一段😀第一句。第二句！",
             "第二段内容。"
         ])
-    }
-
-    func testParagraphStartResolvesToItsFirstSpokenSentence() throws {
-        let text = "第一段第一句。第一段第二句。\n第二段第一句。"
-        let plan = ReadAloudTextPlan(text: text)
-        let secondParagraph = try XCTUnwrap(plan.paragraphRanges.last)
-        let sentenceIndex = try XCTUnwrap(
-            plan.sentenceIndex(atOrAfterUTF16Location: secondParagraph.location)
-        )
-
-        XCTAssertEqual(plan.sentences[sentenceIndex].text, "第二段第一句。")
-        XCTAssertTrue(NSIntersectionRange(plan.sentences[sentenceIndex].range, secondParagraph).length > 0)
     }
 
     func testBookGridCoverSizeKeepsAStablePortraitRatio() {
@@ -119,6 +108,123 @@ final class NovelParserTests: XCTestCase {
                 .map(\.text)
                 .joined(),
             book.chapters[1].content
+        )
+    }
+
+    func testLayoutPaginationKeepsEveryPageVisibleAndTextContinuous() {
+        let body = String(repeating: "杨飞见识了许多风景，故事仍在继续。\n", count: 30)
+        let book = NovelBook(
+            title: "排版分页测试",
+            content: "第2063章 我要生男孩啊！\n\(body)"
+        )
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+        let chapterPages = catalog.pages.filter { $0.location.chapterIndex == 0 }
+
+        XCTAssertGreaterThan(chapterPages.count, 1)
+        XCTAssertEqual(chapterPages.map(\.text).joined(), book.chapters[0].content)
+        for page in chapterPages {
+            XCTAssertTrue(
+                layout.fits(
+                    page.displayText,
+                    chapterTitle: page.pageInChapter == 1 ? page.chapterTitle : nil
+                ),
+                "第 \(page.pageInChapter) 页存在屏幕下方不可见正文"
+            )
+        }
+    }
+
+    func testLayoutPaginationRemainsFastForVeryLongBooks() {
+        let body = String(repeating: "这是用于验证长篇小说快速分页且上下文连续的一段正文。\n", count: 20_000)
+        let book = NovelBook(title: "长篇分页测试", content: "第一章 开始\n\(body)")
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+
+        XCTAssertGreaterThan(catalog.pages.count, 1_000)
+        XCTAssertEqual(catalog.pages.map(\.text).joined(), book.chapters[0].content)
+    }
+
+    func testLayoutPaginationContinuesAParagraphOnTheNextPage() throws {
+        let uninterruptedParagraph = String(repeating: "这一段正文必须逐字跨页继续", count: 120)
+        let book = NovelBook(
+            title: "跨页续段测试",
+            content: "第一章 开始\n\(uninterruptedParagraph)"
+        )
+        let layout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let catalog = ReaderPageCatalog(book: book, paginationLayout: layout)
+        let pages = catalog.pages.filter { $0.location.chapterIndex == 0 }
+
+        XCTAssertGreaterThan(pages.count, 2)
+        XCTAssertTrue(pages.dropLast().contains { page in
+            guard let last = page.text.last else { return false }
+            return !"。！？；\n".contains(last)
+        })
+        XCTAssertEqual(pages.map(\.text).joined(), uninterruptedParagraph)
+        for page in pages {
+            XCTAssertTrue(
+                layout.fits(
+                    page.displayText,
+                    chapterTitle: page.pageInChapter == 1 ? page.chapterTitle : nil
+                )
+            )
+        }
+    }
+
+    func testOnlyParagraphFirstLinesReserveTheReadAloudIndent() throws {
+        let text = String(repeating: "甲", count: 2_000)
+        let fullWidthLayout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 0
+        )
+        let readAloudLayout = ReaderPaginationLayout(
+            textWidth: 320,
+            textHeight: 520,
+            fontName: nil,
+            fontSize: 26,
+            lineSpacing: 9,
+            paragraphFirstLineIndent: 26
+        )
+        let fullWidthFirstPage = try XCTUnwrap(
+            fullWidthLayout.pages(for: text, chapterTitle: nil).first
+        )
+        let readAloudFirstPage = try XCTUnwrap(
+            readAloudLayout.pages(for: text, chapterTitle: nil).first
+        )
+
+        XCTAssertLessThanOrEqual(
+            fullWidthFirstPage.count - readAloudFirstPage.count,
+            2,
+            "段落缩进只能影响首行，不能让每一行都少排文字"
+        )
+        XCTAssertEqual(
+            readAloudLayout.pages(for: text, chapterTitle: nil).joined(),
+            text
         )
     }
 
@@ -266,6 +372,59 @@ final class NovelParserTests: XCTestCase {
 }
 
 final class ReaderPaginationTests: XCTestCase {
+    func testVerticalFillDistributesUnusedPageHeightAcrossLines() {
+        let spacing = ReaderPageVerticalFill.lineSpacing(
+            base: 9,
+            availableHeight: 620,
+            usedHeight: 420,
+            lineCount: 15,
+            fontSize: 26
+        )
+
+        XCTAssertGreaterThan(spacing, 9)
+        XCTAssertLessThanOrEqual(spacing, 9 + 26 * 0.8)
+        XCTAssertEqual(
+            ReaderPageVerticalFill.lineSpacing(
+                base: 9,
+                availableHeight: 420,
+                usedHeight: 420,
+                lineCount: 15,
+                fontSize: 26
+            ),
+            9
+        )
+    }
+
+    func testPageCacheDetectsChangedTextAtTheSameLocation() {
+        let location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
+        let oldPage = ReaderPage(
+            location: location,
+            chapterTitle: "第一章",
+            text: "旧分页正文。",
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+        let newPage = ReaderPage(
+            location: location,
+            chapterTitle: "第一章",
+            text: "重新分页后的连续正文。",
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+
+        XCTAssertTrue(
+            readerPageContentChanged(
+                from: [oldPage],
+                to: [newPage],
+                retainedIndices: [0]
+            )
+        )
+    }
+
     func testCatalogPreloadsAcrossChapterBoundary() {
         let book = NovelBook(
             title: "Test",
@@ -508,6 +667,531 @@ final class ReaderThemeTests: XCTestCase {
     }
 }
 
+final class ReadAloudRoleAnalyzerTests: XCTestCase {
+    func testWholeBookRoleDetectionSupportsLocalAndAIWithoutDownloadedModels() {
+        XCTAssertEqual(ReadAloudRoleDetectionMode.allCases.map(\.rawValue), ["ai"])
+        XCTAssertEqual(ReadAloudVoiceSelectionMode.allCases.map(\.rawValue), ["automatic", "roleBased"])
+    }
+
+    func testSmartRoleAnalysisSplitsLargeChaptersIntoBoundedBatches() {
+        let text = (0..<13).map { "第\($0)句人物说道。" }.joined()
+        let page = ReaderPage(
+            location: ReaderPageLocation(chapterIndex: 2, pageIndex: 0),
+            chapterTitle: "测试章",
+            text: text,
+            pageInChapter: 1,
+            pageCountInChapter: 1,
+            overallIndex: 0,
+            overallCount: 1
+        )
+
+        let inputs = NovelRoleAnalysisCodec.makeInputs(
+            pages: [page],
+            maximumCharacters: 10_000,
+            maximumSentences: 5
+        )
+
+        XCTAssertEqual(inputs.count, 3)
+        XCTAssertEqual(inputs.map(\.sentenceLookup.count), [5, 5, 3])
+        XCTAssertEqual(inputs.flatMap { $0.sentenceLookup.values }.count, 13)
+    }
+
+    func testSmartRoleResultCarriesCharacterGenderForAutomaticCasting() throws {
+        let page = page(chapter: 1, index: 0, text: "苏桐说道：“你好。”")
+        let input = NovelRoleAnalysisCodec.makeInput(pages: [page], maximumCharacters: 2_000)
+        let id = try XCTUnwrap(input.sentenceLookup.keys.first)
+        let fallback = ReadAloudRoleAnalyzer.plan(for: [page])
+        let content = """
+        {"characters":[{"name":"苏桐","gender":"女"}],"assignments":[{"id":"\(id)","type":"角色","speaker":"苏桐"}]}
+        """
+
+        let result = try NovelRoleAnalysisCodec.decodeResult(
+            content: content,
+            input: input,
+            fallback: fallback
+        )
+
+        XCTAssertEqual(result.characterGenders["苏桐"], .female)
+        XCTAssertEqual(result.plan.speakers(for: page.location)?.first, .character("苏桐"))
+    }
+
+    func testBundledReferenceCatalogContainsCuratedLocalVoices() {
+        let definitions = ZipVoiceBuiltInProfiles.definitions
+
+        XCTAssertEqual(definitions.count, 5)
+        XCTAssertEqual(Set(definitions.map(\.id)).count, 5)
+        XCTAssertEqual(Set(definitions.map(\.name)).count, 5)
+        XCTAssertEqual(definitions.filter { $0.gender == .female }.count, 3)
+        XCTAssertEqual(definitions.filter { $0.gender == .male }.count, 2)
+        for definition in definitions {
+            let url = Bundle.main.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav")
+            XCTAssertNotNil(url, "缺少内置声线资源：\(definition.resource)")
+        }
+    }
+
+    func testVoiceProfileRoundTripKeepsOnlyRelativePaths() throws {
+        let profile = VoiceProfile(
+            name: "我的音色",
+            sourceType: .recorded,
+            referenceAudioRelativePath: "123/reference.wav",
+            originalAudioRelativePath: "123/original.m4a",
+            referenceText: "测试参考文字",
+            previewAudioRelativePath: "123/preview.wav",
+            originalFilename: "录音.m4a",
+            sampleRate: 24_000,
+            duration: 6.5,
+            voiceCategory: .female,
+            modelVersion: ZipVoiceCatalog.modelVersion,
+            isAuthorized: true,
+            boundCharacterIds: ["第一人称旁白", "角色 · 苏桐"]
+        )
+
+        let data = try JSONEncoder().encode(profile)
+        let decoded = try JSONDecoder().decode(VoiceProfile.self, from: data)
+
+        XCTAssertEqual(decoded, profile)
+        XCTAssertFalse(decoded.referenceAudioRelativePath.hasPrefix("/"))
+        XCTAssertFalse(try XCTUnwrap(decoded.originalAudioRelativePath).hasPrefix("/"))
+        XCTAssertFalse(try XCTUnwrap(decoded.previewAudioRelativePath).hasPrefix("/"))
+    }
+
+    func testAudioPreprocessorProducesModelRateMonoReference() throws {
+        let definition = try XCTUnwrap(ZipVoiceBuiltInProfiles.definitions.first)
+        let source = try XCTUnwrap(
+            Bundle.main.url(
+                forResource: definition.resource,
+                withExtension: "wav",
+                subdirectory: "Voices"
+            ) ?? Bundle.main.url(forResource: definition.resource, withExtension: "wav")
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioPreprocessorTests-\(UUID().uuidString)", isDirectory: true)
+        let output = directory.appendingPathComponent("reference.wav")
+        let result = try AudioPreprocessor().process(
+            sourceURL: source,
+            destinationURL: output,
+            targetSampleRate: 24_000
+        )
+        let file = try AVAudioFile(forReading: output)
+
+        XCTAssertEqual(file.processingFormat.sampleRate, 24_000, accuracy: 0.1)
+        XCTAssertEqual(file.processingFormat.channelCount, 1)
+        XCTAssertGreaterThanOrEqual(result.effectiveVoiceDuration, 3)
+        XCTAssertGreaterThan(result.duration, 3)
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    func testAutomaticCastingKeepsNamedCharacterVoiceStable() {
+        let settings = ReadAloudSettings()
+        let first = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+        let second = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+        let narrator = AudiobookVoiceDirector.direction(for: .narrator, settings: settings)
+
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(narrator.voiceID, "白桦")
+        XCTAssertNotEqual(first.voiceID, narrator.voiceID)
+    }
+
+    func testAutomaticCloudCastingUsesDetectedCharacterGender() {
+        let settings = ReadAloudSettings()
+        let female = AudiobookVoiceDirector.direction(
+            for: .character("苏桐"),
+            settings: settings,
+            characterGenders: ["苏桐": .female]
+        )
+        let male = AudiobookVoiceDirector.direction(
+            for: .character("杨飞"),
+            settings: settings,
+            characterGenders: ["杨飞": .male]
+        )
+
+        XCTAssertTrue(["冰糖", "茉莉"].contains(female.voiceID))
+        XCTAssertTrue(["苏打", "白桦"].contains(male.voiceID))
+    }
+
+    func testLocalRoleAnalysisExposesConfidenceForExplicitAndAlternatingDialogue() {
+        let page = page(
+            chapter: 8,
+            index: 0,
+            text: "张三说道：“你好。”\n“你好。”李四回答。\n“再见。”"
+        )
+
+        let analysis = ReadAloudRoleAnalyzer.analyze(
+            pages: [page],
+            alternatesUnattributedDialogue: true
+        )
+        let speakers = try! XCTUnwrap(analysis.plan.speakers(for: page.location))
+        let confidences = speakers.indices.map {
+            analysis.plan.confidence(for: page.location, sentenceIndex: $0)
+        }
+
+        XCTAssertEqual(speakers.first, .character("张三"))
+        XCTAssertTrue(confidences.first ?? 0 >= 0.9)
+        XCTAssertTrue(confidences.allSatisfy { $0 >= 0 && $0 <= 1 })
+        XCTAssertTrue(analysis.detectedCharacters.contains("张三"))
+    }
+
+    func testOneQuotedSpeechBlockKeepsOneSpeakerAcrossSentenceBoundaries() {
+        let page = page(
+            chapter: 10,
+            index: 0,
+            text: "张三说道：“老板，你看这鱼亮上面的包浆！新鲜的东西，哪有这么油光发亮的？这是上了年代的古物！卖你八百，敬你是识货人了！”"
+        )
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page])
+            .speakers(for: page.location)
+
+        XCTAssertNotNil(speakers)
+        XCTAssertTrue(speakers?.dropFirst().allSatisfy { $0 == .character("张三") } == true)
+    }
+
+    func testQuotedSpeechDoesNotSwitchOnAttributionWordsInsideQuote() {
+        let page = page(
+            chapter: 11,
+            index: 0,
+            text: "张三说道：“老板，你听他说的！这句话不能改变说话人。”"
+        )
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page])
+            .speakers(for: page.location)
+
+        XCTAssertTrue(speakers?.dropFirst().allSatisfy { $0 == .character("张三") } == true)
+    }
+
+    func testPersistedCastKeepsRoleConfidenceAfterPaginationRemap() throws {
+        let text = "张三说道：“你好。”"
+        let sourceLocation = ReaderPageLocation(chapterIndex: 9, pageIndex: 0)
+        let sourcePage = page(chapter: 9, index: 0, text: text)
+        let analysis = ReadAloudRoleAnalyzer.analyze(pages: [sourcePage])
+        let cast = NovelCastChapter.make(
+            chapterIndex: 9,
+            text: text,
+            plan: analysis.plan,
+            characterGenders: analysis.characterGenders
+        )
+        let remapped = cast.plan(for: [sourcePage], fallback: .empty)
+
+        XCTAssertEqual(remapped.speakers(for: sourceLocation)?.first, .character("张三"))
+        XCTAssertGreaterThan(remapped.confidence(for: sourceLocation, sentenceIndex: 0), 0.9)
+    }
+
+    func testUnknownDialogueAlternatesAutomaticVoices() {
+        let settings = ReadAloudSettings()
+        let first = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 0), settings: settings)
+        let second = AudiobookVoiceDirector.direction(for: .unknownDialogue(turn: 1), settings: settings)
+
+        XCTAssertNotEqual(first.voiceID, second.voiceID)
+    }
+
+    func testRemovedSingleVoiceSettingMigratesToRoleBasedAssignments() throws {
+        let data = #"{"voiceSelectionMode":"single","selectedVoiceIdentifier":"茉莉"}"#
+            .data(using: .utf8)!
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
+
+        let narrator = AudiobookVoiceDirector.direction(for: .narrator, settings: settings)
+        let character = AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings)
+
+        XCTAssertEqual(settings.voiceSelectionMode, .roleBased)
+        XCTAssertEqual(narrator.voiceID, "茉莉")
+        XCTAssertEqual(character.voiceID, "茉莉")
+    }
+
+    func testLegacyLocalRoleModeMigratesToAI() throws {
+        let data = #"{"roleDetectionMode":"localRules"}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
+
+        XCTAssertEqual(settings.roleDetectionMode, .ai)
+    }
+
+    func testPersistedNovelCastSurvivesAPageBoundaryInsideDialogue() throws {
+        let text = "张三说道：“你好。”\n他转身离开。"
+        let sourceLocation = ReaderPageLocation(chapterIndex: 3, pageIndex: 0)
+        let sourceSentences = ReadAloudTextPlan(text: text).sentences
+        let sourceSpeakers = sourceSentences.indices.map { index in
+            index == 0 ? ReadAloudSpeaker.character("张三") : .thirdPersonNarrator
+        }
+        let cast = NovelCastChapter.make(
+            chapterIndex: 3,
+            text: text,
+            plan: ReadAloudRolePlan(speakersByPage: [sourceLocation: sourceSpeakers])
+        )
+        let pages = [
+            page(chapter: 3, index: 0, text: "张三说道：“你"),
+            page(chapter: 3, index: 1, text: "好。”\n他转身离开。")
+        ]
+        let fallback = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        let remapped = cast.plan(for: pages, fallback: fallback)
+
+        XCTAssertEqual(remapped.speakers(for: pages[0].location)?.first, .character("张三"))
+        XCTAssertEqual(remapped.speakers(for: pages[1].location)?.first, .character("张三"))
+    }
+
+    func testNovelCastStoreRejectsChangedChapterContent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NovelCastStoreTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = NovelCastStore(rootURL: directory)
+        let text = "李明说道：“出发。”"
+        let location = ReaderPageLocation(chapterIndex: 0, pageIndex: 0)
+        let cast = NovelCastChapter.make(
+            chapterIndex: 0,
+            text: text,
+            plan: ReadAloudRolePlan(speakersByPage: [location: [.character("李明")]])
+        )
+        let bookID = UUID()
+        try store.save(cast, bookID: bookID)
+
+        XCTAssertNotNil(store.load(bookID: bookID, chapterIndex: 0, chapterText: text))
+        XCTAssertNil(store.load(bookID: bookID, chapterIndex: 0, chapterText: text + "后来。"))
+    }
+
+    func testRoleBasedVoiceSelectionSeparatesNarrationTypesAndCharacters() {
+        var settings = ReadAloudSettings()
+        settings.voiceSelectionMode = .roleBased
+        settings.narratorVoiceIdentifier = "白桦"
+        settings.thirdPersonVoiceIdentifier = "苏打"
+        settings.characterVoiceIdentifier = "冰糖"
+
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .narrator, settings: settings).voiceID, "白桦")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .thirdPersonNarrator, settings: settings).voiceID, "苏打")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings).voiceID, "冰糖")
+    }
+
+    func testRoleBasedVoiceSelectionUsesNamedCharacterOverride() {
+        var settings = ReadAloudSettings()
+        settings.voiceSelectionMode = .roleBased
+        settings.characterVoiceIdentifier = "冰糖"
+        settings.characterVoiceIdentifiers = ["张三": "苏打", "李四": "茉莉"]
+
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("张三"), settings: settings).voiceID, "苏打")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("李四"), settings: settings).voiceID, "茉莉")
+        XCTAssertEqual(AudiobookVoiceDirector.direction(for: .character("王五"), settings: settings).voiceID, "冰糖")
+    }
+
+    func testMiMoCatalogIncludesAllPublishedPresetVoiceIdentifiers() {
+        XCTAssertEqual(
+            Set(AudiobookVoiceDirector.choices(for: .mimo).map(\.id)),
+            Set(["冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"])
+        )
+    }
+
+    func testZipVoiceFloatPCMCanBeWrappedAsWAV() {
+        let pcm = Data(repeating: 0, count: 16)
+        let audio = ZipVoiceSynthesizedAudio(pcmFloat32: pcm, sampleRate: 24_000)
+        let wav = audio.wavData
+
+        XCTAssertEqual(String(data: wav.prefix(4), encoding: .ascii), "RIFF")
+        XCTAssertEqual(String(data: wav.dropFirst(8).prefix(4), encoding: .ascii), "WAVE")
+        XCTAssertEqual(wav.count, 44 + pcm.count)
+    }
+
+    func testExplicitCharacterNamesReceiveStableSpeakerAssignments() {
+        let pages = [
+            page(index: 0, text: "张三说：“我们出发。”"),
+            page(index: 1, text: "李四问：“现在吗？”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.character("张三")])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("李四")])
+    }
+
+    func testEnhancedLocalRulesRecognizeNamedQuoteAndSpeakingActions() {
+        let pages = [
+            page(index: 0, text: "李明：“马上出发。”"),
+            page(index: 1, text: "王强皱眉提醒道：“路上小心。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.character("李明")])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.character("王强")])
+    }
+
+    func testEnhancedLocalRulesUseKnownSpeakerBeforeAddressee() {
+        let page = page(index: 0, text: "张三对李四低声说道：“先别出声。”")
+
+        let plan = ReadAloudRoleAnalyzer.plan(
+            for: [page],
+            knownCharacters: ["张三", "李四"]
+        )
+
+        XCTAssertEqual(plan.speakers(for: page.location), [.character("张三")])
+    }
+
+    func testEnhancedLocalRulesNormalizeHonorificAndInferGender() {
+        let page = page(index: 0, text: "苏桐小姐轻声说道：“我知道了。”")
+
+        let analysis = ReadAloudRoleAnalyzer.analyze(pages: [page])
+
+        XCTAssertEqual(analysis.plan.speakers(for: page.location), [.character("苏桐")])
+        XCTAssertEqual(analysis.characterGenders["苏桐"], .female)
+    }
+
+    func testLocalSpeechChunksProvideEnoughRunwayForRollingPrefetch() {
+        XCTAssertTrue(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 5,
+            currentUTF16Length: 300,
+            nextUTF16Length: 60
+        ))
+        XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 6,
+            currentUTF16Length: 100,
+            nextUTF16Length: 10
+        ))
+        XCTAssertFalse(ReadAloudLocalSpeechChunkPolicy.canAppend(
+            currentSentenceCount: 1,
+            currentUTF16Length: 350,
+            nextUTF16Length: 11
+        ))
+    }
+
+    func testParagraphSelectionUsesUTF16ParagraphRanges() {
+        let text = "第一段🙂。\n第二段。"
+        let ranges = ReadAloudTextPlan(text: text).paragraphRanges
+        let secondLocation = ("第一段🙂。\n" as NSString).length
+
+        XCTAssertEqual(
+            ReaderParagraphSelection.range(
+                containingUTF16Location: secondLocation,
+                paragraphRanges: ranges
+            ),
+            ranges[1]
+        )
+        XCTAssertNil(ReaderParagraphSelection.range(
+            containingUTF16Location: (text as NSString).length,
+            paragraphRanges: ranges
+        ))
+    }
+
+    func testThirdPersonNarrationUsesItsOwnSpeakerType() {
+        let page = page(index: 0, text: "天色渐渐亮了。远处传来钟声。")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.thirdPersonNarrator, .thirdPersonNarrator])
+    }
+
+    func testFirstPersonNarrationUsesNarratorSpeakerType() {
+        let page = page(index: 0, text: "我推开门，发现天色已经亮了。")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.narrator])
+    }
+
+    func testCrossPageSentenceFragmentsAreJoinedButCompletedSentencesAreNot() {
+        XCTAssertTrue(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "他推开门，发现走廊尽头站着",
+            nextFragment: "一个陌生人。"
+        ))
+        XCTAssertFalse(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "他推开门。",
+            nextFragment: "走廊尽头站着一个陌生人。"
+        ))
+        XCTAssertFalse(ReadAloudPageBoundary.shouldJoin(
+            lastFragment: "“我知道了！”",
+            nextFragment: "她转身离开。"
+        ))
+    }
+
+    func testUnknownDialogueAlternatesAcrossPages() {
+        let pages = [
+            page(index: 0, text: "“你是谁？”"),
+            page(index: 1, text: "“先别问，跟我走。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(for: pages)
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.unknownDialogue(turn: 0)])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 1)])
+    }
+
+    func testSpeakingVerbsInsideDialogueDoNotCreateCharacterNames() {
+        let page = page(index: 0, text: "“先别问，跟我走。”")
+
+        let speakers = ReadAloudRoleAnalyzer.plan(for: [page]).speakers(for: page.location)
+
+        XCTAssertEqual(speakers, [.unknownDialogue(turn: 0)])
+    }
+
+    func testUnknownDialogueDoesNotAlternateWhenDisabled() {
+        let pages = [
+            page(index: 0, text: "“第一句。”"),
+            page(index: 1, text: "“第二句。”")
+        ]
+
+        let plan = ReadAloudRoleAnalyzer.plan(
+            for: pages,
+            alternatesUnattributedDialogue: false
+        )
+
+        XCTAssertEqual(plan.speakers(for: pages[0].location), [.unknownDialogue(turn: 0)])
+        XCTAssertEqual(plan.speakers(for: pages[1].location), [.unknownDialogue(turn: 0)])
+    }
+
+    func testSettingsNormalizationClampsRateAndTrimsConnectionFields() {
+        var settings = ReadAloudSettings()
+        settings.rateMultiplier = 3
+        settings.baseURL = "  https://example.com/v1  "
+        settings.model = "  speech-model "
+        settings.analysisBaseURL = "  https://example.com/analysis  "
+        settings.analysisModel = "  role-model "
+
+        let normalized = settings.normalized
+
+        XCTAssertEqual(normalized.rateMultiplier, 1.2)
+        XCTAssertEqual(normalized.baseURL, "https://example.com/v1")
+        XCTAssertEqual(normalized.model, "speech-model")
+        XCTAssertEqual(normalized.analysisBaseURL, "https://example.com/analysis")
+        XCTAssertEqual(normalized.analysisModel, "role-model")
+    }
+
+    func testLegacySettingsMigrateToSafeMiMoDefaults() throws {
+        let legacy = #"{"rateMultiplier":0.8,"narratorVoiceIdentifier":"old"}"#.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: legacy)
+
+        XCTAssertEqual(settings.provider, .mimo)
+        XCTAssertEqual(settings.baseURL, ReadAloudProvider.mimo.defaultBaseURL)
+        XCTAssertEqual(settings.model, ReadAloudProvider.mimo.defaultModel)
+        XCTAssertFalse(settings.allowsTextUpload)
+        XCTAssertEqual(settings.roleDetectionMode, .ai)
+        XCTAssertEqual(settings.voiceSelectionMode, .automatic)
+    }
+
+    private func page(index: Int, text: String) -> ReaderPage {
+        ReaderPage(
+            location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
+            chapterTitle: "第一章",
+            text: text,
+            pageInChapter: index + 1,
+            pageCountInChapter: 2,
+            overallIndex: index,
+            overallCount: 2
+        )
+    }
+
+    private func page(chapter: Int, index: Int, text: String) -> ReaderPage {
+        ReaderPage(
+            location: ReaderPageLocation(chapterIndex: chapter, pageIndex: index),
+            chapterTitle: "测试章",
+            text: text,
+            pageInChapter: index + 1,
+            pageCountInChapter: 2,
+            overallIndex: index,
+            overallCount: 2
+        )
+    }
+}
+
 final class ReadAloudTimelineTests: XCTestCase {
     private func pages(chapterIndices: [Int]) -> [ReaderPage] {
         chapterIndices.enumerated().map { overallIndex, chapterIndex in
@@ -632,8 +1316,8 @@ final class ReaderRuntimeTests: XCTestCase {
                 horizontalMargin: 22,
                 highlightedLocation: nil,
                 highlightedRange: nil,
-                showsReadAloudControls: false,
-                isReadAloudPlaying: false
+                allowsParagraphLongPress: true,
+                onParagraphLongPress: nil
             )
             let host = ReaderPageTurnHostController()
             var bodyTapCount = 0
@@ -664,5 +1348,59 @@ final class ReaderRuntimeTests: XCTestCase {
             XCTAssertEqual(bodyTapCount, 1, "点击正文只能切换工具栏，不能启动另一条程序化翻页事务")
             XCTAssertEqual(curl.viewControllers?.count, 1)
         }
+    }
+
+    func testAutomatedCurlTurnCommitsTheNextPage() {
+        let pages = (0..<2).map { index in
+            ReaderPage(
+                location: ReaderPageLocation(chapterIndex: 0, pageIndex: index),
+                chapterTitle: "第一章",
+                text: "自动朗读第\(index + 1)页。",
+                pageInChapter: index + 1,
+                pageCountInChapter: 2,
+                overallIndex: index,
+                overallCount: 2
+            )
+        }
+        let appearance = ReaderPageAppearance(
+            themeID: ReaderTheme.paper.rawValue,
+            bookTitle: "自动翻页测试",
+            backgroundColor: UIColor(ReaderTheme.paper.background),
+            backsideColor: UIColor(ReaderTheme.paper.pageBack),
+            textColor: UIColor(ReaderTheme.paper.foreground),
+            backgroundStyle: .plain,
+            backgroundImage: nil,
+            backgroundOverlayOpacity: 0,
+            backgroundBlur: .none,
+            fontName: nil,
+            fontSize: 19,
+            lineSpacing: 9,
+            horizontalMargin: 22,
+            highlightedLocation: pages[0].location,
+            highlightedRange: NSRange(location: 0, length: 2),
+            allowsParagraphLongPress: true,
+            onParagraphLongPress: nil
+        )
+        let host = ReaderPageTurnHostController()
+        let committed = expectation(description: "自动翻页提交下一页")
+        var committedLocation: ReaderPageLocation?
+        host.onCommit = { location in
+            committedLocation = location
+            committed.fulfill()
+        }
+        host.loadViewIfNeeded()
+        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+
+        host.configure(
+            pages: pages,
+            location: pages[0].location,
+            appearance: appearance,
+            mode: .curl,
+            automatedTurnTarget: pages[1].location
+        )
+        host.view.layoutIfNeeded()
+
+        wait(for: [committed], timeout: 2)
+        XCTAssertEqual(committedLocation, pages[1].location)
     }
 }

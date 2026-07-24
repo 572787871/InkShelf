@@ -225,6 +225,7 @@ final class LibraryStore: ObservableObject {
     private func removeFiles(for id: UUID) {
         try? FileManager.default.removeItem(at: contentURL(for: id))
         try? FileManager.default.removeItem(at: coverURL(for: id))
+        try? NovelCastStore().remove(bookID: id)
     }
 
     private func contentURL(for id: UUID) -> URL { booksFolder.appendingPathComponent("\(id.uuidString).txt") }

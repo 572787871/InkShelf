@@ -20,6 +20,7 @@ struct ReaderView: View {
     @State private var showingIndex = false
     @State private var showingAppearance = false
     @State private var showingNote = false
+    @State private var showingAudiobookPlayer = false
     @State private var readAloudError: String?
     @State private var automatedTurnTarget: ReaderPageLocation?
     @State private var isBrowsingAwayFromReadAloud = false
@@ -99,8 +100,11 @@ struct ReaderView: View {
             if let book {
                 GeometryReader { proxy in
                     let chapter = safeChapter(in: book)
-                    let capacity = charactersPerPage(in: proxy.size)
-                    let layout = paginationLayout(for: book, size: proxy.size)
+                    let layout = paginationLayout(
+                        for: book,
+                        size: proxy.size,
+                        safeAreaInsets: proxy.safeAreaInsets
+                    )
                     ZStack {
                         ReaderBackgroundSurface(
                             theme: theme,
@@ -119,14 +123,13 @@ struct ReaderView: View {
                             InteractivePageTurnView(
                                 pages: catalog.pages,
                                 location: location,
-                                appearance: pageAppearance(bookTitle: book.title),
+                                appearance: pageAppearance(book: book),
                                 mode: pageTurnMode,
                                 isInteractionEnabled: !showingAppearance
                                     && !isScrubbingWholeBookProgress
                                     && !interactionDisabled,
                                 automatedTurnTarget: automatedTurnTarget,
                                 onCommit: commit,
-                                onPlayParagraph: playParagraph,
                                 onCenterTap: { withAnimation(.easeOut(duration: 0.18)) { chromeVisible.toggle() } }
                             )
                             .ignoresSafeArea()
@@ -141,7 +144,9 @@ struct ReaderView: View {
                         }
                     }
                     .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-                    .task(id: layout) { await rebuildCatalog(for: book, charactersPerPage: capacity) }
+                    .task(id: layout) {
+                        await rebuildCatalog(for: book, paginationLayout: layout.readerLayout)
+                    }
                     .allowsHitTesting(!interactionDisabled)
                 }
                 .statusBarHidden(!chromeVisible)
@@ -219,6 +224,12 @@ struct ReaderView: View {
             )
             .preferredColorScheme(.dark)
         }
+        .fullScreenCover(isPresented: $showingAudiobookPlayer) {
+            if let book {
+                AudiobookPlayerView(book: book)
+                    .environmentObject(readAloud)
+            }
+        }
         .sheet(isPresented: $showingIndex) {
             if let book {
                 ReaderIndexSheet(book: book) { chapter, page in
@@ -269,14 +280,6 @@ struct ReaderView: View {
         return chapters[min(max(location.chapterIndex, 0), max(chapters.count - 1, 0))]
     }
 
-    private func charactersPerPage(in size: CGSize) -> Int {
-        let usableWidth = max(180, size.width - margin * 2)
-        let usableHeight = max(240, size.height - 112)
-        let columns = usableWidth / max(fontSize * 1.04, 1)
-        let rows = usableHeight / max(fontSize + lineSpacing, 1)
-        return max(180, Int(columns * rows * 0.92))
-    }
-
     private var pageTurnMode: InteractivePageTurnMode {
         switch turnStyle {
         case .curl: return .curl
@@ -286,11 +289,10 @@ struct ReaderView: View {
         }
     }
 
-    private func pageAppearance(bookTitle: String) -> ReaderPageAppearance {
-        let ownsReadAloudSession = isCurrentReadAloudSession
+    private func pageAppearance(book: NovelBook) -> ReaderPageAppearance {
         return ReaderPageAppearance(
             themeID: "\(theme.rawValue)|\(backgroundStyle.rawValue)|\(backgroundRevision)|\(customToneRaw)|\(customBlurRaw)|\(customTransparency)",
-            bookTitle: bookTitle,
+            bookTitle: book.title,
             backgroundColor: UIColor(theme.background),
             backsideColor: UIColor(theme.pageBack),
             textColor: UIColor(theme.foreground),
@@ -302,28 +304,47 @@ struct ReaderView: View {
             fontSize: fontSize,
             lineSpacing: lineSpacing,
             horizontalMargin: margin,
-            highlightedLocation: ownsReadAloudSession ? readAloud.currentPageLocation : nil,
-            highlightedRange: ownsReadAloudSession ? readAloud.currentSentenceRange : nil,
-            showsReadAloudControls: ownsReadAloudSession,
-            isReadAloudPlaying: ownsReadAloudSession && readAloud.isPlaying
+            highlightedLocation: nil,
+            highlightedRange: nil,
+            allowsParagraphLongPress: !showingAppearance
+                && !isScrubbingWholeBookProgress
+                && !interactionDisabled,
+            onParagraphLongPress: { pageLocation, range in
+                startReadAloudFromParagraph(book: book, pageLocation: pageLocation, range: range)
+            }
         )
     }
 
-    private func paginationLayout(for book: NovelBook, size: CGSize) -> PaginationLayout {
-        PaginationLayout(
+    private func paginationLayout(
+        for book: NovelBook,
+        size: CGSize,
+        safeAreaInsets: EdgeInsets
+    ) -> PaginationLayout {
+        let headerY = max(16, safeAreaInsets.top + 12)
+        let footerY = size.height - max(28, safeAreaInsets.bottom + 18)
+        let textSize = CGSize(
+            width: max(1, size.width - margin * 2),
+            height: max(1, footerY - headerY - 64)
+        )
+        return PaginationLayout(
             bookID: book.id,
-            width: Int(size.width.rounded()),
-            height: Int(size.height.rounded()),
-            fontSize: Int((fontSize * 10).rounded()),
-            lineSpacing: Int((lineSpacing * 10).rounded()),
-            margin: Int((margin * 10).rounded()),
-            fontName: readerFont.name ?? "system"
+            readerLayout: ReaderPaginationLayout(
+                textWidth: textSize.width,
+                textHeight: textSize.height,
+                fontName: readerFont.name,
+                fontSize: fontSize,
+                lineSpacing: lineSpacing,
+                paragraphFirstLineIndent: 0
+            )
         )
     }
 
-    private func rebuildCatalog(for book: NovelBook, charactersPerPage: Int) async {
+    private func rebuildCatalog(
+        for book: NovelBook,
+        paginationLayout: ReaderPaginationLayout
+    ) async {
         let rebuilt = await Task.detached(priority: .userInitiated) {
-            ReaderPageCatalog(book: book, charactersPerPage: charactersPerPage)
+            ReaderPageCatalog(book: book, paginationLayout: paginationLayout)
         }.value
         guard !Task.isCancelled else { return }
         let openingNarrationLocation: ReaderPageLocation?
@@ -385,35 +406,46 @@ struct ReaderView: View {
     }
 
     private func startReadingCurrentPage() {
+        guard readAloud.canStartReading else {
+            readAloudError = "请先返回主页，在右上角设置中配置朗读服务"
+            return
+        }
         guard let book, let page = catalog.page(at: location) else {
             readAloudError = "当前页面尚未加载完成"
             return
         }
-        beginReading(book: book, page: page, paragraphLocation: nil)
+        beginReading(book: book, page: page)
     }
 
-    private func playParagraph(_ page: ReaderPage, range: NSRange) {
-        if isCurrentReadAloudSession,
-           readAloud.currentPageLocation == page.location,
-           let highlightedRange = readAloud.currentSentenceRange,
-           NSIntersectionRange(highlightedRange, range).length > 0 {
-            readAloud.togglePlayback()
-            return
-        }
-        if page.location != location { jump(to: page.location) }
-        guard let book else { return }
-        beginReading(book: book, page: page, paragraphLocation: range.location)
-    }
-
-    private func beginReading(book: NovelBook, page: ReaderPage, paragraphLocation: Int?) {
+    private func beginReading(book: NovelBook, page: ReaderPage) {
         isBrowsingAwayFromReadAloud = false
         attachPageFinishHandler()
         readAloud.startSession(
             book: book,
             pages: catalog.pages,
-            location: page.location,
-            startAtUTF16Location: paragraphLocation ?? 0
+            location: page.location
         )
+        showingAudiobookPlayer = true
+    }
+
+    private func startReadAloudFromParagraph(
+        book: NovelBook,
+        pageLocation: ReaderPageLocation,
+        range: NSRange
+    ) {
+        guard readAloud.canStartReading else {
+            readAloudError = "请先返回主页，在右上角设置中配置朗读服务"
+            return
+        }
+        isBrowsingAwayFromReadAloud = false
+        attachPageFinishHandler()
+        readAloud.startSession(
+            book: book,
+            pages: catalog.pages,
+            location: pageLocation,
+            startAtUTF16Location: range.location
+        )
+        showingAudiobookPlayer = true
     }
 
     private func attachPageFinishHandler() {
@@ -429,12 +461,31 @@ struct ReaderView: View {
             return
         }
         guard let nextPage = catalog.adjacent(to: location, direction: .forward) else {
-            readAloud.stop()
+            readAloud.finishAtEndOfBook()
             return
         }
+        let shouldContinuePlaying = readAloud.isPlaying
         automatedTurnTarget = nextPage.location
+        // Speech owns its own page progression. Do not make the next
+        // utterance wait for UIKit's visual page-turn completion callback.
+        readAloud.advanceSession(
+            to: nextPage.location,
+            continuePlaying: shouldContinuePlaying
+        )
         if turnStyle == .vertical {
             commit(nextPage.location)
+        } else {
+            scheduleAutomatedTurnFallback(to: nextPage.location)
+        }
+    }
+
+    private func scheduleAutomatedTurnFallback(to target: ReaderPageLocation) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+            guard automatedTurnTarget == target else { return }
+            // Programmatic UIPageViewController animations can occasionally
+            // finish without a completion callback. Commit only after the
+            // normal animation window has elapsed so narration never stalls.
+            commit(target)
         }
     }
 
@@ -552,7 +603,7 @@ struct ReaderView: View {
                     }
                     ChromeAction(icon: "waveform", label: "朗读") {
                         if isCurrentReadAloudSession {
-                            if !readAloud.isPlaying { readAloud.play() }
+                            showingAudiobookPlayer = true
                         } else {
                             startReadingCurrentPage()
                         }
@@ -598,7 +649,7 @@ struct ReaderView: View {
             bookTitle: book.title,
             coverImage: coverImage,
             coverSignature: coverSignature,
-            onCoverTap: nil,
+            onCoverTap: { showingAudiobookPlayer = true },
             onPlayPause: readAloud.togglePlayback,
             onClose: {
                 readAloud.stop()
@@ -634,7 +685,7 @@ struct ReaderView: View {
             .frame(height: 38)
             .background(immersiveBarBackground, in: Capsule())
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-            .padding(.bottom, 38)
+            .padding(.bottom, 24)
         }
         .allowsHitTesting(true)
         .transition(.opacity)
@@ -764,154 +815,289 @@ struct ReaderView: View {
     }
 
     private var appearanceControls: some View {
-        VStack(spacing: 15) {
-            HStack(spacing: 13) {
-                Text("颜色")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .leading)
-                ForEach(ReaderTheme.allCases) { item in
-                    Button {
-                        themeRaw = item.rawValue
-                        if item != .night { dayThemeRaw = item.rawValue }
-                    } label: {
-                        Circle()
-                            .fill(item.background)
-                            .frame(width: 32, height: 32)
-                            .overlay {
-                                Circle().stroke(
-                                    themeRaw == item.rawValue ? theme.foreground.opacity(0.82) : .gray.opacity(0.3),
-                                    lineWidth: themeRaw == item.rawValue ? 2 : 1
-                                )
-                            }
-                            .overlay {
-                                if themeRaw == item.rawValue {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundStyle(item.foreground)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
+        VStack(spacing: 12) {
+            HStack {
+                Label("阅读外观", systemImage: "textformat")
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
+                Button("排版复位") {
+                    fontRaw = ReaderFont.system.rawValue
+                    fontSize = 19
+                    lineSpacing = 9
+                    margin = 22
+                }
+                .font(.caption.weight(.medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
             }
 
-            HStack(alignment: .top, spacing: 9) {
-                Text("背景")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 32, alignment: .leading)
-                    .padding(.top, 10)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(ReaderBackgroundStyle.allCases) { style in
+            appearanceCard {
+                VStack(spacing: 12) {
+                    HStack(spacing: 13) {
+                        appearanceRowLabel("颜色", icon: "circle.lefthalf.filled")
+                        ForEach(ReaderTheme.allCases) { item in
                             Button {
-                                selectBackground(style)
+                                themeRaw = item.rawValue
+                                if item != .night { dayThemeRaw = item.rawValue }
                             } label: {
-                                VStack(spacing: 5) {
-                                    ReaderBackgroundSurface(
-                                        theme: style.recommendedTheme ?? theme,
-                                        style: style,
-                                        customImage: customBackgroundImage,
-                                        overlayOpacity: style == .custom
-                                            ? CGFloat(1 - customTransparency)
-                                            : style.readabilityOverlayOpacity,
-                                        blur: style == .custom ? customBlur : .none
-                                    )
-                                    .frame(width: 50, height: 38)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                Circle()
+                                    .fill(item.background)
+                                    .frame(width: 30, height: 30)
                                     .overlay {
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(
-                                                backgroundStyle == style
-                                                    ? theme.foreground.opacity(0.82)
-                                                    : .gray.opacity(0.24),
-                                                lineWidth: backgroundStyle == style ? 2 : 1
-                                            )
+                                        Circle().stroke(
+                                            themeRaw == item.rawValue
+                                                ? theme.foreground.opacity(0.86)
+                                                : .gray.opacity(0.24),
+                                            lineWidth: themeRaw == item.rawValue ? 2.5 : 1
+                                        )
                                     }
                                     .overlay {
-                                        if style == .custom {
-                                            Image(systemName: style.symbolName)
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundStyle(theme.foreground.opacity(0.7))
-                                                .frame(width: 24, height: 24)
-                                                .background(.ultraThinMaterial, in: Circle())
+                                        if themeRaw == item.rawValue {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(item.foreground)
                                         }
                                     }
-                                    Text(style.rawValue)
-                                        .font(.system(size: 9))
-                                        .lineLimit(1)
-                                        .foregroundStyle(.secondary)
-                                }
                             }
                             .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(alignment: .top, spacing: 10) {
+                        appearanceRowLabel("背景", icon: "photo.on.rectangle")
+                            .padding(.top, 8)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 9) {
+                                ForEach(ReaderBackgroundStyle.allCases) { style in
+                                    Button {
+                                        selectBackground(style)
+                                    } label: {
+                                        VStack(spacing: 4) {
+                                            ReaderBackgroundSurface(
+                                                theme: style.recommendedTheme ?? theme,
+                                                style: style,
+                                                customImage: customBackgroundImage,
+                                                overlayOpacity: style == .custom
+                                                    ? CGFloat(1 - customTransparency)
+                                                    : style.readabilityOverlayOpacity,
+                                                blur: style == .custom ? customBlur : .none
+                                            )
+                                            .frame(width: 48, height: 34)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                            .overlay {
+                                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                                    .stroke(
+                                                        backgroundStyle == style
+                                                            ? theme.foreground.opacity(0.86)
+                                                            : .gray.opacity(0.2),
+                                                        lineWidth: backgroundStyle == style ? 2.5 : 1
+                                                    )
+                                            }
+                                            .overlay {
+                                                if style == .custom {
+                                                    Image(systemName: style.symbolName)
+                                                        .font(.system(size: 11, weight: .semibold))
+                                                        .foregroundStyle(theme.foreground.opacity(0.72))
+                                                        .frame(width: 22, height: 22)
+                                                        .background(.ultraThinMaterial, in: Circle())
+                                                }
+                                            }
+                                            Text(style.rawValue)
+                                                .font(.system(size: 9, weight: backgroundStyle == style ? .semibold : .regular))
+                                                .lineLimit(1)
+                                                .foregroundStyle(backgroundStyle == style ? .primary : .secondary)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            Divider().opacity(0.5)
+            appearanceCard {
+                VStack(spacing: 12) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "sun.min")
+                            .foregroundStyle(.secondary)
+                        Slider(value: $brightness, in: 0.05...1) { _ in
+                            UIScreen.main.brightness = brightness
+                        }
+                        .tint(theme.foreground.opacity(0.72))
+                        Image(systemName: "sun.max.fill")
+                            .foregroundStyle(.secondary)
+                    }
 
-            HStack(spacing: 10) {
-                Image(systemName: "sun.min")
-                Slider(value: $brightness, in: 0.05...1) { _ in UIScreen.main.brightness = brightness }
-                Image(systemName: "sun.max.fill")
+                    Divider().opacity(0.35)
+
+                    HStack(spacing: 10) {
+                        appearanceRowLabel("字号", icon: "textformat.size")
+                        HStack(spacing: 0) {
+                            Button { fontSize = max(14, fontSize - 1) } label: {
+                                Image(systemName: "minus")
+                                    .frame(width: 32, height: 30)
+                            }
+                            Text("\(Int(fontSize))")
+                                .font(.caption.weight(.semibold).monospacedDigit())
+                                .frame(width: 38)
+                            Button { fontSize = min(32, fontSize + 1) } label: {
+                                Image(systemName: "plus")
+                                    .frame(width: 32, height: 30)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+
+                        Spacer()
+
+                        Menu {
+                            Picker("字体", selection: $fontRaw) {
+                                ForEach(ReaderFont.allCases) {
+                                    Text($0.displayName).tag($0.rawValue)
+                                }
+                            }
+                        } label: {
+                            Label(readerFont.displayName, systemImage: "character.cursor.ibeam")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 11)
+                                .frame(height: 30)
+                                .background(Color.primary.opacity(0.06), in: Capsule())
+                        }
+                    }
+
+                    appearanceSliderRow(
+                        title: "行距",
+                        value: lineSpacingDescription,
+                        icon: "line.3.horizontal",
+                        valueBinding: $lineSpacing,
+                        range: 4...20,
+                        step: 1
+                    )
+
+                    HStack(spacing: 6) {
+                        ForEach(lineSpacingPresets, id: \.value) { preset in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    lineSpacing = preset.value
+                                }
+                            } label: {
+                                Text(preset.label)
+                                    .font(.caption2.weight(.medium))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 26)
+                                    .foregroundStyle(
+                                        abs(lineSpacing - preset.value) < 0.5
+                                            ? theme.background
+                                            : Color.secondary
+                                    )
+                                    .background(
+                                        abs(lineSpacing - preset.value) < 0.5
+                                            ? theme.foreground.opacity(0.78)
+                                            : Color.primary.opacity(0.045),
+                                        in: Capsule()
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    appearanceSliderRow(
+                        title: "页边距",
+                        value: "\(Int(margin)) pt",
+                        icon: "arrow.left.and.right",
+                        valueBinding: $margin,
+                        range: 14...40,
+                        step: 2
+                    )
+                }
             }
 
-            HStack(spacing: 10) {
-                Button("A−") { fontSize = max(14, fontSize - 1) }.buttonStyle(.bordered)
-                Text("\(Int(fontSize))").font(.caption.monospacedDigit()).frame(width: 25)
-                Button("A+") { fontSize = min(32, fontSize + 1) }.buttonStyle(.bordered)
-                Picker("字体", selection: $fontRaw) {
-                    ForEach(ReaderFont.allCases) { Text($0.displayName).tag($0.rawValue) }
+            HStack(spacing: 9) {
+                Menu {
+                    Picker("翻页方式", selection: $turnRaw) {
+                        ForEach(PageTurnStyle.allCases) {
+                            Text($0.rawValue).tag($0.rawValue)
+                        }
+                    }
+                } label: {
+                    Label("\(turnStyle.rawValue)翻页", systemImage: "book.pages")
+                        .readerSettingChip()
                 }
-                .labelsHidden()
-                Spacer()
+
                 Button {
                     keepScreenAwake.toggle()
                 } label: {
                     Label(
-                        "常亮",
+                        keepScreenAwake ? "屏幕常亮" : "自动息屏",
                         systemImage: keepScreenAwake ? "sun.max.fill" : "sun.max"
                     )
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(
-                        keepScreenAwake
-                            ? theme.background
-                            : theme.foreground.opacity(0.72)
-                    )
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
-                    .background(
-                        keepScreenAwake
-                            ? theme.foreground.opacity(0.78)
-                            : theme.foreground.opacity(0.08),
-                        in: Capsule()
-                    )
-                    .overlay {
-                        Capsule()
-                            .stroke(
-                                theme.foreground.opacity(keepScreenAwake ? 0 : 0.16),
-                                lineWidth: 1
-                            )
-                    }
+                    .readerSettingChip(isSelected: keepScreenAwake)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("阅读时屏幕常亮")
                 .accessibilityValue(keepScreenAwake ? "已开启" : "已关闭")
-                Picker("翻页", selection: $turnRaw) {
-                    ForEach(PageTurnStyle.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                }
-                .labelsHidden()
-            }
 
-            HStack(spacing: 9) {
-                Text("行距")
-                Slider(value: $lineSpacing, in: 3...16, step: 1)
-                Text("边距")
-                Slider(value: $margin, in: 14...38, step: 2)
+                Spacer(minLength: 0)
             }
         }
         .font(.caption)
+    }
+
+    private var lineSpacingPresets: [(label: String, value: Double)] {
+        [("紧凑", 5), ("标准", 9), ("舒适", 13), ("宽松", 17)]
+    }
+
+    private var lineSpacingDescription: String {
+        let nearest = lineSpacingPresets.min { abs($0.value - lineSpacing) < abs($1.value - lineSpacing) }
+        let label = nearest.map { abs($0.value - lineSpacing) < 0.5 ? $0.label : "自定" } ?? "自定"
+        return "\(label) · \(Int(lineSpacing)) pt"
+    }
+
+    private func appearanceRowLabel(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 58, alignment: .leading)
+    }
+
+    private func appearanceCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
+            .background(
+                Color.primary.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+            }
+    }
+
+    private func appearanceSliderRow(
+        title: String,
+        value: String,
+        icon: String,
+        valueBinding: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double
+    ) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Label(title, systemImage: icon)
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Text(value)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: valueBinding, in: range, step: step)
+                .tint(theme.foreground.opacity(0.72))
+        }
     }
 
     private func toggleNightMode() {
@@ -1025,6 +1211,7 @@ struct ReaderView: View {
 
 struct ReaderReadAloudFloater: View {
     @ObservedObject var readAloud: ReadAloudService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bookID: UUID
     let bookTitle: String
     let coverImage: UIImage?
@@ -1055,6 +1242,7 @@ struct ReaderReadAloudFloater: View {
                             rotatingCover(at: timeline.date)
                         }
                         .buttonStyle(.plain)
+                        .buttonStyle(InkShelfPressFeedbackStyle())
                         .frame(width: 44, height: 44)
                         .contentShape(Circle())
                         .accessibilityLabel("打开正在朗读的《\(bookTitle)》")
@@ -1072,6 +1260,7 @@ struct ReaderReadAloudFloater: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .buttonStyle(InkShelfPressFeedbackStyle())
                 .background(.white.opacity(0.18), in: Circle())
             .accessibilityLabel(readAloud.isPlaying ? "暂停朗读" : "继续朗读")
 
@@ -1082,6 +1271,7 @@ struct ReaderReadAloudFloater: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .buttonStyle(InkShelfPressFeedbackStyle())
             .accessibilityLabel("关闭朗读")
         }
         .foregroundStyle(.white)
@@ -1105,8 +1295,15 @@ struct ReaderReadAloudFloater: View {
             DragGesture(minimumDistance: 12)
                 .updating($dragOffset) { value, state, _ in state = value.translation }
                 .onEnded { value in
-                    settledOffset.width += value.translation.width
-                    settledOffset.height += value.translation.height
+                    if reduceMotion {
+                        settledOffset.width += value.translation.width
+                        settledOffset.height += value.translation.height
+                    } else {
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                            settledOffset.width += value.translation.width
+                            settledOffset.height += value.translation.height
+                        }
+                    }
                 }
         )
         .onAppear { updateCoverRotation(isPlaying: readAloud.isPlaying) }
@@ -1272,12 +1469,25 @@ private final class ReaderFloaterPaletteBox: NSObject {
 
 private struct PaginationLayout: Hashable {
     let bookID: UUID
-    let width: Int
-    let height: Int
-    let fontSize: Int
-    let lineSpacing: Int
-    let margin: Int
-    let fontName: String
+    let readerLayout: ReaderPaginationLayout
+}
+
+private extension View {
+    func readerSettingChip(isSelected: Bool = false) -> some View {
+        self
+            .font(.caption.weight(.medium))
+            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(
+                Color.primary.opacity(isSelected ? 0.11 : 0.05),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(Color.primary.opacity(isSelected ? 0.12 : 0.06), lineWidth: 0.5)
+            }
+    }
 }
 
 private struct ChromeAction: View {

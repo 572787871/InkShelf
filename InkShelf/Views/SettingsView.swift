@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var readAloud: ReadAloudService
     @State private var showingEmailAccount = false
     @State private var isSigningInWithApple = false
     @State private var isSigningOut = false
@@ -51,10 +52,26 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("AI 朗读") {
-                    HStack { Label("配音引擎", systemImage: "waveform"); Spacer(); Text("等待接入").foregroundStyle(.secondary) }
-                    Text("工程已定义章节预处理、播放、暂停、句子定位与状态同步接口，可直接接入后续 AI 语音服务。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                Section("朗读") {
+                    NavigationLink {
+                        ReadAloudSettingsView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("功能设置")
+                                Text(readAloud.canStartReading
+                                    ? readAloud.settings.provider.title
+                                    : "待配置语音服务")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "waveform")
+                        }
+                    }
+                    Text("支持云端语音引擎、自动或指定音色；API Key 只保存在本机钥匙串。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
                 Section("关于") {
                     LabeledContent("应用", value: "墨架 InkShelf")
@@ -436,7 +453,7 @@ private struct PrivacyView: View {
     var body: some View {
         List {
             Text("墨架不会收集、分析或上传你的阅读文件、阅读进度和书签。所有数据默认仅保存在设备本地。")
-            Text("未来启用 AI 朗读时，应用会在发送任何正文前明确展示所使用的服务、数据范围和隐私条款，并再次征得同意。")
+            Text("使用云端语音时，只有在你明确允许后，正在预生成的朗读文本才会发送到配置的服务。API Key 保存在设备钥匙串中；服务方如何处理数据由其隐私政策决定。")
         }.navigationTitle("隐私说明")
     }
 }
