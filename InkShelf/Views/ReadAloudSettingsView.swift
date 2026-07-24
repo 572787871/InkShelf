@@ -55,8 +55,8 @@ struct ReadAloudSettingsView: View {
                 voiceAssignmentRows
             }
 
-            Section("本地角色导演") {
-                Text("仅在本机分析对白、说话人和连续对话，不上传小说正文。分析结果会按章节保存，并在朗读时直接用于角色声线分配。")
+            Section("AI 角色导演") {
+                Text("使用 AI 结合整章上下文分析对白和说话人。分析结果会按章节保存，并在朗读时固定角色声线。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Picker("分析书籍", selection: $selectedRoleBookID) {
@@ -72,7 +72,7 @@ struct ReadAloudSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button(role: .destructive, action: readAloud.cancelWholeBookRoleAnalysis) {
-                        Label("暂停本地分析", systemImage: "pause.circle")
+                        Label("暂停 AI 分析", systemImage: "pause.circle")
                     }
                 } else {
                     Button(action: analyzeSelectedBookWithAI) {
@@ -81,7 +81,7 @@ struct ReadAloudSettingsView: View {
                     .disabled(selectedRoleBook == nil)
                 }
                 if let confidence = readAloud.roleAnalysisAverageConfidence {
-                    LabeledContent("规则归因置信度（估计）", value: "\(Int((confidence * 100).rounded()))%")
+                    LabeledContent("AI 归因置信度（估计）", value: "\(Int((confidence * 100).rounded()))%")
                         .font(.footnote)
                 }
                 if let message = readAloud.roleAnalysisMessage {
