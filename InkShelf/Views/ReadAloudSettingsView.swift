@@ -4,6 +4,7 @@ struct ReadAloudSettingsView: View {
     @EnvironmentObject private var readAloud: ReadAloudService
     @EnvironmentObject private var library: LibraryStore
     @State private var selectedRoleBookID: UUID?
+    @State private var isAPIKeyVisible = false
 
     var body: some View {
         Form {
@@ -44,9 +45,25 @@ struct ReadAloudSettingsView: View {
                 TextField("语音模型", text: settingBinding(\.model))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                SecureField("API Key", text: $readAloud.apiKey)
+                HStack(spacing: 8) {
+                    Group {
+                        if isAPIKeyVisible {
+                            TextField("API Key", text: $readAloud.apiKey)
+                        } else {
+                            SecureField("API Key", text: $readAloud.apiKey)
+                        }
+                    }
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    Button {
+                        isAPIKeyVisible.toggle()
+                    } label: {
+                        Image(systemName: isAPIKeyVisible ? "eye.slash" : "eye")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isAPIKeyVisible ? "隐藏 API Key" : "显示 API Key")
+                }
                 Text("MiMo 使用 chat/completions 音频协议；其他服务需兼容 /audio/speech。API Key 只保存在 iPhone 钥匙串。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

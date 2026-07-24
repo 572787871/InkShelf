@@ -900,12 +900,12 @@ final class ReadAloudRoleAnalyzerTests: XCTestCase {
         XCTAssertEqual(character.voiceID, "茉莉")
     }
 
-    func testLocalRoleModeCanBeRestoredFromExistingSettings() throws {
+    func testLegacyLocalRoleModeMigratesToAI() throws {
         let data = #"{"roleDetectionMode":"localRules"}"#.data(using: .utf8)!
 
         let settings = try JSONDecoder().decode(ReadAloudSettings.self, from: data)
 
-        XCTAssertEqual(settings.roleDetectionMode, .localRules)
+        XCTAssertEqual(settings.roleDetectionMode, .ai)
     }
 
     func testPersistedNovelCastSurvivesAPageBoundaryInsideDialogue() throws {
