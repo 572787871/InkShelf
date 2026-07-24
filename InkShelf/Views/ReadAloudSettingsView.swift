@@ -75,7 +75,7 @@ struct ReadAloudSettingsView: View {
                         Label("暂停本地分析", systemImage: "pause.circle")
                     }
                 } else {
-                    Button(action: analyzeSelectedBookLocally) {
+                    Button(action: analyzeSelectedBookWithAI) {
                         Label("分析整本书的角色", systemImage: "person.3.sequence.fill")
                     }
                     .disabled(selectedRoleBook == nil)
@@ -234,8 +234,8 @@ struct ReadAloudSettingsView: View {
         readAloud.loadStoredCastCharacters(for: selectedRoleBook)
     }
 
-    private func analyzeSelectedBookLocally() {
+    private func analyzeSelectedBookWithAI() {
         guard let selectedRoleBook else { return }
-        readAloud.analyzeWholeBook(selectedRoleBook, forceLocal: true)
+        readAloud.analyzeWholeBook(selectedRoleBook)
     }
 }

@@ -33,14 +33,12 @@ enum ReadAloudProvider: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 enum ReadAloudRoleDetectionMode: String, Codable, CaseIterable, Identifiable, Sendable {
-    case localRules
     case ai
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .localRules: "本地增强解析"
-        case .ai: "AI 智能分析（本地兜底）"
+        case .ai: "AI 智能分析"
         }
     }
 }
@@ -110,8 +108,7 @@ struct ReadAloudSettings: Codable, Equatable, Sendable {
         rateMultiplier = try container.decodeIfPresent(Double.self, forKey: .rateMultiplier) ?? 0.9
         allowsTextUpload = try container.decodeIfPresent(Bool.self, forKey: .allowsTextUpload) ?? false
         let roleModeRaw = try container.decodeIfPresent(String.self, forKey: .roleDetectionMode)
-        roleDetectionMode = roleModeRaw.flatMap(ReadAloudRoleDetectionMode.init(rawValue:))
-            ?? .ai
+        roleDetectionMode = .ai
         analysisProvider = try container.decodeIfPresent(ReadAloudAIProvider.self, forKey: .analysisProvider) ?? .mimo
         analysisBaseURL = try container.decodeIfPresent(String.self, forKey: .analysisBaseURL)
             ?? analysisProvider.defaultBaseURL

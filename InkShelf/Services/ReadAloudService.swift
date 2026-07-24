@@ -532,7 +532,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
     }
 
-    func analyzeWholeBook(_ book: NovelBook, forceLocal: Bool = false) {
+    func analyzeWholeBook(_ book: NovelBook) {
         guard wholeBookRoleAnalysisTask == nil else {
             roleAnalysisMessage = "整书角色分析正在运行"
             return
@@ -546,15 +546,12 @@ final class ReadAloudService: NSObject, ObservableObject {
         let key = apiKey
         let store = novelCastStore
         let total = book.chapters.count
-        let usesAI = !forceLocal
-            && configuration.roleDetectionMode == .ai
+        let usesAI = configuration.roleDetectionMode == .ai
             && configuration.allowsTextUpload
             && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !configuration.analysisBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !configuration.analysisModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        roleAnalysisMessage = forceLocal || configuration.roleDetectionMode == .localRules
-            ? "正在本地解析《\(book.title)》…"
-            : "正在建立《\(book.title)》角色档案…"
+        roleAnalysisMessage = "正在建立《\(book.title)》AI 角色档案…"
         roleAnalysisAverageConfidence = nil
         wholeBookRoleProgress = WholeBookRoleAnalysisProgress(
             bookID: book.id,
@@ -568,8 +565,10 @@ final class ReadAloudService: NSObject, ObservableObject {
             var allGenders: [String: NovelCharacterGender] = [:]
             var confidenceTotal = 0.0
             var confidenceCount = 0
-            var usedLocalFallback = configuration.roleDetectionMode == .ai && !usesAI
             do {
+                guard usesAI else {
+                    throw AudiobookSpeechError.invalidConfiguration("请先配置 AI 角色分析")
+                }
                 for (offset, chapter) in book.chapters.enumerated() {
                     try Task.checkCancellation()
                     wholeBookRoleProgress = WholeBookRoleAnalysisProgress(
@@ -606,18 +605,10 @@ final class ReadAloudService: NSObject, ObservableObject {
                             } catch is CancellationError {
                                 throw CancellationError()
                             } catch {
-                                usedLocalFallback = true
-                                roleAnalysisMessage = "\(chapter.title) · AI 暂不可用，正在改用本地增强解析"
-                                cast = await localCastChapter(
-                                    chapter,
-                                    knownCharacters: allNames.sorted()
-                                )
+                                throw error
                             }
                         } else {
-                            cast = await localCastChapter(
-                                chapter,
-                                knownCharacters: allNames.sorted()
-                            )
+                            throw AudiobookSpeechError.invalidConfiguration("AI 角色分析不可用")
                         }
                         try await Task.detached(priority: .utility) {
                             try store.save(cast, bookID: book.id)
@@ -639,13 +630,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                         chapterTitle: chapter.title
                     )
                 }
-                if forceLocal || configuration.roleDetectionMode == .localRules {
-                    roleAnalysisMessage = "本地角色解析已完成：\(allNames.count) 个明确角色"
-                } else if usedLocalFallback {
-                    roleAnalysisMessage = "角色档案已完成：\(allNames.count) 个明确角色；AI 不可用的章节已用本地增强解析"
-                } else {
-                    roleAnalysisMessage = "整书角色档案已完成：\(allNames.count) 个明确角色"
-                }
+                roleAnalysisMessage = "整书 AI 角色档案已完成：\(allNames.count) 个明确角色"
                 detectedCharacterNames = allNames.sorted()
                 detectedCharacterGenders = allGenders
             } catch is CancellationError {
@@ -1830,15 +1815,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             .filter { $0.location.chapterIndex == chapterIndex }
             .sorted { $0.location.pageIndex < $1.location.pageIndex }
         guard !chapterPages.isEmpty else { return }
-        let localAnalysis = ReadAloudRoleAnalyzer.analyze(
-            pages: chapterPages,
-            alternatesUnattributedDialogue: true,
-            knownCharacters: detectedCharacterNames
-        )
-        var chapterPlan = localAnalysis.plan
-        detectedCharacterGenders.merge(localAnalysis.characterGenders) { existing, new in
-            existing == .unspecified ? new : existing
-        }
+        var chapterPlan = narratorPlan(for: chapterPages)
         if let bookID = bookContext?.id,
            let cast = novelCastStore.load(
                bookID: bookID,
@@ -1856,6 +1833,15 @@ final class ReadAloudService: NSObject, ObservableObject {
         rolePlan = ReadAloudRolePlan(speakersByPage: combined)
         refreshDetectedCharacterNames()
         analyzedRoleChapters.insert(chapterIndex)
+    }
+
+    private func narratorPlan(for pages: [ReaderPage]) -> ReadAloudRolePlan {
+        var speakers: [ReaderPageLocation: [ReadAloudSpeaker]] = [:]
+        for page in pages {
+            let count = ReadAloudTextPlan(text: page.text).sentences.count
+            speakers[page.location] = Array(repeating: .narrator, count: count)
+        }
+        return ReadAloudRolePlan(speakersByPage: speakers)
     }
 
     private func analyzeCurrentChapterThenPlayIfNeeded() {
@@ -1916,7 +1902,7 @@ final class ReadAloudService: NSObject, ObservableObject {
                 // The persisted smart cast is an enhancement. Keep the local
                 // baseline attribution and never interrupt audiobook playback.
                 aiAnalyzedRoleChapters.insert(chapterIndex)
-                roleAnalysisMessage = "本章 AI 暂不可用，已使用本地增强角色解析"
+                roleAnalysisMessage = "本章 AI 角色分析失败，当前仅使用旁白声线"
             }
             roleAnalysisTask = nil
             if playbackRequested,

@@ -161,7 +161,7 @@ context, not a substitute for inspecting the current code and Git history.
   key directly below the engine fields; local speech models and AI role-analysis
   controls are not shown. A local role-director action analyzes a selected book,
   persists per-chapter speaker assignments with confidence, and feeds the same
-  role plan used by cloud TTS. Local role analysis keeps one speaker across sentence boundaries inside a quoted dialogue block; changing the role-director algorithm version invalidates cached casts so they are rebuilt. The reader's bottom “朗读” action opens the dedicated audiobook screen;
+  role plan used by cloud TTS. AI role analysis is authoritative for production narration; unavailable analysis falls back to a single narrator voice rather than local character guessing. The reader's bottom “朗读” action opens the dedicated audiobook screen;
   that screen hides the floating controller and provides cover, title/chapter,
   following transcript with manual scrolling, directory, speed/options, chapter
   skip, pause/play, scrubbing and time labels. Closing it leaves narration running

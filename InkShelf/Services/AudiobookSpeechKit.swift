@@ -472,8 +472,10 @@ enum NovelRoleAnalysisCodec {
 
     private static func prompt(for sourceLines: [String], knownCharacters: [String]) -> String {
         """
-        你是小说有声书角色导演。结合章节上下文、引号、说话动词、人物称谓、代词和连续对话，判断每个文本单元的声音类型。
+        你是小说有声书角色导演。结合整章上下文、引号范围、说话动词、人物称谓、代词和连续对话，判断每个文本单元的声音类型。
         type 只能是“第一人称旁白”“第三人称旁白”或“角色”。角色填写原文人物名；称谓或别名明确对应此前角色时，speaker 必须沿用此前规范名。不确定人物时 speaker 写“未知”。不得虚构人物。连续对话必须结合上下句判断说话人，不能因为省略姓名就随意更换声线。
+        同一对引号内的连续句子必须使用同一个 speaker，除非文本明确开启了新的嵌套引号。不要因为句子中出现“他说”“问道”等转述词就切换当前引号内的说话人。
+        每个 id 都必须返回一条 assignment；type 为“角色”时 speaker 必须是规范人物名或“未知”。
         本书此前已确认的角色：\(knownCharacters.isEmpty ? "暂无" : knownCharacters.joined(separator: "、"))。
         只返回严格 JSON：{"characters":[{"name":"人物名","gender":"女或男或未知"}],"assignments":[{"id":"b0p0s0","type":"第三人称旁白","speaker":""},{"id":"b0p0s1","type":"角色","speaker":"人物名"}]}。
         文本单元如下：
@@ -513,7 +515,11 @@ enum NovelRoleAnalysisCodec {
             } else if type.contains("第一人称") || rawSpeaker == "旁白" || rawSpeaker.contains("第一人称") {
                 speakers[index] = .narrator
             } else if type == "角色" || (!rawSpeaker.isEmpty && rawSpeaker != "未知") {
-                if !rawSpeaker.isEmpty, rawSpeaker != "未知", rawSpeaker.count <= 12 {
+                if rawSpeaker == "未知" {
+                    // AI is authoritative for this unit. Do not retain a
+                    // potentially wrong local character assignment.
+                    speakers[index] = .unknownDialogue(turn: 0)
+                } else if !rawSpeaker.isEmpty, rawSpeaker.count <= 12 {
                     speakers[index] = .character(rawSpeaker)
                 }
             }

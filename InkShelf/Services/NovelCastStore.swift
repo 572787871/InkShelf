@@ -174,7 +174,7 @@ struct NovelCastChapter: Codable, Equatable, Sendable {
 }
 
 struct NovelCastStore: Sendable {
-    private static let analysisVersion = "role-director-v2"
+    private static let analysisVersion = "role-director-v3-ai-only"
 
     let rootURL: URL
 
