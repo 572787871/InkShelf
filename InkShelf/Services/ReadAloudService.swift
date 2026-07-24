@@ -308,6 +308,12 @@ final class ReadAloudService: NSObject, ObservableObject {
             connectionState = .idle
         }
     }
+    @Published var analysisAPIKey: String {
+        didSet {
+            guard analysisAPIKey != oldValue else { return }
+            AudiobookCredentialStore.saveAnalysisAPIKey(analysisAPIKey)
+        }
+    }
     @Published var settings: ReadAloudSettings {
         didSet {
             if oldValue != settings {
@@ -412,6 +418,7 @@ final class ReadAloudService: NSObject, ObservableObject {
 
     override init() {
         apiKey = AudiobookCredentialStore.loadAPIKey()
+        analysisAPIKey = AudiobookCredentialStore.loadAnalysisAPIKey()
         settings = Self.loadSettings()
         super.init()
         Task.detached(priority: .utility) { Self.removeRetiredLocalRoleModels() }
@@ -543,7 +550,7 @@ final class ReadAloudService: NSObject, ObservableObject {
         }
 
         let configuration = settings
-        let key = apiKey
+        let key = analysisAPIKey
         let store = novelCastStore
         let total = book.chapters.count
         let usesAI = configuration.roleDetectionMode == .ai
@@ -1867,7 +1874,7 @@ final class ReadAloudService: NSObject, ObservableObject {
             content: chapterText
         )
         let configuration = settings
-        let key = apiKey
+        let key = analysisAPIKey
         let store = novelCastStore
         let bookID = bookContext?.id
         roleAnalysisTask = Task { [weak self] in

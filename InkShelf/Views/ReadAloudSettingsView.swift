@@ -5,6 +5,7 @@ struct ReadAloudSettingsView: View {
     @EnvironmentObject private var library: LibraryStore
     @State private var selectedRoleBookID: UUID?
     @State private var isAPIKeyVisible = false
+    @State private var isAnalysisAPIKeyVisible = false
 
     var body: some View {
         Form {
@@ -70,6 +71,29 @@ struct ReadAloudSettingsView: View {
 
                 Divider()
                 voiceAssignmentRows
+            }
+
+            Section("角色识别 AI") {
+                HStack(spacing: 8) {
+                    Group {
+                        if isAnalysisAPIKeyVisible {
+                            TextField("角色识别 API Key", text: $readAloud.analysisAPIKey)
+                        } else {
+                            SecureField("角色识别 API Key", text: $readAloud.analysisAPIKey)
+                        }
+                    }
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    Button { isAnalysisAPIKeyVisible.toggle() } label: {
+                        Image(systemName: isAnalysisAPIKeyVisible ? "eye.slash" : "eye")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isAnalysisAPIKeyVisible ? "隐藏角色识别 API Key" : "显示角色识别 API Key")
+                }
+                Text("这里的密钥只用于分析角色；朗读 API Key 不会被复用。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Section("AI 角色导演") {

@@ -177,8 +177,17 @@ enum AudiobookVoiceDirector {
 enum AudiobookCredentialStore {
     private static let service = "com.example.InkShelf.audiobook"
     private static let account = "tts-api-key"
+    private static let analysisAccount = "role-analysis-api-key"
 
     static func loadAPIKey() -> String {
+        load(account: account)
+    }
+
+    static func loadAnalysisAPIKey() -> String {
+        load(account: analysisAccount)
+    }
+
+    private static func load(account: String) -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -193,6 +202,14 @@ enum AudiobookCredentialStore {
     }
 
     static func saveAPIKey(_ key: String) {
+        save(key, account: account)
+    }
+
+    static func saveAnalysisAPIKey(_ key: String) {
+        save(key, account: analysisAccount)
+    }
+
+    private static func save(_ key: String, account: String) {
         let match: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
